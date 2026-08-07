@@ -5,72 +5,84 @@
 	objectVersion = 56;
 	objects = {
 /* Begin PBXBuildFile section */
-		FD00265E2F39458788EE574F /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92FBC172D2B2455C94B75012 /* App.swift */; };
-		F169AB4FB5CB40608FBB988A /* GameHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40714241EEC14708A0CE69BC /* GameHostView.swift */; };
-		351DA5F5BA1B4E778DED281C /* ControlNodes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 604ACBD6D52F47ABB7AB6B7E /* ControlNodes.swift */; };
-		B25B9AA46B6345569E8C249F /* LayoutStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66E612574642494E89ED1912 /* LayoutStore.swift */; };
-		371E47EA4AA74C379891F48F /* TouchControlSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = E33565498BB84603B66F1926 /* TouchControlSurface.swift */; };
-		4C79ACDF4387447C8F510181 /* OverflowMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97EA5E15A15B405FAB941FCD /* OverflowMenuView.swift */; };
-		B576E7595C7B4EBF953103EA /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AB099848384455D8BA82993 /* SettingsStore.swift */; };
-		A99E66A607D64829A02DBBB5 /* ballpad_pad.c in Sources */ = {isa = PBXBuildFile; fileRef = 86ADB04DFFE84AE5AC827807 /* ballpad_pad.c */; };
-		185D338A22E64267ABDF4418 /* ballpad_runtime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC528EC8793E477BB4948731 /* ballpad_runtime.cpp */; };
+		19AD1FC40D5943B1BC6F5E2A /* BallpadApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36AD4E354D964E1984E25A3E /* BallpadApp.swift */; };
+		EA155112F5AA4687861188F8 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FE00511A0C49289FB52626 /* AppDelegate.swift */; };
+		45B1A317CDB741AC82AFDC4D /* GameHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9D1F5024FB14DE3984A5789 /* GameHostView.swift */; };
+		842429CA77954E8F966360A9 /* ControlNodes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1C22A779DE64296A158FE90 /* ControlNodes.swift */; };
+		F04090CA95EA494288493379 /* LayoutStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 628FF6CEA1124D0A908E41F1 /* LayoutStore.swift */; };
+		A4F8A05FE1C84FE496D0991F /* TouchControlSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B7DDB8BD9542EFAC244425 /* TouchControlSurface.swift */; };
+		A0675639490946AC83E593C0 /* OverflowMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E866A6D7A64BCB997E958B /* OverflowMenuView.swift */; };
+		0827E63023334174AD156FC0 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E52AF3E0E7484EC198EE3978 /* SettingsStore.swift */; };
+		53C69926D5A94506846912BD /* ballpad_pad.c in Sources */ = {isa = PBXBuildFile; fileRef = 2674848C0EA64BA785A528E8 /* ballpad_pad.c */; };
+		07FA50270DB745488DCAB2A1 /* ballpad_runtime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4FE4C7926CCC46EDB188B29C /* ballpad_runtime.cpp */; };
+		D1268B4DA4094B7BA149A9C4 /* ballpad_ios_host.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4E9B2CC106284EEC9E91F1FE /* ballpad_ios_host.cpp */; };
+		BD806A7D5D03F64061AB4763 /* ballpad_ios_view.mm in Sources */ = {isa = PBXBuildFile; fileRef = BF39E2277993424CE59EBB48 /* ballpad_ios_view.mm */; };
 /* End PBXBuildFile section */
 /* Begin PBXFileReference section */
-		92FBC172D2B2455C94B75012 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
-		40714241EEC14708A0CE69BC /* GameHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameHostView.swift; sourceTree = "<group>"; };
-		4C383D4D090648628502F218 /* BridgingHeader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BridgingHeader.h; sourceTree = "<group>"; };
-		E3CC0C67DE4C4E528782E769 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		604ACBD6D52F47ABB7AB6B7E /* ControlNodes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlNodes.swift; sourceTree = "<group>"; };
-		66E612574642494E89ED1912 /* LayoutStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutStore.swift; sourceTree = "<group>"; };
-		E33565498BB84603B66F1926 /* TouchControlSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchControlSurface.swift; sourceTree = "<group>"; };
-		97EA5E15A15B405FAB941FCD /* OverflowMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverflowMenuView.swift; sourceTree = "<group>"; };
-		3AB099848384455D8BA82993 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
-		86ADB04DFFE84AE5AC827807 /* ballpad_pad.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = ballpad_pad.c; path = ../host/src/ballpad_pad.c; sourceTree = SOURCE_ROOT; };
-		FC528EC8793E477BB4948731 /* ballpad_runtime.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ballpad_runtime.cpp; path = ../host/src/ballpad_runtime.cpp; sourceTree = SOURCE_ROOT; };
-		8BDFA4B75AA24D15954E8D69 /* Ballpad.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ballpad.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		36AD4E354D964E1984E25A3E /* BallpadApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BallpadApp.swift; sourceTree = "<group>"; };
+		07FE00511A0C49289FB52626 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		C9D1F5024FB14DE3984A5789 /* GameHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameHostView.swift; sourceTree = "<group>"; };
+		C1C22A779DE64296A158FE90 /* ControlNodes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlNodes.swift; sourceTree = "<group>"; };
+		628FF6CEA1124D0A908E41F1 /* LayoutStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutStore.swift; sourceTree = "<group>"; };
+		A4B7DDB8BD9542EFAC244425 /* TouchControlSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchControlSurface.swift; sourceTree = "<group>"; };
+		51E866A6D7A64BCB997E958B /* OverflowMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverflowMenuView.swift; sourceTree = "<group>"; };
+		E52AF3E0E7484EC198EE3978 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		A9A869C4ABCB4129BE58135F /* BridgingHeader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BridgingHeader.h; sourceTree = "<group>"; };
+		68804A618A6C42DD8AE7BAB6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		2674848C0EA64BA785A528E8 /* ballpad_pad.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = ballpad_pad.c; path = ../host/src/ballpad_pad.c; sourceTree = SOURCE_ROOT; };
+		4FE4C7926CCC46EDB188B29C /* ballpad_runtime.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ballpad_runtime.cpp; path = ../host/src/ballpad_runtime.cpp; sourceTree = SOURCE_ROOT; };
+		4E9B2CC106284EEC9E91F1FE /* ballpad_ios_host.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = ballpad_ios_host.cpp; path = ../host/src/ballpad_ios_host.cpp; sourceTree = SOURCE_ROOT; };
+		5663499CAA5A43CF9018DA13 /* libBallpadEngine.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libBallpadEngine.a; path = ../work/strikers/build-ios-sim/merged/libBallpadEngine.a; sourceTree = SOURCE_ROOT; };
+		492B807071EF49F288ABDA14 /* libBallpadHost.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libBallpadHost.a; path = ../work/strikers/build-ios-sim/libBallpadHost.a; sourceTree = SOURCE_ROOT; };
+		41ABA3DC85DC49508E702B8E /* Ballpad.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ballpad.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BF39E2277993424CE59EBB48 /* ballpad_ios_view.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = ballpad_ios_view.mm; path = ../host/src/ballpad_ios_view.mm; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 /* Begin PBXFrameworksBuildPhase section */
-		E9635787FD7D4301A92DA8DE /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		FC3CF41823BA4135B24E3FFF /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 /* Begin PBXGroup section */
-		DF29D464D7CB458EA1FB94A8 = {isa = PBXGroup; children = (D44B671E0BC44F3DA87044B1 /* Ballpad */, 811D68931B924BA8829132E1 /* Products */,); sourceTree = "<group>"; };
-		D44B671E0BC44F3DA87044B1 /* Ballpad */ = {isa = PBXGroup; children = (92FBC172D2B2455C94B75012 /* App.swift */, 40714241EEC14708A0CE69BC /* GameHostView.swift */, 4C383D4D090648628502F218 /* BridgingHeader.h */, E3CC0C67DE4C4E528782E769 /* Info.plist */, 86ADB04DFFE84AE5AC827807 /* ballpad_pad.c */, FC528EC8793E477BB4948731 /* ballpad_runtime.cpp */, 5B2556E4A9EF4954AA49223B /* Touch */, 2E53F70C123A4CCBAD8C34AB /* Menu */,); path = Ballpad; sourceTree = "<group>"; };
-		5B2556E4A9EF4954AA49223B /* Touch */ = {isa = PBXGroup; children = (604ACBD6D52F47ABB7AB6B7E /* ControlNodes.swift */, 66E612574642494E89ED1912 /* LayoutStore.swift */, E33565498BB84603B66F1926 /* TouchControlSurface.swift */,); path = Touch; sourceTree = "<group>"; };
-		2E53F70C123A4CCBAD8C34AB /* Menu */ = {isa = PBXGroup; children = (97EA5E15A15B405FAB941FCD /* OverflowMenuView.swift */, 3AB099848384455D8BA82993 /* SettingsStore.swift */,); path = Menu; sourceTree = "<group>"; };
-		811D68931B924BA8829132E1 /* Products */ = {isa = PBXGroup; children = (8BDFA4B75AA24D15954E8D69 /* Ballpad.app */,); name = Products; sourceTree = "<group>"; };
+		CCCC42810C50426691176AAD = {isa = PBXGroup; children = (FC2D9B32AC8E4BCBB224F780 /* Ballpad */, 03A41FC51A804ACD9E6508F2 /* Products */,); sourceTree = "<group>"; };
+		FC2D9B32AC8E4BCBB224F780 /* Ballpad */ = {isa = PBXGroup; children = (36AD4E354D964E1984E25A3E /* BallpadApp.swift */, 07FE00511A0C49289FB52626 /* AppDelegate.swift */, C9D1F5024FB14DE3984A5789 /* GameHostView.swift */, A9A869C4ABCB4129BE58135F /* BridgingHeader.h */, 68804A618A6C42DD8AE7BAB6 /* Info.plist */, B7E46DDF3AF647CE9A8236AF /* Touch */, EF1D5D81A4B84B4380468DD6 /* Menu */,); path = Ballpad; sourceTree = "<group>"; };
+		B7E46DDF3AF647CE9A8236AF /* Touch */ = {isa = PBXGroup; children = (C1C22A779DE64296A158FE90 /* ControlNodes.swift */, 628FF6CEA1124D0A908E41F1 /* LayoutStore.swift */, A4B7DDB8BD9542EFAC244425 /* TouchControlSurface.swift */,); path = Touch; sourceTree = "<group>"; };
+		EF1D5D81A4B84B4380468DD6 /* Menu */ = {isa = PBXGroup; children = (51E866A6D7A64BCB997E958B /* OverflowMenuView.swift */, E52AF3E0E7484EC198EE3978 /* SettingsStore.swift */,); path = Menu; sourceTree = "<group>"; };
+		650CB3BB9F374DD0A0C499E7 /* HostBridge */ = {isa = PBXGroup; children = (2674848C0EA64BA785A528E8 /* ballpad_pad.c */, 4FE4C7926CCC46EDB188B29C /* ballpad_runtime.cpp */, 4E9B2CC106284EEC9E91F1FE /* ballpad_ios_host.cpp */, 5663499CAA5A43CF9018DA13 /* libBallpadEngine.a */, 492B807071EF49F288ABDA14 /* libBallpadHost.a */,); name = HostBridge; sourceTree = "<group>"; };
+		03A41FC51A804ACD9E6508F2 /* Products */ = {isa = PBXGroup; children = (41ABA3DC85DC49508E702B8E /* Ballpad.app */,); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
 /* Begin PBXNativeTarget section */
-		3FD5F3943F7941679A2B25FC /* Ballpad */ = {isa = PBXNativeTarget; buildConfigurationList = C0D4F4C75CAC413280073714; buildPhases = (0B8C3E8018084C989D4AA190 /* Sources */, E9635787FD7D4301A92DA8DE /* Frameworks */, D1735E55735E4286ADCFEBEE /* Resources */,); buildRules = (); dependencies = (); name = Ballpad; productName = Ballpad; productReference = 8BDFA4B75AA24D15954E8D69; productType = "com.apple.product-type.application"; };
+		E4A73B12B2B8413EBD818F92 /* Ballpad */ = {isa = PBXNativeTarget; buildConfigurationList = FAF7FD859A68467BB851A1C1; buildPhases = (6F54189A867E4569B58919D7 /* Sources */, FC3CF41823BA4135B24E3FFF /* Frameworks */, 382A5B353E9D46BFA4535DBF /* Resources */,); buildRules = (); dependencies = (); name = Ballpad; productName = Ballpad; productReference = 41ABA3DC85DC49508E702B8E; productType = "com.apple.product-type.application"; };
 /* End PBXNativeTarget section */
 /* Begin PBXProject section */
-		611804A218CC4E3CB3BAD60C /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 1600; LastUpgradeCheck = 1600;}; buildConfigurationList = CD07340483EB4F7487D31C87; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base,); mainGroup = DF29D464D7CB458EA1FB94A8; productRefGroup = 811D68931B924BA8829132E1; projectDirPath = ""; projectRoot = ""; targets = (3FD5F3943F7941679A2B25FC /* Ballpad */,); };
+		81D1274F2707495FBE09FB5F /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 1600; LastUpgradeCheck = 1600;}; buildConfigurationList = 08B3280ECF614224AB3CEF96; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base,); mainGroup = CCCC42810C50426691176AAD; productRefGroup = 03A41FC51A804ACD9E6508F2; projectDirPath = ""; projectRoot = ""; targets = (E4A73B12B2B8413EBD818F92 /* Ballpad */,); };
 /* End PBXProject section */
 /* Begin PBXResourcesBuildPhase section */
-		D1735E55735E4286ADCFEBEE /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		382A5B353E9D46BFA4535DBF /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 /* Begin PBXSourcesBuildPhase section */
-		0B8C3E8018084C989D4AA190 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
-				FD00265E2F39458788EE574F /* App.swift in Sources */,
-				F169AB4FB5CB40608FBB988A /* GameHostView.swift in Sources */,
-				351DA5F5BA1B4E778DED281C /* ControlNodes.swift in Sources */,
-				B25B9AA46B6345569E8C249F /* LayoutStore.swift in Sources */,
-				371E47EA4AA74C379891F48F /* TouchControlSurface.swift in Sources */,
-				4C79ACDF4387447C8F510181 /* OverflowMenuView.swift in Sources */,
-				B576E7595C7B4EBF953103EA /* SettingsStore.swift in Sources */,
-				A99E66A607D64829A02DBBB5 /* ballpad_pad.c in Sources */,
-				185D338A22E64267ABDF4418 /* ballpad_runtime.cpp in Sources */,
+		6F54189A867E4569B58919D7 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+				19AD1FC40D5943B1BC6F5E2A /* BallpadApp.swift in Sources */,
+				EA155112F5AA4687861188F8 /* AppDelegate.swift in Sources */,
+				45B1A317CDB741AC82AFDC4D /* GameHostView.swift in Sources */,
+				842429CA77954E8F966360A9 /* ControlNodes.swift in Sources */,
+				F04090CA95EA494288493379 /* LayoutStore.swift in Sources */,
+				A4F8A05FE1C84FE496D0991F /* TouchControlSurface.swift in Sources */,
+				A0675639490946AC83E593C0 /* OverflowMenuView.swift in Sources */,
+				0827E63023334174AD156FC0 /* SettingsStore.swift in Sources */,
+				53C69926D5A94506846912BD /* ballpad_pad.c in Sources */,
+				07FA50270DB745488DCAB2A1 /* ballpad_runtime.cpp in Sources */,
+				D1268B4DA4094B7BA149A9C4 /* ballpad_ios_host.cpp in Sources */,
+				BD806A7D5D03F64061AB4763 /* ballpad_ios_view.mm in Sources */,
 			); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 /* Begin XCBuildConfiguration section */
-		47F706AB71EE4F6692F8E165 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphoneos; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; SWIFT_OPTIMIZATION_LEVEL = "-Onone";}; name = Debug; };
-		65D2D4E07B5D490D99AFC280 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule;}; name = Release; };
-		01C3C2702267408791D1D982 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGNING_ALLOWED = NO; CODE_SIGNING_REQUIRED = NO; CODE_SIGN_IDENTITY = ""; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; HEADER_SEARCH_PATHS = ("$(SRCROOT)/../host/include", "$(inherited)",); INFOPLIST_FILE = Ballpad/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = com.ballpad.strikers; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphonesimulator iphoneos"; SUPPORTS_MACCATALYST = NO; SWIFT_OBJC_BRIDGING_HEADER = Ballpad/BridgingHeader.h; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2";}; name = Debug; };
-		A54A6BD19FDE4DC4B451C838 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGNING_ALLOWED = NO; CODE_SIGNING_REQUIRED = NO; CODE_SIGN_IDENTITY = ""; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; HEADER_SEARCH_PATHS = ("$(SRCROOT)/../host/include", "$(inherited)",); INFOPLIST_FILE = Ballpad/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = com.ballpad.strikers; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphonesimulator iphoneos"; SUPPORTS_MACCATALYST = NO; SWIFT_OBJC_BRIDGING_HEADER = Ballpad/BridgingHeader.h; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2";}; name = Release; };
+		B0121E81B0334B73B7D2758D /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphoneos; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; SWIFT_OPTIMIZATION_LEVEL = "-Onone";}; name = Debug; };
+		A6FC21A1578F4A928EC82064 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule;}; name = Release; };
+		BC3CF540E3FB443EAB0C71E5 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGNING_ALLOWED = NO; CODE_SIGNING_REQUIRED = NO; CODE_SIGN_IDENTITY = ""; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; HEADER_SEARCH_PATHS = ("$(SRCROOT)/../host/include", "$(SRCROOT)/../work/strikers/generated", "$(SRCROOT)/../ref/GXRuntime/include", "$(SRCROOT)/../ref/StrikersRecomp/runtime", "$(SRCROOT)/../ref/GXRuntime/backends", "$(SRCROOT)/../ref/GXRuntime/graphics/aurora/include", "$(SRCROOT)/../ref/GXRuntime/graphics/aurora/lib", "$(SRCROOT)/../work/strikers/build-ios-sim/_deps/sdl-src/include", "$(SRCROOT)/../work/strikers/build-ios-sim/_deps/fmt-src/include", "$(SRCROOT)/../work/strikers/build-ios-sim/_deps/tracy-src/public", "$(SRCROOT)/../work/strikers/build-ios-sim/_deps/xxhash-src", "$(inherited)",); INFOPLIST_FILE = Ballpad/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); LIBRARY_SEARCH_PATHS = ("$(SRCROOT)/../work/strikers/build-ios-sim/merged", "$(SRCROOT)/../work/strikers/build-ios-sim", "$(inherited)",); OTHER_LDFLAGS = ("-lBallpadEngine", "-lBallpadHost", "-ObjC", "-lsqlite3", "-lz", "-lbz2", "-liconv", "-weak_framework", "Metal", "-framework", "UIKit", "-framework", "QuartzCore", "-framework", "CoreGraphics", "-framework", "Foundation", "-framework", "CoreVideo", "-framework", "CoreAudio", "-framework", "AudioToolbox", "-framework", "AVFoundation", "-framework", "CoreMedia", "-framework", "CoreMotion", "-framework", "GameController", "-framework", "IOSurface", "-framework", "CoreHaptics", "-framework", "OpenGLES", "-framework", "CoreBluetooth", "$(inherited)",); MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = com.ballpad.strikers; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphonesimulator iphoneos"; SUPPORTS_MACCATALYST = NO; SWIFT_OBJC_BRIDGING_HEADER = Ballpad/BridgingHeader.h; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2";}; name = Debug; };
+		AAF632D13C9E4D85AB1DEAC9 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGNING_ALLOWED = NO; CODE_SIGNING_REQUIRED = NO; CODE_SIGN_IDENTITY = ""; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; HEADER_SEARCH_PATHS = ("$(SRCROOT)/../host/include", "$(SRCROOT)/../work/strikers/generated", "$(SRCROOT)/../ref/GXRuntime/include", "$(SRCROOT)/../ref/StrikersRecomp/runtime", "$(SRCROOT)/../ref/GXRuntime/backends", "$(SRCROOT)/../ref/GXRuntime/graphics/aurora/include", "$(SRCROOT)/../ref/GXRuntime/graphics/aurora/lib", "$(SRCROOT)/../work/strikers/build-ios-sim/_deps/sdl-src/include", "$(SRCROOT)/../work/strikers/build-ios-sim/_deps/fmt-src/include", "$(SRCROOT)/../work/strikers/build-ios-sim/_deps/tracy-src/public", "$(SRCROOT)/../work/strikers/build-ios-sim/_deps/xxhash-src", "$(inherited)",); INFOPLIST_FILE = Ballpad/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); LIBRARY_SEARCH_PATHS = ("$(SRCROOT)/../work/strikers/build-ios-sim/merged", "$(SRCROOT)/../work/strikers/build-ios-sim", "$(inherited)",); OTHER_LDFLAGS = ("-lBallpadEngine", "-lBallpadHost", "-ObjC", "-lsqlite3", "-lz", "-lbz2", "-liconv", "-weak_framework", "Metal", "-framework", "UIKit", "-framework", "QuartzCore", "-framework", "CoreGraphics", "-framework", "Foundation", "-framework", "CoreVideo", "-framework", "CoreAudio", "-framework", "AudioToolbox", "-framework", "AVFoundation", "-framework", "CoreMedia", "-framework", "CoreMotion", "-framework", "GameController", "-framework", "IOSurface", "-framework", "CoreHaptics", "-framework", "OpenGLES", "-framework", "CoreBluetooth", "$(inherited)",); MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = com.ballpad.strikers; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphonesimulator iphoneos"; SUPPORTS_MACCATALYST = NO; SWIFT_OBJC_BRIDGING_HEADER = Ballpad/BridgingHeader.h; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2";}; name = Release; };
 /* End XCBuildConfiguration section */
 /* Begin XCConfigurationList section */
-		CD07340483EB4F7487D31C87 = {isa = XCConfigurationList; buildConfigurations = (47F706AB71EE4F6692F8E165 /* Debug */, 65D2D4E07B5D490D99AFC280 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
-		C0D4F4C75CAC413280073714 = {isa = XCConfigurationList; buildConfigurations = (01C3C2702267408791D1D982 /* Debug */, A54A6BD19FDE4DC4B451C838 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+		08B3280ECF614224AB3CEF96 = {isa = XCConfigurationList; buildConfigurations = (B0121E81B0334B73B7D2758D /* Debug */, A6FC21A1578F4A928EC82064 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+		FAF7FD859A68467BB851A1C1 = {isa = XCConfigurationList; buildConfigurations = (BC3CF540E3FB443EAB0C71E5 /* Debug */, AAF632D13C9E4D85AB1DEAC9 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
 /* End XCConfigurationList section */
 	};
-	rootObject = 611804A218CC4E3CB3BAD60C /* Project object */;
+	rootObject = 81D1274F2707495FBE09FB5F /* Project object */;
 }
