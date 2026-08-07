@@ -73,7 +73,18 @@ struct SDLGameContainer: UIViewRepresentable {
                 if frameDiag == 0 { NSLog("[ballpad] CGImage failed %ux%u", w, h) }
                 return
             }
-            imageView?.image = UIImage(cgImage: cg)
+            // Boost brightness/contrast so dark game scenes are legible.
+            let ci = CIImage(cgImage: cg)
+            let bright = CIFilter(name: "CIColorControls")!
+            bright.setValue(ci, forKey: kCIInputImageKey)
+            bright.setValue(1.6, forKey: kCIInputBrightnessKey)
+            bright.setValue(2.2, forKey: kCIInputContrastKey)
+            let ctx = CIContext()
+            if let out = bright.outputImage, let cg2 = ctx.createCGImage(out, from: ci.extent) {
+                imageView?.image = UIImage(cgImage: cg2)
+            } else {
+                imageView?.image = UIImage(cgImage: cg)
+            }
             if frameDiag == 0 {
                 NSLog("[ballpad] first frame displayed %ux%u", w, h)
                 frameDiag = 1

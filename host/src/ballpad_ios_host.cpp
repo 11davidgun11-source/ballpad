@@ -31,6 +31,7 @@ extern "C" {
 extern "C" void ballpad_window_set_scene(void* scene);
 extern "C" void* ballpad_window_get_sdl_window(void);
 extern "C" void ballpad_window_force_presentable(void);
+extern "C" void ballpad_window_hide(void);
 extern "C" void ballpad_ios_host_attach_sdl_view(void*);
 extern "C" void SDL_SetMainReady(void);
 extern "C" bool aurora_begin_frame(void);
