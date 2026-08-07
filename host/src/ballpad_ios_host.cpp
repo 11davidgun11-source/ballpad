@@ -37,6 +37,7 @@ extern "C" void SDL_SetMainReady(void);
 extern "C" bool aurora_begin_frame(void);
 extern "C" void aurora_end_frame(void);
 extern "C" void ballpad_arm_efb_readback(void);
+extern "C" void ballpad_window_probe(void);
 
 namespace {
 std::atomic<bool> g_started{false};
@@ -187,6 +188,9 @@ void ballpad_ios_host_step_frame(void) {
     if ((g_blocks % 5000000ull) == 0u)
       std::fprintf(stderr, "[ballpad-ios] blocks=%llu pc=0x%08X\n",
                    (unsigned long long)g_blocks, cpu->pc);
+    if ((g_blocks % 2500000ull) == 0u) {
+      ballpad_window_probe();
+    }
   }
   if (g_blocks >= kMaxBlocks && !g_stop_reason[0]) g_stop_reason = "max-blocks watchdog";
   if (g_sdl_window != nullptr) {
@@ -285,7 +289,7 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
     return false;
   // Debug: dump a frame periodically for inspection.
   static unsigned long long s_dump_prev = 0;
-  if (efb->fill_count - s_dump_prev >= 1500u && efb->fill_count > 50u) {
+  if (efb->fill_count - s_dump_prev >= 60u && efb->fill_count > 30u) {
     s_dump_prev = efb->fill_count;
     FILE* f = fopen("/Users/chrissotraidis/GitHub/ballpad/work/tmp/ios_frame.rgba", "wb");
     if (f) {
