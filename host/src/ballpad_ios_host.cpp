@@ -181,6 +181,30 @@ void ballpad_ios_host_step_frame(void) {
   if (g_sdl_window != nullptr) {
     ballpad_ios_host_attach_sdl_view(g_sdl_window);
   }
+  // Auto-input: periodically tap Start (0x1000) so the game advances past
+  // the legal/title screens without manual input. Enabled via BALLPAD_AUTOSTART.
+  static bool s_autostart = [] {
+    const char* v = getenv("BALLPAD_AUTOSTART");
+    return v != nullptr && v[0] != '\0' && v[0] != '0';
+  }();
+  if (s_autostart) {
+    static unsigned long long s_last_tap_blocks = 0;
+    if (g_blocks - s_last_tap_blocks >= 3500000ull) {
+      s_last_tap_blocks = g_blocks;
+      BallPadStatus s{};
+      s.err = 0;
+      s.button = 0x1000u; // START
+      ballpad_pad_set(0, &s);
+      std::fprintf(stderr, "[ballpad-ios] autostart tap (block %llu)\n",
+                   (unsigned long long)g_blocks);
+    } else {
+      BallPadStatus s{};
+      ballpad_pad_get(0, &s);
+      s.button = 0u; // release
+      s.err = 0;
+      ballpad_pad_set(0, &s);
+    }
+  }
   if (g_stop_reason[0]) {
     static bool s_reported = false;
     if (!s_reported) {
@@ -230,10 +254,10 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
   }
   if (efb == nullptr || efb->color == nullptr || efb->fill_count == 0u)
     return false;
-  // Debug: dump one frame to the sandbox for inspection.
-  static bool s_dumped = false;
-  if (!s_dumped && efb->fill_count > 50u) {
-    s_dumped = true;
+  // Debug: dump a frame periodically for inspection.
+  static unsigned long long s_dump_prev = 0;
+  if (efb->fill_count - s_dump_prev >= 4000u && efb->fill_count > 50u) {
+    s_dump_prev = efb->fill_count;
     FILE* f = fopen("/Users/chrissotraidis/GitHub/ballpad/work/tmp/ios_frame.rgba", "wb");
     if (f) {
       const u32 fw = efb->width, fh = efb->height;

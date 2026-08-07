@@ -36,3 +36,28 @@ void ballpad_pad_get(int port, BallPadStatus* out) {
   }
   *out = g_pads[port];
 }
+
+#include "gxruntime/platform.h"
+
+/* Merge hook called from Aurora's pad_read (platform ops). Returns 1 when the
+ * virtual touch pad for `port` is active (err == 0) and fills *out with the
+ * DolPadState-compatible fields. */
+int ballpad_host_pad_merge(int port, DolPadState* out) {
+    if (port != 0 || out == NULL)
+        return 0;
+    BallPadStatus s;
+    ballpad_pad_get(0, &s);
+    if (s.err != 0)
+        return 0;
+    out->button = s.button;
+    out->stick_x = s.stickX;
+    out->stick_y = s.stickY;
+    out->substick_x = s.substickX;
+    out->substick_y = s.substickY;
+    out->trigger_left = s.triggerLeft;
+    out->trigger_right = s.triggerRight;
+    out->analog_a = s.analogA;
+    out->analog_b = s.analogB;
+    out->error = 0;
+    return 1;
+}
