@@ -56,3 +56,15 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
 - Fallback chosen:
 - Result:
 ```
+
+## 2026-08-07 — Path S first frame blocked by early CPU exception
+- **Symptom:** StrikersRecomp boots OS, then stops with `cpu exception`, final pc `0x00000800`, blocks ~687k, gxcore submitted=0.
+- **Hypothesis:** GXRuntime pin (2026-07-21) lags modern DolRecomp helper ABI; ballpad_ppc_helpers bridge unblocks compile/link but guest still traps (DSI/exception vector).
+- **Attempted:** rebuilt Path S with helper bridge + psq bool ABI patch on local GXRuntime pin.
+- **Fallback:** switch to Path C (RecompCore/ModernGekko module) per docs/07.
+
+## 2026-08-07 — Path S Aurora fatal after OS/GX init
+- **Symptom:** After FP-unavailable and viewport -0 fixes, StrikersRecomp reaches GX/AI init then fatals:
+  `EfbCopyFilter` pipeline RGBA8Unorm vs render pass BGRA8Unorm.
+- **Progress:** Boots Dolphin OS, VI/GX/ARQ/AI SDK banners; helper ABI bridge compiles 163 chunks.
+- **Fallback:** Path C (RecompCore module) for first macOS frame proof.
