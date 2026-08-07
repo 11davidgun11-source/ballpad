@@ -47,6 +47,20 @@
 ## Bot 2 append-only log
 _Add dated entries below when a gate fails twice or a fallback is taken._
 
+### 2026-08-07 — Path C module link + chassis input
+- Chassis input on macOS required the Dolphin Pipes backend; Quartz keyboard backend
+  polling (`CGEventSourceKeyState(HID)`) did not reach the game reliably and AppleScript
+  key events do not update HID state. Solution: FIFO pad device + GCPadNew.ini
+  (`Device = Pipe/0/pad0`, keys `Group/Control`, sections GCPad1..4 for ports 0..3).
+- Device-qualifier format is `source/id/name`; group control names are Up/Down/Left/Right
+  for sticks; controller section names are offset by one (GCPad1 = port 0). All three
+  misconfigs were found via env-gated debug prints.
+- Chassis save-file creation (YES on the no-data prompt) hangs without writing a GCI;
+  CONTINUE WITHOUT SAVING is the workaround. Open for M11 (save round-trip).
+- iOS renderer text gap (menu text not in EFB readback) is closed on the oracle side by
+  Path C (full Dolphin renderer); iOS product still uses EFB readback and verifies nav
+  via scene changes / draw counts, with the macOS menu map as ground truth.
+
 ### Template
 ```
 ### YYYY-MM-DD — Step N

@@ -9,6 +9,7 @@ struct TouchControlSurface: View {
     @State private var buttons: Set<ControlID> = []
     @State private var stickVec: CGSize = .zero
     @State private var cStickVec: CGSize = .zero
+    @State private var dpadVec: CGSize = .zero
 
     var body: some View {
         GeometryReader { geo in
@@ -24,6 +25,7 @@ struct TouchControlSurface: View {
             .onChange(of: buttons) { _, _ in emit() }
             .onChange(of: stickVec) { _, _ in emit() }
             .onChange(of: cStickVec) { _, _ in emit() }
+            .onChange(of: dpadVec) { _, _ in emit() }
         }
         .allowsHitTesting(true)
     }
@@ -39,9 +41,41 @@ struct TouchControlSurface: View {
         switch node.id {
         case .stick, .cStick:
             stick(node: node, rect: rect)
+        case .dpad:
+            dpad(node: node, rect: rect)
         default:
             button(node: node, rect: rect)
         }
+    }
+
+    private func dpad(node: ControlNode, rect: CGRect) -> some View {
+        let v = dpadVec
+        let on = v != .zero
+        return ZStack {
+            Circle().strokeBorder(.white.opacity(0.5), lineWidth: 1)
+            Circle()
+                .fill(.white.opacity(on ? 0.35 : 0.15))
+                .frame(width: rect.width * 0.42, height: rect.height * 0.42)
+                .offset(v)
+            Text(node.label).font(.caption2).foregroundStyle(.white.opacity(0.8))
+        }
+        .frame(width: rect.width, height: rect.height)
+        .position(x: rect.midX, y: rect.midY)
+        .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+            let maxR = min(rect.width, rect.height) * 0.30
+            var dx = value.translation.width
+            var dy = value.translation.height
+            let mag = sqrt(dx*dx + dy*dy)
+            if mag > maxR { dx *= maxR/mag; dy *= maxR/mag }
+            // Snap to 4-way so the guest sees clean U/D/L/R presses.
+            if abs(dx) > abs(dy) {
+                dpadVec = CGSize(width: dx < 0 ? -maxR : maxR, height: 0)
+            } else if dy != 0 {
+                dpadVec = CGSize(width: 0, height: dy < 0 ? -maxR : maxR)
+            } else {
+                dpadVec = .zero
+            }
+        }.onEnded { _ in dpadVec = .zero })
     }
 
     private func stick(node: ControlNode, rect: CGRect) -> some View {
@@ -101,6 +135,10 @@ struct TouchControlSurface: View {
         if buttons.contains(.z) { btn |= UInt16(BALLPAD_TRIGGER_Z) }
         if buttons.contains(.l) { btn |= UInt16(BALLPAD_TRIGGER_L); s.triggerLeft = 255 }
         if buttons.contains(.r) { btn |= UInt16(BALLPAD_TRIGGER_R); s.triggerRight = 255 }
+        if dpadVec.width < 0 { btn |= UInt16(BALLPAD_BUTTON_LEFT) }
+        if dpadVec.width > 0 { btn |= UInt16(BALLPAD_BUTTON_RIGHT) }
+        if dpadVec.height < 0 { btn |= UInt16(BALLPAD_BUTTON_UP) }
+        if dpadVec.height > 0 { btn |= UInt16(BALLPAD_BUTTON_DOWN) }
         s.button = btn
         onPadChanged(s)
     }
