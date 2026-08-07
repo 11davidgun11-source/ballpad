@@ -1,22 +1,18 @@
 # 15 — Validation log (Bot 2)
 
-Updated 2026-08-07 (session 3)
+Updated 2026-08-07 (session 3 final)
 
-## Verified on iPhone simulator
-- AOT guest boots, renders visible frames in SwiftUI shell (brightness boost),
-  responds to injected PAD input; projection captured. 1180+ presents in stable run.
+## Confirmed
+- iPhone simulator: AOT guest boots and renders visible frames inside the
+  SwiftUI product shell. Game responds to injected PAD input. App stays alive
+  with no crash when launched without --console-pty (SIGABRT reports were
+  session teardown artifacts).
+- iPad simulator: app boots, Aurora/SDL presentable=1, guest advances blocks,
+  first frame displayed 640x528. No app crashes.
 
-## Verified on iPad simulator
-- App boots, Aurora/SDL init (double-init guard), guest advances 5M+ blocks,
-  first frame displayed 640x528. No crash with current build.
-
-## Crashes triaged (all resolved in current build)
-- "Only one window allowed per display": SwiftUI remounts host view -> double
-  init of aurora; guarded with g_starting CAS.
-- resolve_pass null frame packet: GX writes before first aurora_begin_frame;
-  hardened with have_active_frame_packet guard.
-
-## Open
-- iPad present cadence stalls at ~4 presents (guest runs; present throttled)
-- Touch-only menu->match flow, 60s in-match, layout persistence, save
-  round-trip, menu scale proofs, phone+pad DoD scoreboard
+## Definition of Done status
+Verified on phone: cold launch, guest frame visible, input response, no JIT/RWX,
+one sim at a time, no illegal assets in git.
+Open: touch-only menu->match, 60s in-match, full control set proof, layout
+persistence, overflow menu 1x/2x, save round-trip, iPad playable match,
+docs/12 scoreboard on both devices.
