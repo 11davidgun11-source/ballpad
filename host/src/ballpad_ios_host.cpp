@@ -256,7 +256,7 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
     return false;
   // Debug: dump a frame periodically for inspection.
   static unsigned long long s_dump_prev = 0;
-  if (efb->fill_count - s_dump_prev >= 4000u && efb->fill_count > 50u) {
+  if (efb->fill_count - s_dump_prev >= 1500u && efb->fill_count > 50u) {
     s_dump_prev = efb->fill_count;
     FILE* f = fopen("/Users/chrissotraidis/GitHub/ballpad/work/tmp/ios_frame.rgba", "wb");
     if (f) {
