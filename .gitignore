@@ -1,0 +1,41 @@
+# Game assets / legal
+.local-assets/
+*.iso
+*.gcm
+*.rvz
+*.wbfs
+*.gci
+*.raw
+*.dolcard
+*.dol
+
+# Recomp output
+generated/
+**/generated/
+
+# Xcode / build
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+.DS_Store
+
+# Python
+__pycache__/
+.venv/
+
+# Proofs may be large; allow docs but ignore raw videos by default
+build/sim-logs/
+build/proofs/
+*.mp4
+
+# macOS junk
+.DS_Store
+
+# Optional heavy research re-clones
+ref/Provenance-full/
+ref/retroarch-touch-ref/
+ref/dolphin-upstream/
+
+# Local working trees for recomp/build
+work/
