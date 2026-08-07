@@ -38,6 +38,21 @@ extern "C" bool aurora_begin_frame(void);
 extern "C" void aurora_end_frame(void);
 extern "C" void ballpad_arm_efb_readback(void);
 extern "C" void ballpad_window_probe(void);
+extern "C" unsigned long long g_dec_deliveries;
+
+namespace {
+// Redirect stderr to a host file when BALLPAD_LOG_FILE is set. The simulator
+// console-pty pipe is small; the efb-fill + present log spam fills it and the
+// app's fprintf(stderr) blocks forever, freezing the guest loop.
+struct StderrRedirect {
+  StderrRedirect() {
+    const char* path = getenv("BALLPAD_LOG_FILE");
+    if (path != nullptr && path[0] != '\0')
+      freopen(path, "w", stderr);
+  }
+};
+StderrRedirect s_stderr_redirect;
+} // namespace
 
 namespace {
 std::atomic<bool> g_started{false};
@@ -52,7 +67,7 @@ bool g_aurora_up = false;
 unsigned long long g_blocks = 0;
 const char* g_stop_reason = "";
 const unsigned long long kFrameBlocks = 350000ull;
-const unsigned long long kMaxBlocks = 8000000000ull;
+const unsigned long long kMaxBlocks = 80000000000ull;
 
 const char* g_iso_path = nullptr;
 const char* g_dol_path = nullptr;
@@ -185,8 +200,14 @@ void ballpad_ios_host_step_frame(void) {
       break;
     }
     g_blocks++;
-    if ((g_blocks % 5000000ull) == 0u)
-      std::fprintf(stderr, "[ballpad-ios] blocks=%llu pc=0x%08X\n",
+    if ((g_blocks % 1000000ull) == 0u)
+      std::fprintf(stderr, "[ballpad-ios] blocks=%llu pc=0x%08X msr=0x%08X dec=%u\n",
+                   (unsigned long long)g_blocks, cpu->pc, cpu->msr, cpu->spr[22]);
+    if (g_blocks >= 5500000000ull && (g_blocks % 100000ull) == 0u &&
+        cpu->pc != 0x80259294u && cpu->pc != 0x8025929Cu &&
+        cpu->pc != 0x80259298u && cpu->pc != 0x802592A0u &&
+        getenv("BALLPAD_DEBUG_THREADS") != nullptr)
+      std::fprintf(stderr, "[loadpc] b=%llu pc=0x%08X\n",
                    (unsigned long long)g_blocks, cpu->pc);
     if ((g_blocks % 2500000ull) == 0u) {
       ballpad_window_probe();
@@ -196,46 +217,140 @@ void ballpad_ios_host_step_frame(void) {
   if (g_sdl_window != nullptr) {
     ballpad_ios_host_attach_sdl_view(g_sdl_window);
   }
+  // Debug: dump guest OS thread states during the match-load zone to find what
+  // the loading threads wait on (BALLPAD_DEBUG_THREADS=1).
+  if (getenv("BALLPAD_DEBUG_THREADS") != nullptr && g_blocks >= 5500000000ull &&
+      (g_blocks % 200000000ull) < 1000000ull) {
+    static unsigned long long s_last_dump_blocks = 0;
+    if (g_blocks - s_last_dump_blocks >= 200000000ull) {
+      s_last_dump_blocks = g_blocks;
+      const u32 first = 0x80348230u;  // DefaultThread (OSThread)
+      u32 t = first;
+      std::fprintf(stderr, "[threads] dump at blocks=%llu rqbits@747a8=%08X @747b8=%08X\n",
+                   (unsigned long long)g_blocks,
+                   mem_read32(cpu, 0x803747A8u), mem_read32(cpu, 0x803747B8u));
+      std::fprintf(stderr, "[threads] retraceCount=%u retraceQueue={h=%08X t=%08X} alarm={h=%08X t=%08X} curThread=0x%08X\n",
+                   mem_read32(cpu, 0x8037480Cu),
+                   mem_read32(cpu, 0x80374814u), mem_read32(cpu, 0x80374818u),
+                   mem_read32(cpu, 0x80374720u), mem_read32(cpu, 0x80374724u),
+                   mem_read32(cpu, 0x800000DCu));
+      const u32 alarmHead = mem_read32(cpu, 0x80374720u);
+      std::fprintf(stderr, "[threads] tb=%llu decDeliveries=%llu dec=%u alarmHead=0x%08X fire=%llu period=%llu handler=0x%08X\n",
+                   (unsigned long long)cpu->timebase,
+                   (unsigned long long)g_dec_deliveries, cpu->spr[22],
+                   alarmHead,
+                   alarmHead ? (unsigned long long)mem_read64(cpu, alarmHead + 0x08u) : 0ull,
+                   alarmHead ? (unsigned long long)mem_read64(cpu, alarmHead + 0x10u) : 0ull,
+                   alarmHead ? mem_read32(cpu, alarmHead + 0x18u) : 0u);
+      std::fprintf(stderr, "[threads] sebringPkg=%08X curResLoading=%08X feResMgr=%08X feSceneMgr=%08X\n",
+                   mem_read32(cpu, 0x80374410u), mem_read32(cpu, 0x80374434u),
+                   mem_read32(cpu, 0x80374448u), mem_read32(cpu, 0x80374450u));
+      const u32 tt = mem_read32(cpu, 0x80373DA0u);      // TransitionTask*
+      const u32 lm = tt ? mem_read32(cpu, tt + 0x28u) : 0u;  // LoadingManager*
+      std::fprintf(stderr, "[threads] transTask=0x%08X state=%u loadMgr=0x%08X cur=%u num=%u fin=%u q=0x%08X\n",
+                   tt, tt ? mem_read32(cpu, tt + 0x2Cu) : 0xFFFFFFFFu,
+                   lm,
+                   lm ? mem_read32(cpu, lm + 0x1Cu) : 0u,
+                   lm ? mem_read32(cpu, lm + 0x20u) : 0u,
+                   lm ? mem_read32(cpu, lm + 0x28u) : 0u,
+                   lm ? mem_read32(cpu, lm + 0x24u) : 0u);
+      for (int rq = 0; rq < 4; rq++) {
+        const u32 q = 0x80347E18u + (u32)rq * 8u;
+        const u32 h = mem_read32(cpu, q);
+        if (h != 0u)
+          std::fprintf(stderr, "[threads] runq[%d]={h=%08X t=%08X}\n", rq,
+                       h, mem_read32(cpu, q + 4u));
+      }
+      for (int i = 0; i < 24; i++) {
+        const u32 state = mem_read16(cpu, t + 0x2C8u);
+        const u32 queue = mem_read32(cpu, t + 0x2DCu);
+        const u32 srr0 = mem_read32(cpu, t + 0x198u);
+        const u32 prio = mem_read32(cpu, t + 0x2D0u);
+        const u32 next = mem_read32(cpu, t + 0x2FCu);  // linkActive.next
+        std::fprintf(stderr, "[threads] t=0x%08X state=%u prio=%d waitq=0x%08X pc=0x%08X next=0x%08X\n",
+                     t, state, (int)prio, queue, srr0, next);
+        if (next == first || next == 0u || next < 0x80000000u || next > 0x81000000u) break;
+        t = next;
+      }
+    }
+  }
   // Auto-input: navigate to a match (BALLPAD_AUTOSTART=1).
-  // Sequence: START -> stick right/down for menu -> A (long hold) to select.
+  // Guest-block-paced phase machine verified against the Path C (RecompCore)
+  // oracle on macOS. The guest advances 350000 blocks per presented frame, so
+  // block thresholds are platform-independent guest-time anchors:
+  //   boot -> health ~1.15B, mem check ~1.3B, save prompt ~1.45B,
+  //   title ~2.2B, main menu ~2.6B, team select ~3.8B, match start ~4.8B.
+  // Each phase holds a PAD state for hold_blocks, then releases; steps advance
+  // at the at_blocks threshold (the loop neutralizes between steps).
   static bool s_autostart = [] {
     const char* v = getenv("BALLPAD_AUTOSTART");
     return v != nullptr && v[0] != '\0' && v[0] != '0';
   }();
   if (s_autostart) {
-    static unsigned long long s_phase_blocks = 0;
-    static unsigned phase = 0;
-    static unsigned hold_ticks = 0;
-    const unsigned long long phase_len = 350000ull; // one timer tick
-    if (g_blocks - s_phase_blocks >= phase_len) {
-      s_phase_blocks = g_blocks;
-      BallPadStatus s{};
-      s.err = 0;
-      switch (phase) {
-        case 0: s.button = 0x1000u; hold_ticks = 3; break;   // START (hold)
-        case 1: s.stickX = 127; s.stickY = 0; hold_ticks = 2; break; // stick right
-        case 2: s.button = 0x0100u; hold_ticks = 4; break;   // A (hold)
-        case 3: s.button = 0x0008u; hold_ticks = 2; break;   // dpad up
-        case 4: s.button = 0x0100u; hold_ticks = 4; break;   // A
-        case 5: s.button = 0x0001u; hold_ticks = 2; break;   // dpad left
-        case 6: s.button = 0x0100u; hold_ticks = 4; break;   // A
-        case 7: s.button = 0x0002u; hold_ticks = 2; break;   // dpad right
-        case 8: s.button = 0x0100u; hold_ticks = 4; break;   // A
-        case 9: s.button = 0x1000u; hold_ticks = 3; break;   // START
-      }
-      ballpad_pad_set(0, &s);
-      std::fprintf(stderr, "[ballpad-ios] nav phase=%u btn=0x%04X stick=%d,%d\n",
-                   phase, s.button, s.stickX, s.stickY);
-      if (++phase >= 10u) phase = 0u;
-    } else if (hold_ticks > 0u) {
-      --hold_ticks;
-    } else {
+    struct AutoStep { u16 button; int sx, sy; unsigned long long hold_blocks, at_blocks; };
+    static const AutoStep kAutoSteps[] = {
+        // 0: boot wait; guest reaches the health screen on its own.
+        {0x0000, 0, 0, 0, 1150000000ull},
+        // A past the health screen (~1.15B); A past the memory-card check.
+        {0x0100, 0, 0, 20000000ull, 1300000000ull},
+        {0x0100, 0, 0, 20000000ull, 1450000000ull},
+        // CONTINUE WITHOUT SAVING (save creation hangs on the chassis oracle).
+        {0x0004, 0, 0, 15000000ull, 1500000000ull},
+        {0x0100, 0, 0, 20000000ull, 2200000000ull},
+        // Title -> main menu.
+        {0x1000, 0, 0, 20000000ull, 2600000000ull},
+        // GRUDGE MATCH -> captain select -> sidekick select -> CPU captain grid.
+        {0x0100, 0, 0, 20000000ull, 3000000000ull},
+        {0x0100, 0, 0, 20000000ull, 3400000000ull},
+        {0x0100, 0, 0, 20000000ull, 3800000000ull},
+        // CPU captain choice (left) -> CPU sidekick grid -> controller screen.
+        {0x0001, 0, 0, 15000000ull, 3900000000ull},
+        {0x0100, 0, 0, 20000000ull, 4300000000ull},
+        {0x0100, 0, 0, 20000000ull, 4700000000ull},
+        // Assign P1 to the left team -> match (stadium card).
+        {0x0001, 0, 0, 15000000ull, 4800000000ull},
+        {0x0100, 0, 0, 20000000ull, 5400000000ull},
+        // The stadium card is a selection screen: press A to confirm it, with
+        // generous retries (the card appears a bit after the match start).
+        {0x0100, 0, 0, 20000000ull, 6500000000ull},
+        {0x0100, 0, 0, 20000000ull, 8000000000ull},
+        {0x0100, 0, 0, 20000000ull, 9500000000ull},
+    };
+    static const unsigned kAutoCount =
+        static_cast<unsigned>(sizeof(kAutoSteps) / sizeof(kAutoSteps[0]));
+    static unsigned s_auto_phase = 0;
+    static bool s_auto_holding = false;
+    static unsigned long long s_auto_hold_start = 0;
+    const AutoStep& st = kAutoSteps[s_auto_phase < kAutoCount ? s_auto_phase : kAutoCount - 1];
+    if (s_auto_phase >= kAutoCount) {
+      // Done: keep the pad neutral.
       BallPadStatus s{};
       ballpad_pad_get(0, &s);
-      s.button = 0u;
-      s.stickX = 0; s.stickY = 0;
-      s.err = 0;
+      s.button = 0; s.stickX = 0; s.stickY = 0; s.err = 0;
       ballpad_pad_set(0, &s);
+    } else {
+      BallPadStatus s{};
+      s.err = 0;
+      if (g_blocks >= st.at_blocks) {
+        if (!s_auto_holding) {
+          s_auto_holding = true;
+          s_auto_hold_start = g_blocks;
+          std::fprintf(stderr, "[ballpad-ios] autostart step=%u/%u btn=0x%04X at=%llu\n",
+                       s_auto_phase, kAutoCount, st.button, (unsigned long long)st.at_blocks);
+        }
+        if (g_blocks - s_auto_hold_start < st.hold_blocks) {
+          s.button = st.button;
+          s.stickX = (s8)st.sx; s.stickY = (s8)st.sy;
+        } else {
+          ++s_auto_phase;
+          s_auto_holding = false;
+        }
+      }
+      ballpad_pad_set(0, &s);
+      if (s_auto_phase >= kAutoCount) {
+        std::fprintf(stderr, "[ballpad-ios] autostart complete at blocks=%llu\n",
+                     (unsigned long long)g_blocks);
+      }
     }
   }
   if (g_stop_reason[0]) {
