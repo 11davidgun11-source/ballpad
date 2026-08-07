@@ -20,6 +20,7 @@ struct SDLGameContainer: UIViewRepresentable {
         func attach(to view: UIView) {
             container = view
             let iv = UIImageView()
+            iv.backgroundColor = .black
             iv.contentMode = .scaleAspectFill
             iv.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(iv)
