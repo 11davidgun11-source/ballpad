@@ -1,5 +1,6 @@
 #include "ballpad_pad.h"
 #include <string.h>
+#include <stdio.h>
 
 static BallPadStatus g_pads[4];
 static int g_initialized = 0;
@@ -43,6 +44,9 @@ void ballpad_pad_get(int port, BallPadStatus* out) {
  * virtual touch pad for `port` is active (err == 0) and fills *out with the
  * DolPadState-compatible fields. */
 int ballpad_host_pad_merge(int port, DolPadState* out) {
+    static unsigned long long merge_count = 0;
+    if ((++merge_count % 300000ull) == 0u)
+        fprintf(stderr, "[pad] merge calls=%llu\n", merge_count);
     if (port != 0 || out == NULL)
         return 0;
     BallPadStatus s;

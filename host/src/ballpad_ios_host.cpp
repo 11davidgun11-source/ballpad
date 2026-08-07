@@ -181,26 +181,44 @@ void ballpad_ios_host_step_frame(void) {
   if (g_sdl_window != nullptr) {
     ballpad_ios_host_attach_sdl_view(g_sdl_window);
   }
-  // Auto-input: periodically tap Start (0x1000) so the game advances past
-  // the legal/title screens without manual input. Enabled via BALLPAD_AUTOSTART.
+  // Auto-input: navigate to a match (BALLPAD_AUTOSTART=1).
+  // Sequence: START -> stick right/down for menu -> A (long hold) to select.
   static bool s_autostart = [] {
     const char* v = getenv("BALLPAD_AUTOSTART");
     return v != nullptr && v[0] != '\0' && v[0] != '0';
   }();
   if (s_autostart) {
-    static unsigned long long s_last_tap_blocks = 0;
-    if (g_blocks - s_last_tap_blocks >= 3500000ull) {
-      s_last_tap_blocks = g_blocks;
+    static unsigned long long s_phase_blocks = 0;
+    static unsigned phase = 0;
+    static unsigned hold_ticks = 0;
+    const unsigned long long phase_len = 350000ull; // one timer tick
+    if (g_blocks - s_phase_blocks >= phase_len) {
+      s_phase_blocks = g_blocks;
       BallPadStatus s{};
       s.err = 0;
-      s.button = 0x1000u; // START
+      switch (phase) {
+        case 0: s.button = 0x1000u; hold_ticks = 3; break;   // START (hold)
+        case 1: s.stickX = 127; s.stickY = 0; hold_ticks = 2; break; // stick right
+        case 2: s.button = 0x0100u; hold_ticks = 4; break;   // A (hold)
+        case 3: s.button = 0x0008u; hold_ticks = 2; break;   // dpad up
+        case 4: s.button = 0x0100u; hold_ticks = 4; break;   // A
+        case 5: s.button = 0x0001u; hold_ticks = 2; break;   // dpad left
+        case 6: s.button = 0x0100u; hold_ticks = 4; break;   // A
+        case 7: s.button = 0x0002u; hold_ticks = 2; break;   // dpad right
+        case 8: s.button = 0x0100u; hold_ticks = 4; break;   // A
+        case 9: s.button = 0x1000u; hold_ticks = 3; break;   // START
+      }
       ballpad_pad_set(0, &s);
-      std::fprintf(stderr, "[ballpad-ios] autostart tap (block %llu)\n",
-                   (unsigned long long)g_blocks);
+      std::fprintf(stderr, "[ballpad-ios] nav phase=%u btn=0x%04X stick=%d,%d\n",
+                   phase, s.button, s.stickX, s.stickY);
+      if (++phase >= 10u) phase = 0u;
+    } else if (hold_ticks > 0u) {
+      --hold_ticks;
     } else {
       BallPadStatus s{};
       ballpad_pad_get(0, &s);
-      s.button = 0u; // release
+      s.button = 0u;
+      s.stickX = 0; s.stickY = 0;
       s.err = 0;
       ballpad_pad_set(0, &s);
     }
