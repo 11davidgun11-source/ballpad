@@ -21,7 +21,7 @@ extern "C" void ballpad_ios_host_attach_sdl_view(void* sdlWindowPtr) {
     if (sdlView == nil) return;
     if (sdlView.superview == g_container) return;
     sdlView.translatesAutoresizingMaskIntoConstraints = NO;
-    [g_container addSubview:sdlView];
+    [g_container insertSubview:sdlView atIndex:0];
     [NSLayoutConstraint activateConstraints:@[
       [sdlView.leadingAnchor constraintEqualToAnchor:g_container.leadingAnchor],
       [sdlView.trailingAnchor constraintEqualToAnchor:g_container.trailingAnchor],

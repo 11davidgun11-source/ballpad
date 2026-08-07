@@ -41,6 +41,7 @@ extern "C" void ballpad_arm_efb_readback(void);
 namespace {
 std::atomic<bool> g_started{false};
 std::atomic<bool> g_stop{false};
+std::atomic<bool> g_starting{false};
 void* g_scene = nullptr;
 void* g_sdl_window = nullptr;
 
@@ -79,6 +80,10 @@ static void instruction_fallback(CPUState* ctx, u32 raw, u32 cia) {
 
 bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   if (g_started.load()) return true;
+  if (g_aurora_up) return true;  // SwiftUI may remount the host view
+  bool expected = false;
+  if (!g_starting.compare_exchange_strong(expected, true))
+    return true;  // another makeUIView already booting
   setvbuf(stderr, NULL, _IONBF, 0);
   setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -113,9 +118,11 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   };
   if (!dol_aurora_initialize(0, nullptr, &backend_config)) {
     std::fprintf(stderr, "[ballpad-ios] aurora init failed\n");
+    g_starting.store(false);
     return false;
   }
   g_aurora_up = true;
+  g_starting.store(false);
   ballpad_arm_efb_readback();
   ballpad_window_force_presentable();
   g_sdl_window = ballpad_window_get_sdl_window();
@@ -177,6 +184,9 @@ void ballpad_ios_host_step_frame(void) {
       break;
     }
     g_blocks++;
+    if ((g_blocks % 5000000ull) == 0u)
+      std::fprintf(stderr, "[ballpad-ios] blocks=%llu pc=0x%08X\n",
+                   (unsigned long long)g_blocks, cpu->pc);
   }
   if (g_blocks >= kMaxBlocks && !g_stop_reason[0]) g_stop_reason = "max-blocks watchdog";
   if (g_sdl_window != nullptr) {
