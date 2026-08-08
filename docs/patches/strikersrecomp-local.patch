@@ -87,10 +87,34 @@ index aef8bcd..568cd52 100644
  target_link_libraries(gG4QE01_recomp PRIVATE m)
  
 diff --git a/runtime/host/audio.c b/runtime/host/audio.c
-index 046bcbf..bce99a3 100644
+index 046bcbf..97a82cf 100644
 --- a/runtime/host/audio.c
 +++ b/runtime/host/audio.c
-@@ -127,8 +127,13 @@ bool audio_interrupt_pending(void) {
+@@ -24,6 +24,14 @@ static DolAxHost g_ax_host;
+ static bool g_waiting_for_command_list;
+ static bool g_log;
+ static u64 g_aid_chunks;
++// Host gate: when the platform audio output is disabled (iOS build), skip the
++// per-block DMA polling entirely. The game still drives the AI/DSP registers,
++// but there is no output stream, so collecting chunks is pure waste (was a
++// measurable per-block cost in the guest loop).
++static bool g_audio_enabled = true;
++
++void audio_set_enabled(bool enabled) { g_audio_enabled = enabled; }
++bool audio_enabled(void) { return g_audio_enabled; }
+ 
+ void audio_init(void) {
+     dol_ax_host_init(&g_ax_host);
+@@ -94,6 +102,8 @@ void audio_mmio_write(u32 address, u8 size, u64 value) {
+ }
+ 
+ void audio_poll(CPUState* cpu) {
++    if (!g_audio_enabled)
++        return;
+     u32 physical = 0;
+     if (!dol_audio_dma_poll(&g_audio_dma, &physical))
+         return;
+@@ -127,8 +137,13 @@ bool audio_interrupt_pending(void) {
  }
  
  void audio_dsp_mail(CPUState* cpu, u32 mail) {
@@ -104,7 +128,7 @@ index 046bcbf..bce99a3 100644
          g_waiting_for_command_list = true;
          return;
      }
-@@ -136,8 +141,12 @@ void audio_dsp_mail(CPUState* cpu, u32 mail) {
+@@ -136,8 +151,12 @@ void audio_dsp_mail(CPUState* cpu, u32 mail) {
          return;
  
      g_waiting_for_command_list = false;
@@ -117,11 +141,50 @@ index 046bcbf..bce99a3 100644
  }
  
  void audio_skip_dsp_init(CPUState* cpu) {
+diff --git a/runtime/host/audio.h b/runtime/host/audio.h
+index 9ac2302..2899108 100644
+--- a/runtime/host/audio.h
++++ b/runtime/host/audio.h
+@@ -10,6 +10,10 @@
+ // in recompiled code + HLE notify counters (STRIKERS_AUDIO_LOG).
+ 
+ void audio_init(void);
++/* Host gate: disable per-block audio DMA polling when there is no output
++ * stream (iOS build). Default enabled. */
++void audio_set_enabled(bool enabled);
++bool audio_enabled(void);
+ void audio_shutdown(void);
+ void audio_set_vi_clock(u64 work_units_per_frame, u32 refresh_hz);
+ 
 diff --git a/runtime/host/hle.c b/runtime/host/hle.c
-index 5da95e1..1b988a8 100644
+index 5da95e1..433e9ba 100644
 --- a/runtime/host/hle.c
 +++ b/runtime/host/hle.c
-@@ -1731,8 +1731,26 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+@@ -29,6 +29,8 @@
+ #include <string.h>
+ #include <time.h>
+ 
++#include "xxhash.h"
++
+ typedef void (*HleHandler)(CPUState* cpu);
+ 
+ typedef struct {
+@@ -1224,10 +1226,10 @@ static void hle_CARDFormatAsync(CPUState* cpu) {
+ }
+ 
+ static u32 guest_hash_bytes(const void* data, u32 bytes) {
+-    const u8* p = (const u8*)data;
+-    u32 hash = 2166136261u;
+-    for (u32 i = 0; i < bytes; i++)
+-        hash = (hash ^ p[i]) * 16777619u;
++    // Perf: XXH3 is ~10-100x faster than the old FNV-1a byte loop. The value
++    // is only used for change detection (texture version identity), so any
++    // consistent hash works; truncate to u32.
++    const u32 hash = (u32)XXH3_64bits(data, bytes);
+     return hash ? hash : 1u;
+ }
+ 
+@@ -1731,8 +1733,26 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
      const bool movie_generation =
          thp_movie_plane_generation(cpu, guest_data, width, height, format,
                                     &data_bytes, &data_hash, &cache_object);
@@ -150,7 +213,7 @@ index 5da95e1..1b988a8 100644
      const u32 version =
          gx_texture_resource_version(width, height, format, tlut, flags,
                                      data_bytes, data_hash);
-@@ -1768,6 +1786,10 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+@@ -1768,6 +1788,10 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
      bool changed = !binding->valid ||
                     binding->object != cache_object ||
                     binding->version != version;
@@ -161,7 +224,7 @@ index 5da95e1..1b988a8 100644
      binding->valid = true;
      binding->object = cache_object;
      binding->guest_data = guest_data;
-@@ -1779,10 +1801,14 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+@@ -1779,10 +1803,14 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
      binding->data_bytes = data_bytes;
      binding->data_hash = data_hash;
      binding->version = version;
@@ -180,7 +243,7 @@ index 5da95e1..1b988a8 100644
      if (g_movie_log && format == 1u) {
          unsigned seq = ++g_movie_texobj_log_count;
          bool should_log = changed || seq <= 96u || (seq % 60u) == 0u;
-@@ -3208,6 +3234,9 @@ typedef struct {
+@@ -3208,6 +3236,9 @@ typedef struct {
  } HleAddrEntry;
  
  static const HleAddrEntry kAddrHandlers[] = {
@@ -191,7 +254,7 @@ index 5da95e1..1b988a8 100644
      // modeled DSP. Audio is routed through Aurora, so skip the hardware init.
      { 0x80254718u, hle_noop,                     "__OSInitAudioSystem" },
 diff --git a/runtime/host/interrupt.c b/runtime/host/interrupt.c
-index 6efc385..bdb516b 100644
+index 6efc385..4c0a234 100644
 --- a/runtime/host/interrupt.c
 +++ b/runtime/host/interrupt.c
 @@ -16,6 +16,16 @@
@@ -271,7 +334,20 @@ index 6efc385..bdb516b 100644
  void interrupt_commit_pe_finish(void) {
      dol_interrupts_commit_pe_finish(&interrupts);
  }
-@@ -254,11 +303,35 @@ void interrupt_poll(CPUState* cpu) {
+@@ -238,7 +287,11 @@ static void deliver_external(CPUState* cpu) {
+ // (INTERRUPT_POLL_INTERVAL + interrupt_poll_accum declared once above.)
+ 
+ void interrupt_poll(CPUState* cpu) {
+-    audio_poll(cpu);
++    // Skip the per-block audio DMA poll entirely when the host disabled
++    // audio output (iOS): the call overhead alone showed up in profiles even
++    // with an early return inside.
++    if (audio_enabled())
++        audio_poll(cpu);
+ 
+     if (++interrupt_poll_accum < INTERRUPT_POLL_INTERVAL)
+         return;
+@@ -254,11 +307,35 @@ void interrupt_poll(CPUState* cpu) {
      u64 ticks = 0;
      while (dol_vi_clock_pop_retrace(&vi_clock, &ticks)) {
          cpu->timebase += ticks;
