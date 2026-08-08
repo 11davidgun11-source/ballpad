@@ -2,13 +2,20 @@ import SwiftUI
 import UIKit
 
 struct SDLGameContainer: UIViewRepresentable {
+    var renderScale: CGFloat = 1
+
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = .black
         context.coordinator.attach(to: view)
         return view
     }
-    func updateUIView(_ uiView: UIView, context: Context) {}
+    func updateUIView(_ uiView: UIView, context: Context) {
+        if context.coordinator.renderScale != renderScale {
+            context.coordinator.renderScale = renderScale
+            FileHandle.standardError.write(Data("[display] scale=\(renderScale)\n".utf8))
+        }
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -16,12 +23,13 @@ struct SDLGameContainer: UIViewRepresentable {
         weak var container: UIView?
         var timer: Timer?
         var imageView: UIImageView?
+        var renderScale: CGFloat = 1
 
         func attach(to view: UIView) {
             container = view
             let iv = UIImageView()
             iv.backgroundColor = .black
-            iv.contentMode = .scaleAspectFill
+            iv.contentMode = .scaleAspectFit
             iv.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(iv)
             NSLayoutConstraint.activate([
@@ -61,6 +69,18 @@ struct SDLGameContainer: UIViewRepresentable {
             if let container = container, let imageView = imageView {
                 container.bringSubviewToFront(imageView)
             }
+            // Display diagnostics: every ~120 frames report the frame stats and
+            // whether the image view got updated.
+            diagCount += 1
+            if diagCount % 120 == 0 {
+                let n = Int(w * h)
+                var sum: UInt64 = 0
+                for i in stride(from: 0, to: min(n, 640*528) * 4, by: 4) {
+                    sum += UInt64(buf[i]) + UInt64(buf[i+1]) + UInt64(buf[i+2])
+                }
+                let mean = Double(sum) / (3.0 * Double(min(n, 640*528)))
+                FileHandle.standardError.write(Data("[display] diag mean=\(Int(mean)) imageSet=\(imageView?.image != nil) size=\(w)x\(h)\n".utf8))
+            }
             guard let provider = CGDataProvider(data: Data(buf) as CFData) else {
                 if frameDiag == 0 { NSLog("[ballpad] CGDataProvider failed %ux%u", w, h) }
                 return
@@ -74,18 +94,9 @@ struct SDLGameContainer: UIViewRepresentable {
                 if frameDiag == 0 { NSLog("[ballpad] CGImage failed %ux%u", w, h) }
                 return
             }
-            // Boost brightness/contrast so dark game scenes are legible.
-            let ci = CIImage(cgImage: cg)
-            let bright = CIFilter(name: "CIColorControls")!
-            bright.setValue(ci, forKey: kCIInputImageKey)
-            bright.setValue(1.6, forKey: kCIInputBrightnessKey)
-            bright.setValue(2.2, forKey: kCIInputContrastKey)
-            let ctx = CIContext()
-            if let out = bright.outputImage, let cg2 = ctx.createCGImage(out, from: ci.extent) {
-                imageView?.image = UIImage(cgImage: cg2)
-            } else {
-                imageView?.image = UIImage(cgImage: cg)
-            }
+            // EFB-native frames are full-brightness; a display filter is not
+            // needed (the old boost was compensating for the dark crop bug).
+            imageView?.image = UIImage(cgImage: cg)
             if frameDiag == 0 {
                 NSLog("[ballpad] first frame displayed %ux%u", w, h)
                 frameDiag = 1
@@ -93,6 +104,7 @@ struct SDLGameContainer: UIViewRepresentable {
         }
 
         var frameDiag = 0
+        var diagCount = 0
     }
 }
 
@@ -111,7 +123,7 @@ struct GameHostView: View {
 
     var body: some View {
         ZStack {
-            SDLGameContainer()
+            SDLGameContainer(renderScale: CGFloat(settings.renderScale))
                 .ignoresSafeArea()
             VStack {
                 HStack {
@@ -146,6 +158,7 @@ struct GameHostView: View {
             if let cstr = ballpad_runtime_banner() {
                 banner = String(cString: cstr)
             }
+            runUITest()
         }
         .sheet(isPresented: $showMenu) {
             OverflowMenuView(
@@ -157,6 +170,51 @@ struct GameHostView: View {
                     layout.reset(deviceClass: idiom == .pad ? "pad" : "phone")
                 }
             )
+        }
+    }
+
+    // Automated gate proofs: BALLPAD_UI_TEST=move|verify|menu drives the UI and
+    // logs results (no manual touches needed on the simulator).
+    private func runUITest() {
+        let mode = ProcessInfo.processInfo.environment["BALLPAD_UI_TEST"] ?? ""
+        guard !mode.isEmpty else { return }
+        func log(_ msg: String) {
+            FileHandle.standardError.write(Data("[uitest] \(msg)\n".utf8))
+        }
+        switch mode {
+        case "move":
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                if let idx = self.layout.nodes.firstIndex(where: { $0.id == .a }) {
+                    let before = self.layout.nodes[idx]
+                    log("move A from \(before.normX),\(before.normY)")
+                    self.layout.move(id: .a, to: CGPoint(x: 0.62, y: 0.38), in: CGSize(width: 1, height: 1))
+                    let after = self.layout.nodes[idx]
+                    let saved = UserDefaults.standard.data(forKey: "ballpad.layout.phone") != nil
+                    log("moved A to \(after.normX),\(after.normY) saved=\(saved)")
+                }
+            }
+        case "verify":
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                if let a = self.layout.nodes.first(where: { $0.id == .a }) {
+                    let persisted = (fabs(a.normX - 0.62) < 0.01 && fabs(a.normY - 0.38) < 0.01)
+                    log("A position \(a.normX),\(a.normY) persisted=\(persisted)")
+                }
+            }
+        case "menu":
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                log("opening menu")
+                self.showMenu = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    self.settings.renderScale = 2
+                    log("scale set to 2")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        self.showMenu = false
+                        log("menu closed")
+                    }
+                }
+            }
+        default:
+            break
         }
     }
 }

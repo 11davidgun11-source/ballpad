@@ -122,6 +122,13 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   SDL_SetMainReady();
   if (g_scene != nullptr) ballpad_window_set_scene(g_scene);
 
+  // iOS displays via EFB readback into a fixed 640x528 software backing; the
+  // aurora renderer must size the EFB target to the true EFB (not the full
+  // screen), otherwise the readback becomes a cropped slice of a full-screen
+  // render. Make this the permanent iOS behavior (overridable for tests).
+  if (getenv("BALLPAD_EFB_NATIVE") == nullptr)
+    setenv("BALLPAD_EFB_NATIVE", "1", 1);
+
   const AuroraBackendConfig backend_config = {
       .app_name = "Ballpad",
       .window_width = 1280,
@@ -606,6 +613,41 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
   }
   if (efb == nullptr || efb->color == nullptr || efb->fill_count == 0u)
     return false;
+  // Poke test (BALLPAD_EFB_POKE=1): once, at fill 58, write known bright pixels
+  // into the present-source texture and dump the readback immediately plus at
+  // 60/62 so we can see whether the poke survives (readback OK) or gets
+  // overwritten by the scene (scene renders, dark) or never appears (readback
+  // broken).
+  static bool s_poked = false;
+  const bool poke_mode = getenv("BALLPAD_EFB_POKE") != nullptr;
+  if (poke_mode && !s_poked && efb->fill_count >= 58u) {
+    s_poked = true;
+    dol_aurora_poke_color(10, 10, 0xFFFF0000);     // red, viewport top-left
+    dol_aurora_poke_color(320, 224, 0xFF0000FF);   // blue, viewport center
+    dol_aurora_poke_color(630, 518, 0xFF00FF00);   // green, bottom-right
+    dol_aurora_poke_color(320, 500, 0xFFFFFFFF);   // white, letterbox strip
+    std::fprintf(stderr, "[ballpad-ios] poked 4 px at fill=%llu\n",
+                 (unsigned long long)efb->fill_count);
+  }
+  if (poke_mode && efb->fill_count >= 58u && efb->fill_count <= 62u) {
+    char path[256];
+    snprintf(path, sizeof(path),
+             "/Users/chrissotraidis/GitHub/ballpad/work/tmp/ios_poke_%llu.rgba",
+             (unsigned long long)efb->fill_count);
+    FILE* f = fopen(path, "wb");
+    if (f) {
+      const u32 fw = efb->width, fh = efb->height;
+      for (u32 i = 0; i < fw * fh; ++i) {
+        const u32 argb = efb->color[i];
+        const uint8_t px[4] = {(uint8_t)(argb >> 16), (uint8_t)(argb >> 8),
+                               (uint8_t)(argb), (uint8_t)(argb >> 24)};
+        fwrite(px, 1, 4, f);
+      }
+      fclose(f);
+      std::fprintf(stderr, "[ballpad-ios] poke dump %s fill=%llu\n", path,
+                   (unsigned long long)efb->fill_count);
+    }
+  }
   // Debug: dump a frame periodically for inspection.
   static unsigned long long s_dump_prev = 0;
   if (efb->fill_count - s_dump_prev >= 60u && efb->fill_count > 30u) {
@@ -634,7 +676,7 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
     rgba_out[i * 4u + 0u] = (uint8_t)(argb >> 16);
     rgba_out[i * 4u + 1u] = (uint8_t)(argb >> 8);
     rgba_out[i * 4u + 2u] = (uint8_t)(argb);
-    rgba_out[i * 4u + 3u] = (uint8_t)(argb >> 24);
+    rgba_out[i * 4u + 3u] = 0xFF;  // opaque: the EFB alpha channel is unused
   }
   *w = fw;
   *h = fh;

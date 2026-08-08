@@ -1,0 +1,23 @@
+#pragma once
+#include <cstdint>
+
+// Ballpad: CPU readback of the Virtual-XFB present texture (the full composite
+// including menu text/UI that the EFB present-source readback lacks).
+namespace aurora::gfx::xfb_readback {
+
+// Arm a readback of the XFB texture for the next present. Any thread.
+void request() noexcept;
+void set_continuous(bool enabled) noexcept;
+bool continuous() noexcept;
+
+// Render worker: after the frame's queue submit, copy the XFB texture.
+void after_submit() noexcept;
+
+// Non-destructive view of the latest completed pixels (RGBA8, top-left).
+// Returns false if no snapshot yet.
+bool peek(const std::uint8_t** rgba, std::uint32_t* width,
+          std::uint32_t* height) noexcept;
+
+void set_xfb_texture(uint32_t phys_addr);
+
+} // namespace aurora::gfx::xfb_readback

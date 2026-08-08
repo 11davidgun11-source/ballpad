@@ -38,13 +38,32 @@ struct TouchControlSurface: View {
             width: node.normW * size.width,
             height: node.normH * size.height
         )
+        if editMode {
+            // Layout editor: drag any control to reposition it; no game input.
+            return AnyView(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(.yellow.opacity(0.9), style: StrokeStyle(lineWidth: 2, dash: [6]))
+                    Text(node.label).font(.caption.bold()).foregroundStyle(.yellow)
+                }
+                .frame(width: max(rect.width, 64), height: max(rect.height, 44))
+                .position(x: rect.midX, y: rect.midY)
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        store.move(id: node.id,
+                                   to: CGPoint(x: rect.midX + value.translation.width,
+                                               y: rect.midY + value.translation.height),
+                                   in: size)
+                    })
+            )
+        }
         switch node.id {
         case .stick, .cStick:
-            stick(node: node, rect: rect)
+            return AnyView(stick(node: node, rect: rect))
         case .dpad:
-            dpad(node: node, rect: rect)
+            return AnyView(dpad(node: node, rect: rect))
         default:
-            button(node: node, rect: rect)
+            return AnyView(button(node: node, rect: rect))
         }
     }
 

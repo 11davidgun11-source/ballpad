@@ -61,6 +61,35 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   Path C (full Dolphin renderer); iOS product still uses EFB readback and verifies nav
   via scene changes / draw counts, with the macOS menu map as ground truth.
 
+## 2026-08-08 — Session 6 open issues (post renderer fix)
+
+- **Widescreen**: the EFB is 640x528 (4:3) and is displayed aspect-fit, so the
+  phone shows side letterbox bars. Decide crop-vs-scale policy for 16:9
+  (requires a widescreen hack or the XFB path); document the tradeoff.
+- **Performance (~10 fps)**: not profiled. Candidates: AOT guest throughput on
+  the simulator, per-frame texture uploads (1351680 texel uploads/frame in
+  logs), EFB readback copy+map latency (1 copy per 4 frames, single in-flight).
+  Measure guest blocks/s vs render-worker latency before optimizing.
+- **Boot time**: autostart is block-paced (~350k blocks/frame at ~10 fps);
+  reaching a match takes ~20 min of wall time. A save-state/quick-boot or
+  faster guest pacing would make iteration viable.
+- **Touch controls are placeholder-grade**: current layout is a rough GameCube
+  skin; needs the docs/05 spec treatment (ergonomics, multi-touch, C-stick,
+  shoulder analog) and the M5/M6 control checklist to pass.
+- **Settings not optimized**: renderScale 1x/2x exists in SwiftUI but is not
+  tied to the EFB pipeline; audio disabled; vsync on; no meaningful graphics
+  options. Wire resolution to the EFB target scale once perf is understood.
+- **EFB native sizing is env-gated**: `BALLPAD_EFB_NATIVE` in gpu.cpp; the iOS
+  host sets it by default. A proper EFB-scale config API is cleaner.
+- **XFB path unused**: product presents via EFB-direct; HUD currently renders
+  (verified in-match). If text disappears on some screen, re-check the
+  Virtual-XFB/YUYV path.
+- **Log hygiene**: `[ballpad-ios] efb fill=... color=%p` prints a pointer;
+  efb/block logs spam BALLPAD_LOG_FILE; `[gfx]` parsed-state lines are empty
+  in gxcore mode (diagnostic noise).
+- **ref/ trees are untracked with local patches** — do not re-clone
+  ref/GXRuntime or ref/StrikersRecomp; the EFB fix and boot bypass live there.
+
 ### Template
 ```
 ### YYYY-MM-DD — Step N

@@ -21,6 +21,16 @@ final class LayoutStore: ObservableObject {
         }
     }
 
+    func move(id: ControlID, to newCenter: CGPoint, in size: CGSize) {
+        guard size.width > 0, size.height > 0,
+              let idx = nodes.firstIndex(where: { $0.id == id }) else { return }
+        var node = nodes[idx]
+        node.normX = min(max(newCenter.x / size.width, 0.03), 0.97)
+        node.normY = min(max(newCenter.y / size.height, 0.03), 0.97)
+        nodes[idx] = node
+        save()
+    }
+
     func reset(deviceClass: String) {
         nodes = deviceClass == "pad" ? DefaultLayouts.padLandscape() : DefaultLayouts.phoneLandscape()
         save()

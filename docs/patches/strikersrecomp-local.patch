@@ -1,0 +1,263 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 27b70fc..4371d9e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -102,3 +102,44 @@ if(STRIKERSRECOMP_ENABLE_AURORA)
+     target_compile_definitions(StrikersRecomp PRIVATE STRIKERSRECOMP_AURORA=1)
+     set_target_properties(StrikersRecomp PROPERTIES LINKER_LANGUAGE CXX)
+ endif()
++
++
++# --- Ballpad bridge: DolRecomp FP helper ABI for older GXRuntime ---
++set(BALLPAD_HOST_DIR "${CMAKE_SOURCE_DIR}/../../host" CACHE PATH "Ballpad host bridge")
++if(EXISTS "${BALLPAD_HOST_DIR}/src/ballpad_ppc_helpers.c")
++    target_sources(StrikersRecomp PRIVATE "${BALLPAD_HOST_DIR}/src/ballpad_ppc_helpers.c")
++    target_include_directories(StrikersRecomp PRIVATE "${BALLPAD_HOST_DIR}/include")
++    target_compile_options(StrikersRecomp PRIVATE
++        "-include${BALLPAD_HOST_DIR}/include/ballpad_ppc_helpers_inject.h")
++    message(STATUS "Ballpad: linking ppc helper bridge from ${BALLPAD_HOST_DIR}")
++endif()
++
++# --- Ballpad: static host library for the iOS app (no main) ---
++option(BALLPAD_BUILD_STATIC_HOST "Build libBallpadHost.a (iOS app linking)" OFF)
++if(BALLPAD_BUILD_STATIC_HOST)
++  add_library(BallpadHost STATIC
++      runtime/host/mmio.c
++      runtime/host/audio.c
++      runtime/host/interrupt.c
++      runtime/host/hle.c
++      runtime/host/sdk_map.c
++      "${STRIKERSRECOMP_GENERATED_DIR}/generated.c"
++      ${STRIKERSRECOMP_CHUNKS}
++      "${BALLPAD_HOST_DIR}/src/ballpad_ppc_helpers.c"
++  )
++  target_include_directories(BallpadHost PRIVATE
++      "${CMAKE_SOURCE_DIR}/runtime"
++      "${STRIKERSRECOMP_GENERATED_DIR}"
++      "${BALLPAD_HOST_DIR}/include"
++  )
++  if(EXISTS "${BALLPAD_HOST_DIR}/include/ballpad_ppc_helpers_inject.h")
++    target_compile_options(BallpadHost PRIVATE
++        "-include${BALLPAD_HOST_DIR}/include/ballpad_ppc_helpers_inject.h")
++  endif()
++  target_link_libraries(BallpadHost PRIVATE GXRuntime::runtime)
++  if(STRIKERSRECOMP_ENABLE_AURORA)
++    target_link_libraries(BallpadHost PRIVATE GXRuntime::aurora)
++    target_compile_definitions(BallpadHost PRIVATE STRIKERSRECOMP_AURORA=1)
++  endif()
++  set_target_properties(BallpadHost PROPERTIES LINKER_LANGUAGE CXX)
++endif()
+diff --git a/chassis-module/CMakeLists.txt b/chassis-module/CMakeLists.txt
+index aef8bcd..568cd52 100644
+--- a/chassis-module/CMakeLists.txt
++++ b/chassis-module/CMakeLists.txt
+@@ -34,10 +34,16 @@ add_custom_command(
+ 
+ file(GLOB CHUNK_SOURCES "${GENERATED_DIR}/chunks/*.c")
+ 
++# Ballpad: use the RecompCore chassis CPU runtime (ABI-compatible CPUState)
++# with our helper bridge for the modern DolRecomp FP/load-store ABI.
++set(BALLPAD_HOST "${CMAKE_CURRENT_SOURCE_DIR}/../../../host")
++set(BALLPAD_CPU_SRC "${CHASSIS_ABI_DIR}/dolrecomp/cpu.c")
++set(BALLPAD_CPU_INC "${CHASSIS_ABI_DIR}/dolrecomp/core")
+ add_library(gG4QE01_recomp SHARED
+   module_export.c
+   "${MODULE_TABLES}"
+-  "${CHASSIS_ABI_DIR}/dolrecomp/cpu.c"
++  "${BALLPAD_CPU_SRC}"
++  "${BALLPAD_HOST}/src/ballpad_ppc_helpers.c"
+   ${CHUNK_SOURCES})
+ 
+ set_target_properties(gG4QE01_recomp PROPERTIES PREFIX "" OUTPUT_NAME "gG4QE01_recomp")
+@@ -45,11 +51,16 @@ set_source_files_properties("${MODULE_TABLES}" PROPERTIES HEADER_FILE_ONLY TRUE
+ 
+ target_include_directories(gG4QE01_recomp PRIVATE
+   "${GENERATED_DIR}"
++  "${BALLPAD_CPU_INC}"
+   "${CHASSIS_ABI_DIR}/dolrecomp/cpu"
+   "${CHASSIS_ABI_DIR}/dolrecomp/core"
+   "${CHASSIS_ABI_DIR}/dolrecomp"
+   "${CHASSIS_ABI_DIR}"
+   "${CMAKE_CURRENT_BINARY_DIR}")
++if(EXISTS "${BALLPAD_HOST}/include")
++  target_include_directories(gG4QE01_recomp PRIVATE "${BALLPAD_HOST}/include")
++  target_compile_options(gG4QE01_recomp PRIVATE "-include${BALLPAD_HOST}/include/ballpad_ppc_helpers_inject.h")
++endif()
+ 
+ target_link_libraries(gG4QE01_recomp PRIVATE m)
+ 
+diff --git a/runtime/host/audio.c b/runtime/host/audio.c
+index 046bcbf..bce99a3 100644
+--- a/runtime/host/audio.c
++++ b/runtime/host/audio.c
+@@ -127,8 +127,13 @@ bool audio_interrupt_pending(void) {
+ }
+ 
+ void audio_dsp_mail(CPUState* cpu, u32 mail) {
++    static int s_mail_log = -1;
++    if (s_mail_log < 0)
++        s_mail_log = getenv("STRIKERS_DSP_LOG") != NULL ? 1 : 0;
+     // MusyX BABE-prefixed command-list size, then absolute list address.
+     if ((mail & 0xFFFF0000u) == 0xBABE0000u) {
++        if (s_mail_log)
++            fprintf(stderr, "[audio] DSP mail BABE size=0x%04X\n", mail & 0xFFFFu);
+         g_waiting_for_command_list = true;
+         return;
+     }
+@@ -136,8 +141,12 @@ void audio_dsp_mail(CPUState* cpu, u32 mail) {
+         return;
+ 
+     g_waiting_for_command_list = false;
++    if (s_mail_log)
++        fprintf(stderr, "[audio] DSP command list @0x%08X\n", mail);
+     dol_ax_host_process_command_list(&g_ax_host, cpu, mail);
+     mem_write32(cpu, MUSYX_DSP_DONE, 1);
++    if (s_mail_log)
++        fprintf(stderr, "[audio] salDspIsDone=1\n");
+ }
+ 
+ void audio_skip_dsp_init(CPUState* cpu) {
+diff --git a/runtime/host/hle.c b/runtime/host/hle.c
+index 5da95e1..7b7809b 100644
+--- a/runtime/host/hle.c
++++ b/runtime/host/hle.c
+@@ -3208,6 +3208,9 @@ typedef struct {
+ } HleAddrEntry;
+ 
+ static const HleAddrEntry kAddrHandlers[] = {
++    // Ballpad: skip the boot save/load scene (the memcard popup Retry loop).
++    // The guest then goes straight to the LEGAL -> title flow.
++    { 0x800B0D5Cu, hle_return_zero,                "SaveLoadScene::IsIOEnabled" },
+     // DSP boot handshake: polls a DSP mailbox bit that never changes without a
+     // modeled DSP. Audio is routed through Aurora, so skip the hardware init.
+     { 0x80254718u, hle_noop,                     "__OSInitAudioSystem" },
+diff --git a/runtime/host/interrupt.c b/runtime/host/interrupt.c
+index 6efc385..bdb516b 100644
+--- a/runtime/host/interrupt.c
++++ b/runtime/host/interrupt.c
+@@ -16,6 +16,16 @@
+ #define DISPATCH_INTERRUPT 0x80256FD0u  // __OSDispatchInterrupt(exc, context)
+ #define EXC_EXTERNAL 4u                 // __OS_EXCEPTION_EXTERNAL_INTERRUPT
+ 
++// Decrementer (OSAlarm timer) support: the Gekko DEC (SPR 22) counts down at the
++// timebase rate and raises the 0x800-class exception on underflow. The OS alarm
++// queue and thread scheduler depend on it (OSSleep/OSWaitSemaphore timeouts,
++// loading screens), so without it the guest deadlocks in OSSelectThread whenever
++// every thread waits on a timer. We vector straight to the recompiled callback
++// with a pre-saved context, mirroring deliver_external() for the PI interrupts.
++#define SPR_DEC 22u
++#define DECREMENTER_CALLBACK 0x8025409Cu // DecrementerExceptionCallback(exc, ctx)
++#define EXC_DECREMENTER 8u               // __OS_EXCEPTION_DECREMENTER
++
+ // OSContext field offsets (dolphin/os/OSContext.h).
+ #define CTX_CR 0x080u
+ #define CTX_LR 0x084u
+@@ -51,6 +61,8 @@ static u64 frame_work_units;
+ // interrupt_poll). Accumulator of guest blocks since the last batched pass.
+ #define INTERRUPT_POLL_INTERVAL 128u
+ static u32 interrupt_poll_accum;
++static bool s_dec_fired;
++unsigned long long g_dec_deliveries = 0;
+ 
+ #define FPU_CONTEXT_CACHE_CAPACITY 32u
+ typedef struct {
+@@ -140,6 +152,7 @@ void interrupt_init(void) {
+     dol_si_init(&si);
+     dol_vi_clock_init(&vi_clock);
+     interrupt_poll_accum = 0;
++    s_dec_fired = false;
+     frame_work_units = DEFAULT_FRAME_BLOCKS;
+     memset(fpu_context_cache, 0, sizeof fpu_context_cache);
+     fpu_context_cache_next = 0;
+@@ -156,6 +169,42 @@ void interrupt_init(void) {
+     audio_set_vi_clock(frame_work_units, (u32)VI_REFRESH_HZ);
+ }
+ 
++// Save the interrupted CPU state into the current OSContext and vector to the
++// recompiled DecrementerExceptionCallback. Same context layout as the asm
++// DecrementerExceptionHandler prologue (OS_EXCEPTION_SAVE_GPRS) that the host
++// normally skips, mirroring deliver_external().
++static void deliver_decrementer(CPUState* cpu) {
++    u32 ctx = mem_read32(cpu, OS_CURRENT_CONTEXT);
++    if (ctx < GC_RAM_BASE || ctx >= GC_RAM_BASE + cpu->ram_size)
++        return;  // no current context established yet
++
++    capture_fpu_context(cpu, ctx);
++    for (int i = 0; i < 32; i++)
++        mem_write32(cpu, ctx + (u32)i * 4u, cpu->gpr[i]);
++    mem_write32(cpu, ctx + CTX_CR, cpu->cr);
++    mem_write32(cpu, ctx + CTX_LR, cpu->lr);
++    mem_write32(cpu, ctx + CTX_CTR, cpu->ctr);
++    mem_write32(cpu, ctx + CTX_XER, cpu->xer);
++    for (int i = 0; i < 32; i++) {
++        u64 bits;
++        memcpy(&bits, &cpu->fpr[i], sizeof bits);
++        mem_write64(cpu, ctx + CTX_FPR + (u32)i * 8u, bits);
++    }
++    mem_write32(cpu, ctx + CTX_FPSCR, cpu->fpscr);
++    mem_write32(cpu, ctx + CTX_SRR0, cpu->pc);
++    mem_write32(cpu, ctx + CTX_SRR1, cpu->msr);
++    mem_write16(cpu, ctx + CTX_STATE, OS_CONTEXT_STATE_FPSAVED);
++    for (int i = 0; i < 8; i++)
++        mem_write32(cpu, ctx + CTX_GQR + (u32)i * 4u, cpu->gqr[i]);
++
++    cpu->gpr[3] = EXC_DECREMENTER;
++    cpu->gpr[4] = ctx;
++    cpu->srr0 = cpu->pc;
++    cpu->srr1 = cpu->msr;
++    cpu->msr &= ~MSR_EE;  // run the handler with external interrupts masked
++    cpu->pc = DECREMENTER_CALLBACK;
++}
++
+ void interrupt_commit_pe_finish(void) {
+     dol_interrupts_commit_pe_finish(&interrupts);
+ }
+@@ -254,11 +303,35 @@ void interrupt_poll(CPUState* cpu) {
+     u64 ticks = 0;
+     while (dol_vi_clock_pop_retrace(&vi_clock, &ticks)) {
+         cpu->timebase += ticks;
++        // The decrementer counts down in lockstep with the timebase. A write of
++        // zero disarms it (Gekko: DEC underflow fires only after a nonzero load).
++        const u32 dec = cpu->spr[SPR_DEC];
++        if (dec != 0u) {
++            if (dec > (u32)ticks)
++                cpu->spr[SPR_DEC] = dec - (u32)ticks;
++            else {
++                cpu->spr[SPR_DEC] = 0u;
++                s_dec_fired = true;
++            }
++        }
+         dol_interrupts_assert_vi_retrace(&interrupts);
+         dol_si_latch_poll(&si, 0xFu);
+         sync_si_interrupt();
+     }
+ 
++    // Deliver the DEC exception before PI externals so long alarm-timer waits
++    // (thread timeouts, loading screens) wake up even when no other source is
++    // pending. The DEC exception is EE-masked like external interrupts.
++    if (s_dec_fired && (cpu->msr & MSR_EE)) {
++        s_dec_fired = false;
++        g_dec_deliveries++;
++        if (getenv("BALLPAD_DEBUG_TIMER"))
++            fprintf(stderr, "[interrupt] DEC exception -> 0x8025409C tb=%llu dec=%u msr=0x%08X\n",
++                    (unsigned long long)cpu->timebase, cpu->spr[SPR_DEC], cpu->msr);
++        deliver_decrementer(cpu);
++        return;
++    }
++
+     // Deliver only when the guest can take an external interrupt and at least one
+     // pending source is unmasked in the PI. One delivery drains every pending,
+     // unmasked source: __OSDispatchInterrupt loops over the PI cause bits.
+diff --git a/runtime/host/main.c b/runtime/host/main.c
+index 041328a..5aa14e4 100644
+--- a/runtime/host/main.c
++++ b/runtime/host/main.c
+@@ -6,6 +6,8 @@
+ // The generated header provides the CPU ABI (via core/cpu.h), every
+ // func_XXXXXXXX prototype, and the static-inline dispatcher helpers
+ // dolrecomp_call() / DOLRECOMP_ENTRY_POINT.
++#include <SDL3/SDL_main.h>
++
+ #include "generated.h"
+ 
+ #include "gxruntime/aurora_backend.h"

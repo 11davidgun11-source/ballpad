@@ -97,3 +97,83 @@ Working:
   m_bInputAllowed/m_bEnableInput in guest memory.
 - All host fixes remain in place: readback mutex deadlock fix, staging guard,
   readback throttle, DEC emulation, stderr redirect, block-paced autostart.
+
+---
+
+# Session 6 (2026-08-08) — iOS renderer unblocked: game VISIBLE on simulator
+
+## What happened
+
+Previous session 5 left the guest running and reaching GS_GAMEPLAY, but the
+simulator screen showed a white/blank block — the EFB readback was a
+near-uniform clear color. This session found and fixed the root cause.
+
+### Root cause
+
+The iOS product displays ONLY via EFB readback (SwiftUI `UIImageView` fed by
+`ballpad_ios_host_take_frame` -> `mmio_efb()` -> software `DolEfbAccess`).
+The aurora renderer sizes the EFB render target (`g_frameBuffer`) to the SDL
+window — 2532x1170 native on the iPhone 17e simulator — and the viewport
+policy (FIT) scales the 640x448 logical viewport to fill it. The readback then
+clamps into a fixed 640x528 software backing with a 1:1 top-left crop. So the
+app displayed a tiny dark slice of a full-screen render. Both gxcore and live
+Aurora renderers showed the same artifact (substrate-level bug).
+
+### Evidence trail
+
+1. `work/tmp/ios_frame.rgba` dumps: 4 unique colors / near-uniform dark navy —
+   the EFB clear, not a scene.
+2. GPU poke test (`BALLPAD_EFB_POKE`): poked pixels vanished every frame — the
+   EFB pass clears per frame (proved the texture is a per-frame clear).
+3. `BALLPAD_TEST_WHITE` checkerboard overwrite before each readback copy: the
+   checkerboard read back pixel-honestly AND the trace printed the texture
+   size: **2532x1170** — not 640x528. That exposed the crop.
+
+### Fixes
+
+- `ref/GXRuntime/graphics/aurora/lib/webgpu/gpu.cpp`: `BALLPAD_EFB_NATIVE=1`
+  recreates `g_frameBuffer` / `g_frameBufferResolved` / `g_depthBuffer` at
+  640x528 after the swapchain resize (swapchain stays at surface size).
+- `host/src/ballpad_ios_host.cpp`: sets `BALLPAD_EFB_NATIVE=1` by default.
+- `app/Ballpad/GameHostView.swift`: removed CIColorControls brightness 1.6 /
+  contrast 2.2 (whitewashed the now-correct frames).
+- Env-gated diagnostics: `BALLPAD_EFB_POKE`, `BALLPAD_TEST_WHITE`,
+  `BALLPAD_DEBUG_EFB`, `dol_aurora_poke_color` export.
+
+### Verified on simulator (screenshots)
+
+- `step-15-EFB-fix-warning2.png` — health-and-safety screen (white text).
+- `step-15-mid-boot.png` — Mario stadium boot scene.
+- `step-15-title-or-menu.png` — main menu "GRUDGE MATCH" + CUP BATTLES etc.
+- `step-15-select.png` — "AT LEAST ONE PLAYER MUST CHOOSE A SIDE" popup.
+- `step-15-inmatch.png` — LIVE MATCH: DAISY 0-0 MARIO, clock 4:45, stadium,
+  players, HUD, touch overlay.
+
+The match was reached via the block-paced autostart (~4.5B blocks) and the app
+kept running; autostart continues pressing through 6.9B (harmless in-match).
+
+## Remaining work (honest)
+
+- **Not widescreen** (4:3 letterboxed), **~10 fps**, **~20 min boot to match**,
+  **placeholder touch controls**, **settings not optimized** — the game loads
+  and renders but is not yet playable. Details + next steps:
+  docs/17-session-6-renderer-unblocked.md.
+- DoD gates M5-M14 (controls, layout, menu, saves, iPad) still open; the render
+  blocker that made them untestable is gone.
+
+## Commands that matter (session 6)
+
+```bash
+source build/env.sh
+# engine change -> rebuild + re-merge + app:
+cmake --build work/strikers/build-ios-sim --target gxruntime_aurora -j 8
+libtool -static -o work/strikers/build-ios-sim/merged/libBallpadEngine.a \
+  $(head -n 119 work/strikers/build-ios-sim/merged/libs2.list)
+xcodebuild -project app/Ballpad.xcodeproj -scheme Ballpad \
+  -destination "id=$BALLPAD_UDID" -derivedDataPath build/DerivedData build
+APP=$(find build/DerivedData/Build/Products -name Ballpad.app -type d | head -1)
+xcrun simctl install "$BALLPAD_UDID" "$APP"
+SIMCTL_CHILD_BALLPAD_LOG_FILE=$PWD/work/tmp/ios_show.log \
+SIMCTL_CHILD_BALLPAD_EFB_NATIVE=1 SIMCTL_CHILD_BALLPAD_AUTOSTART=1 \
+  xcrun simctl launch --terminate-running-process "$BALLPAD_UDID" com.ballpad.strikers
+```

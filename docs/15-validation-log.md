@@ -53,3 +53,39 @@ Updated 2026-08-07 (session 5 — Path C oracle complete)
   as verification; macOS Path C provides the exact menu map)
 - 60s in-match on phone + iPad, full control checklist, layout persistence, menu
   scale 1x/2x, save round-trip, iPad playable match, docs/12 scoreboard green
+
+## 2026-08-08 — Session 6: iOS renderer unblocked (game VISIBLE on simulator)
+
+### What changed
+- Root cause found for the blank/white screen: the EFB render target
+  (`g_frameBuffer`) was sized to the full screen (2532x1170 on iPhone 17e sim)
+  while the iOS display path reads the EFB back into a fixed 640x528 software
+  backing. The app displayed a 1:1 top-left crop of a full-screen render — a
+  tiny dark slice; the old brightness filter whitewashed it into the white
+  block the user reported.
+- Fix: `BALLPAD_EFB_NATIVE=1` (now default from the iOS host) recreates the
+  EFB target + depth at true EFB size 640x528; the readback is 1:1 with the
+  backing. Removed the CIColorControls brightness/contrast filter.
+- Evidence: `build/proofs/step-15-EFB-fix-warning2.png` (health screen),
+  `step-15-mid-boot.png` (Mario scene), `step-15-title-or-menu.png` (main
+  menu GRUDGE MATCH), `step-15-select.png` (side-choice popup),
+  `step-15-inmatch.png` (DAISY 0-0 MARIO, 4:45).
+
+### Confirmed working (now visible on phone sim)
+- Real guest frames on screen: boot -> health -> title -> main menu -> captain
+  select -> side choice -> live match, all rendering correctly.
+- Match state: GS_GAMEPLAY, clock ticking, stadium/players/HUD visible.
+- Readback is pixel-honest (white-fill test: 255 reads back 255).
+
+### Confirmed broken / open (honest)
+- Not widescreen: 4:3 EFB letterboxed in landscape view.
+- Slow: ~10 fps guest (`[gfx] fps=10.5`); ~20 min block-paced boot to match.
+- Touch controls are placeholder-grade; settings/resolution not meaningfully
+  wired; save/load, layout persistence, overflow menu, iPad parity unproven.
+- Game is "loads + renders", not yet playable. Details:
+  docs/17-session-6-renderer-unblocked.md
+
+### Definition of Done open items (unchanged, now reachable)
+- Controls checklist (M5), multi-touch (M6), layout editor + persistence
+  (M7/M8), overflow menu 1x/2x (M9/M10), save round-trip (M11), iPad parity
+  (M1-M14), perf/widescreen, docs/12 scoreboard green.
