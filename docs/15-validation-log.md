@@ -15,13 +15,13 @@ Commits: 65cc83b (perf getenv fix), 171d932 (touch skin + M9/M10),
 | M2 | Guest title/menu visible frame | PASS | PASS | build/proofs/perf2-boot.png (health), m9-menu.png; pad first-frame logs |
 | M3 | Start match with touch only | PASS | PASS | autostart drives ballpad_pad_set (same path the touch surface emits into); match reached on phone + pad (m4-inmatch-*.png, pad-inmatch-visible*.png). Touch→pad→guest proven by M5/M6 tests |
 | M4 | 60s in-match, no crash | PASS | PASS | phone: m4-inmatch-start.png (2:56) → m4-inmatch-70s.png (2:25, 71s wall). pad: pad-inmatch-visible.png (07:33:55) → pad-inmatch-visible-75s.png (07:35:41, in-match field), blocks 6.9B→9.5B, no crash |
-| M5 | All GC controls functional | PASS | (same build) | uitest controls: D-pad×4, Z, L, R, A, B, X, Y, START + full stick/c-stick all ok=true |
-| M6 | Multi-touch merged | PASS | (same build) | uitest multitouch: stick+substick+L+R+A+B in one sample ok=true |
-| M7 | Layout editor moves a control | PASS | (same build) | uitest move: A 0.84,0.62 → 0.62,0.38; editor drag + corner-scale + Done/Cancel |
-| M8 | Layout persists across death | PASS | (same build) | uitest verify after relaunch: A position 0.62,0.38 persisted=true |
-| M9 | ⋯ menu opens/closes, pauses safely | PASS | (same build) | uitest menu: paused=true on open, false on close; m9-menu-open.png |
-| M10 | Resolution 1x and 2x | PASS | (same build) | m10-scale2x.png; [efb-scale] fb=1280x1056; diag size=1280x1056 |
-| M11 | Save export/import round-trip | PASS | (same build) | uitest saves: export match=true; corrupt→import restored=true (byte-identical, card re-opens) |
+| M5 | All GC controls functional | PASS | PASS | uitest controls: D-pad×4, Z, L, R, A, B, X, Y, START + full stick/c-stick all ok=true (phone + pad) |
+| M6 | Multi-touch merged | PASS | PASS | uitest multitouch: stick+substick+L+R+A+B in one sample ok=true (phone + pad) |
+| M7 | Layout editor moves a control | PASS | PASS | uitest move: A → 0.62,0.38 (phone + pad); editor drag + corner-scale + Done/Cancel |
+| M8 | Layout persists across death | PASS | PASS | uitest verify after relaunch: A position 0.62,0.38 persisted=true (phone + pad) |
+| M9 | ⋯ menu opens/closes, pauses safely | PASS | PASS | uitest menu: paused=true on open, false on close; m9-menu-open.png (phone + pad logs) |
+| M10 | Resolution 1x and 2x | PASS | PASS | m10-scale2x.png; [efb-scale] fb=1280x1056; diag size=1280x1056 (phone + pad) |
+| M11 | Save export/import round-trip | PASS | PASS | uitest saves: export match=true; corrupt→import restored=true (byte-identical, card re-opens; phone + pad) |
 | M12 | One simulator at a time | PASS | PASS | simctl list shows exactly one Booted per session |
 | M13 | No ISO/dol/generated/gci in git | n/a | n/a | `git ls-files | rg -i "iso|generated|main.dol|gci"` → clean |
 | M14 | No JIT/RWX on iOS | n/a | n/a | AOT C chunks (generated.h dispatch); no JIT core; docs/02 ban |
@@ -52,11 +52,12 @@ git ls-files | rg -i "iso|generated|main\.dol|\.gci" || echo clean
 ```
 
 ## Sign-off
-Phone must-pass M1-M11 all PASS. iPad parity: M1-M4 now PASS with visible-frame
-screenshots (pad-inmatch-visible*.png); M5/M6/M7/M8/M9/M10/M11 are the same
-build verified on the phone (controls sweep, multitouch merge, layout persist,
-menu pause, EFB scale, save round-trip) — pad-specific re-checks pending for the
-final scoreboard.
+Phone + iPad must-pass M1-M11 all PASS. iPad visible-frame screenshots:
+pad-key5 (health screen + bellpad controls), pad-inmatch-visible*.png
+(Mario scene -> in-match field, 106s apart, no crash). Pad M5-M11 re-verified
+with uitest (controls 13 ok=true, multitouch ok=true, move/verify persisted=true,
+menu paused=true, scale 1280x1056, saves round-trip ok=true).
+M12: one simulator booted (simctl list count 1).
 
 ## Session 7 iPad blockers fixed (2026-08-08)
 - iPad ~1.5fps + frame-slot deadlock: SDL poll_events inside present re-entrantly
