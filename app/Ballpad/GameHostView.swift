@@ -42,6 +42,9 @@ struct SDLGameContainer: UIViewRepresentable {
 
         func attach(to view: UIView) {
             container = view
+            #if targetEnvironment(simulator)
+            NSLog("[window] container initial frame=%@", NSCoder.string(for: view.frame))
+            #endif
             let iv = UIImageView()
             iv.backgroundColor = .black
             iv.contentMode = .scaleAspectFit
@@ -74,6 +77,19 @@ struct SDLGameContainer: UIViewRepresentable {
         }
 
         func updateFrame() {
+            #if targetEnvironment(simulator)
+            if diagCount % 300 == 0, let container = container {
+                let w = container.window
+                let winFrame = w?.frame ?? .zero
+                let screenBounds = w?.screen.bounds ?? .zero
+                NSLog("[window] container=%@ windowNil=%d window=%@ screen=%@ super=%@",
+                      NSCoder.string(for: container.frame),
+                      w == nil ? 1 : 0,
+                      NSCoder.string(for: winFrame),
+                      NSCoder.string(for: screenBounds),
+                      String(describing: type(of: container.superview ?? UIView())))
+            }
+            #endif
             var w: UInt32 = 0
             var h: UInt32 = 0
             guard ballpad_ios_host_frame_size(&w, &h) else {

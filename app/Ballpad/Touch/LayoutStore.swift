@@ -28,6 +28,10 @@ final class LayoutStore: ObservableObject {
                                     : DefaultLayouts.computedPhone(in: size)
     }
 
+    func node(_ id: ControlID) -> ControlNode {
+        nodes.first(where: { $0.id == id }) ?? ControlNode(id: id, normX: 0.5, normY: 0.5, normW: 0.1, normH: 0.1, label: id.rawValue)
+    }
+
     func save() {
         if let data = try? JSONEncoder().encode(nodes) {
             UserDefaults.standard.set(data, forKey: key)
