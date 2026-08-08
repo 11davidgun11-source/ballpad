@@ -138,3 +138,18 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   `EfbCopyFilter` pipeline RGBA8Unorm vs render pass BGRA8Unorm.
 - **Progress:** Boots Dolphin OS, VI/GX/ARQ/AI SDK banners; helper ABI bridge compiles 163 chunks.
 - **Fallback:** Path C (RecompCore module) for first macOS frame proof.
+
+## 2026-08-08 — Sim-teardown SIGABRT (BackBoardServices HID) — confirmed artifact
+- **Symptom:** two crash reports (phone pid 67754 at 04:34:47; iPad pid 79385
+  at 05:13:56): EXC_CRASH (SIGABRT), Thread = BSXPC backboard.hid-services
+  (BKHIDEventDeliveryManager), abort via `exit(28)` in
+  `BKSHIDEventDeliveryManager _connectionInvalidated:`.
+- **Cause (confirmed):** both crashes coincide with `xcrun simctl shutdown
+  all` (simulator teardown while the app runs). Shutting down the sim stops
+  backboardd's HID service; the app's HID event-delivery connection is
+  invalidated and the delivery manager calls exit(28). Not an app bug — the
+  same SIGABRT pattern is documented in session 5 ("teardown artifacts from
+  the console pipe closing"). Long runs that are left alone (e.g. 1h12m
+  phone run, and the M4 71s in-match run) survive fine.
+- **Fallback:** always `shutdown all` BEFORE installing/launching, never
+  while the app is running; fresh-boot the sim before long gate runs.
