@@ -3,6 +3,7 @@ import SwiftUI
 struct OverflowMenuView: View {
     @Binding var isPresented: Bool
     @Binding var renderScale: Int
+    @Binding var aspectMode: String
     var onEditLayout: () -> Void
     var onResetLayout: () -> Void
 
@@ -18,6 +19,14 @@ struct OverflowMenuView: View {
                     }
                     .onChange(of: renderScale) { _, newValue in
                         print("[menu] scale=\(newValue)")
+                    }
+                    Picker("Aspect", selection: $aspectMode) {
+                        Text("Native").tag("native")
+                        Text("16:9").tag("wide")
+                        Text("Stretch").tag("stretch")
+                    }
+                    .onChange(of: aspectMode) { _, newValue in
+                        print("[menu] aspect=\(newValue)")
                     }
                 }
                 Section("Controls") {

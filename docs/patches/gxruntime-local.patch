@@ -144,6 +144,20 @@ index 349237d..cd6b606 100644
          lib/gfx/plane_capture.cpp
          lib/gfx/bounding_box.cpp
          lib/gfx/pipeline_cache.cpp
+diff --git a/graphics/aurora/include/aurora/gfx.h b/graphics/aurora/include/aurora/gfx.h
+index a13ce39..8cc4c2f 100644
+--- a/graphics/aurora/include/aurora/gfx.h
++++ b/graphics/aurora/include/aurora/gfx.h
+@@ -32,6 +32,9 @@ const AuroraStats* aurora_get_stats();
+ float aurora_get_fps();
+ 
+ void aurora_enable_vsync(bool enabled);
++/* Supersample the EFB render target (1x = 640x528 baseline). Recreates the
++ * EFB targets at the next surface refresh. Valid 1..4. */
++void aurora_set_efb_scale(uint32_t scale);
+ 
+ /*
+  * EFB readback (GXRuntime recomp patch): arm a one-shot copy of the next
 diff --git a/graphics/aurora/lib/gfx/common.cpp b/graphics/aurora/lib/gfx/common.cpp
 index a64dd2d..5c30fda 100644
 --- a/graphics/aurora/lib/gfx/common.cpp
@@ -481,18 +495,30 @@ index 754c2b9..e35d486 100644
      return false;
    // Depth format destinations still use conversion pipelines; filter WGSL
 diff --git a/graphics/aurora/lib/webgpu/gpu.cpp b/graphics/aurora/lib/webgpu/gpu.cpp
-index 7aff76e..87c7da0 100644
+index 7aff76e..66950ed 100644
 --- a/graphics/aurora/lib/webgpu/gpu.cpp
 +++ b/graphics/aurora/lib/webgpu/gpu.cpp
-@@ -3,6 +3,7 @@
+@@ -2,7 +2,9 @@
+ 
  #include <algorithm>
  #include <array>
++#include <cstdio>
  #include <cmath>
 +#include <cstdlib>
  #include <cstdint>
  #include <string>
  #include <string_view>
-@@ -1130,6 +1131,19 @@ static void resize_swapchain_internal(uint32_t width, uint32_t height, uint32_t
+@@ -44,6 +46,9 @@ GraphicsConfig g_graphicsConfig;
+ TextureWithSampler g_frameBuffer;
+ TextureWithSampler g_frameBufferResolved;
+ TextureWithSampler g_depthBuffer;
++// EFB render-target supersample scale (1x=640x528 ... 4x). Default 1x; the
++// iOS host sets BALLPAD_EFB_SCALE or calls set_efb_scale() for M10.
++uint32_t g_efb_scale = 1u;
+ 
+ // EFB -> XFB copy pipeline
+ static wgpu::BindGroupLayout g_CopyBindGroupLayout;
+@@ -1130,9 +1135,51 @@ static void resize_swapchain_internal(uint32_t width, uint32_t height, uint32_t
    g_frameBuffer = create_render_texture(width, height, true);
    g_frameBufferResolved = create_render_texture(width, height, false);
    g_depthBuffer = create_depth_texture(width, height);
@@ -501,10 +527,11 @@ index 7aff76e..87c7da0 100644
 +  // EFB render target to the window, which makes the readback a cropped slice
 +  // of a full-screen render. Recreate the EFB targets at the true EFB size so
 +  // the readback is 1:1; the (invisible on iOS) present blit still scales the
-+  // 640x528 EFB into the surface-size swapchain.
++  // EFB into the surface-size swapchain. BALLPAD_EFB_SCALE (or the runtime
++  // setter) supersamples the EFB target: 1x = 640x528, 2x = 1280x1056, etc.
 +  if (getenv("BALLPAD_EFB_NATIVE") != nullptr) {
-+    constexpr uint32_t kEfbWidth = 640u;
-+    constexpr uint32_t kEfbHeight = 528u;
++    const uint32_t kEfbWidth = 640u * g_efb_scale;
++    const uint32_t kEfbHeight = 528u * g_efb_scale;
 +    g_frameBuffer = create_render_texture(kEfbWidth, kEfbHeight, true);
 +    g_frameBufferResolved = create_render_texture(kEfbWidth, kEfbHeight, false);
 +    g_depthBuffer = create_depth_texture(kEfbWidth, kEfbHeight);
@@ -512,6 +539,59 @@ index 7aff76e..87c7da0 100644
    g_CopyBindGroup = create_copy_bind_group(present_source());
  }
  
++void set_efb_scale(uint32_t scale) {
++  if (scale < 1u || scale > 4u)
++    return;
++  if (g_efb_scale == scale)
++    return;
++  g_efb_scale = scale;
++  // Recreate the EFB targets at the new scale on the next surface refresh.
++  if (g_surface && g_device) {
++    uint32_t width = g_graphicsConfig.surfaceConfiguration.width;
++    uint32_t height = g_graphicsConfig.surfaceConfiguration.height;
++    uint32_t nativeWidth = width;
++    uint32_t nativeHeight = height;
++    if (window::get_sdl_window() != nullptr) {
++      const auto size = window::get_window_size();
++      width = size.fb_width;
++      height = size.fb_height;
++      nativeWidth = size.native_fb_width;
++      nativeHeight = size.native_fb_height;
++    }
++    if (width != 0 && height != 0)
++      resize_swapchain_internal(width, height, nativeWidth, nativeHeight, true);
++    if (getenv("BALLPAD_DEBUG_EFB") != nullptr)
++      std::fprintf(stderr, "[efb-scale] set scale=%u fb=%ux%u surface=%ux%u\n",
++                   scale, g_frameBuffer.size.width, g_frameBuffer.size.height,
++                   width, height);
++  }
++}
++
+ bool refresh_surface(bool recreate) {
+   gfx::gpu_synchronize();
+   if (!g_instance || !g_device) {
+@@ -1175,3 +1222,7 @@ void aurora_enable_vsync(const bool enabled) {
+   aurora::webgpu::g_graphicsConfig.surfaceConfiguration.presentMode = aurora::webgpu::best_present_mode(enabled);
+   aurora::window::push_custom_event(aurora::window::CustomEvent::RefreshSurface);
+ }
++
++void aurora_set_efb_scale(uint32_t scale) {
++  aurora::webgpu::set_efb_scale(scale);
++}
+diff --git a/graphics/aurora/lib/webgpu/gpu.hpp b/graphics/aurora/lib/webgpu/gpu.hpp
+index cd65d98..20c4940 100644
+--- a/graphics/aurora/lib/webgpu/gpu.hpp
++++ b/graphics/aurora/lib/webgpu/gpu.hpp
+@@ -65,6 +65,9 @@ void shutdown();
+ void release_surface() noexcept;
+ bool refresh_surface(bool recreate = true);
+ void resize_swapchain(uint32_t width, uint32_t height, uint32_t nativeWidth, uint32_t nativeHeight, bool force = false);
++// Supersample the EFB render target (1x = 640x528 baseline). Recreates the
++// EFB targets at the next surface refresh. 1..4.
++void set_efb_scale(uint32_t scale);
+ TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled);
+ const TextureWithSampler& present_source() noexcept;
+ wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source);
 diff --git a/graphics/aurora/lib/window.cpp b/graphics/aurora/lib/window.cpp
 index 74864c3..6a49729 100644
 --- a/graphics/aurora/lib/window.cpp
@@ -681,6 +761,23 @@ index 6ef4cf4..565fb31 100644
  // C2: walk nonzero gxcore GapCounters into the process-global gap_report.
  // Call once before gap_report_write_json on the live Strikers path so
  // --gap-report includes gxcore/* rows (same taxonomy as dolgx_replay --core).
+diff --git a/include/gxruntime/efb_access.h b/include/gxruntime/efb_access.h
+index 61c5164..ea4cb7c 100644
+--- a/include/gxruntime/efb_access.h
++++ b/include/gxruntime/efb_access.h
+@@ -36,6 +36,12 @@
+ #define DOL_EFB_WIDTH_MAX 640u
+ #define DOL_EFB_HEIGHT_MAX 528u
+ 
++// Display-backing max (EFB supersample M10): the software color store may be
++// sized up to 4x the hardware EFB so scaled readbacks (1x/2x/3x/4x) land
++// 1:1. GXPeek/GXPoke decode stays at the hardware 10-bit window (1023 max).
++#define DOL_EFB_BACKING_WIDTH_MAX 2560u
++#define DOL_EFB_BACKING_HEIGHT_MAX 2112u
++
+ // Bounding-box indices (PE_BBOX_LEFT..BOTTOM / BPMEM_CLEARBBOX packing).
+ #define DOL_EFB_BBOX_LEFT 0u
+ #define DOL_EFB_BBOX_RIGHT 1u
 diff --git a/include/gxruntime/platform.h b/include/gxruntime/platform.h
 index 5b10f8c..64d19c1 100644
 --- a/include/gxruntime/platform.h
@@ -780,6 +877,44 @@ index 2f13110..e9527fa 100644
  }
  
  void ppc_rfi(CPUState* cpu, u32 cia) {
+diff --git a/src/efb_access.c b/src/efb_access.c
+index 65982ba..dc75f63 100644
+--- a/src/efb_access.c
++++ b/src/efb_access.c
+@@ -51,10 +51,12 @@ bool dol_efb_access_enable_backing(DolEfbAccess* efb, u16 width, u16 height,
+                                    u32* color, u32* depth) {
+     if (efb == NULL || width == 0u || height == 0u)
+         return false;
+-    if (width > DOL_EFB_WIDTH_MAX)
+-        width = (u16)DOL_EFB_WIDTH_MAX;
+-    if (height > DOL_EFB_HEIGHT_MAX)
+-        height = (u16)DOL_EFB_HEIGHT_MAX;
++    // Backing can exceed the hardware EFB for supersampled display readbacks
++    // (M10 1x/2x/3x/4x); the CPU peek/poke window stays hardware-clamped.
++    if (width > DOL_EFB_BACKING_WIDTH_MAX)
++        width = (u16)DOL_EFB_BACKING_WIDTH_MAX;
++    if (height > DOL_EFB_BACKING_HEIGHT_MAX)
++        height = (u16)DOL_EFB_BACKING_HEIGHT_MAX;
+ 
+     dol_efb_access_disable_backing(efb);
+ 
+@@ -164,10 +166,12 @@ bool dol_efb_access_fill_color_rgba8(DolEfbAccess* efb, const u8* rgba,
+                                      u16 width, u16 height) {
+     if (efb == NULL || rgba == NULL || width == 0u || height == 0u)
+         return false;
+-    if (width > DOL_EFB_WIDTH_MAX)
+-        width = (u16)DOL_EFB_WIDTH_MAX;
+-    if (height > DOL_EFB_HEIGHT_MAX)
+-        height = (u16)DOL_EFB_HEIGHT_MAX;
++    // Display-backing fill (M10): accept supersampled readbacks up to 4x the
++    // hardware EFB. CPU peeks/pokes stay clamped by their own 10-bit decode.
++    if (width > DOL_EFB_BACKING_WIDTH_MAX)
++        width = (u16)DOL_EFB_BACKING_WIDTH_MAX;
++    if (height > DOL_EFB_BACKING_HEIGHT_MAX)
++        height = (u16)DOL_EFB_BACKING_HEIGHT_MAX;
+     if (!dol_efb_access_has_backing(efb) || efb->width != width ||
+         efb->height != height) {
+         if (!dol_efb_access_enable_backing(efb, width, height, NULL, NULL))
 diff --git a/src/gx_recomp.c b/src/gx_recomp.c
 index 842e0e6..c25eac2 100644
 --- a/src/gx_recomp.c

@@ -3,6 +3,8 @@ import UIKit
 
 struct SDLGameContainer: UIViewRepresentable {
     var renderScale: CGFloat = 1
+    var aspectMode: String = "native"
+    var paused: Bool = false
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
@@ -13,7 +15,18 @@ struct SDLGameContainer: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {
         if context.coordinator.renderScale != renderScale {
             context.coordinator.renderScale = renderScale
+            // M10: recreate the EFB render targets at the new supersample scale.
+            ballpad_ios_host_set_efb_scale(Int32(renderScale))
             FileHandle.standardError.write(Data("[display] scale=\(renderScale)\n".utf8))
+        }
+        if context.coordinator.aspectMode != aspectMode {
+            context.coordinator.aspectMode = aspectMode
+            context.coordinator.applyAspect()
+            FileHandle.standardError.write(Data("[display] aspect=\(aspectMode)\n".utf8))
+        }
+        if context.coordinator.paused != paused {
+            context.coordinator.paused = paused
+            FileHandle.standardError.write(Data("[display] paused=\(paused)\n".utf8))
         }
     }
 
@@ -24,6 +37,8 @@ struct SDLGameContainer: UIViewRepresentable {
         var timer: Timer?
         var imageView: UIImageView?
         var renderScale: CGFloat = 1
+        var aspectMode: String = "native"
+        var paused: Bool = false
 
         func attach(to view: UIView) {
             container = view
@@ -46,9 +61,14 @@ struct SDLGameContainer: UIViewRepresentable {
             cfg.card_path = nil
             cfg.enable_audio = false
             cfg.verbose = true
+            // M10: apply the persisted EFB supersample scale before boot so the
+            // first EFB target creation uses it.
+            ballpad_ios_host_set_efb_scale(Int32(renderScale))
             ballpad_ios_host_start(&cfg)
             timer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
-                ballpad_ios_host_step_frame()
+                if self?.paused != true {
+                    ballpad_ios_host_step_frame()
+                }
                 self?.updateFrame()
             }
         }
@@ -103,6 +123,19 @@ struct SDLGameContainer: UIViewRepresentable {
             }
         }
 
+        // docs/06 Display aspect policy: native 4:3 letterbox vs 16:9 crop vs
+        // stretch. Crop (wide) loses the top/bottom HUD band; stretch distorts.
+        func applyAspect() {
+            switch aspectMode {
+            case "wide":
+                imageView?.contentMode = .scaleAspectFill
+            case "stretch":
+                imageView?.contentMode = .scaleToFill
+            default:
+                imageView?.contentMode = .scaleAspectFit
+            }
+        }
+
         var frameDiag = 0
         var diagCount = 0
     }
@@ -123,7 +156,9 @@ struct GameHostView: View {
 
     var body: some View {
         ZStack {
-            SDLGameContainer(renderScale: CGFloat(settings.renderScale))
+            SDLGameContainer(renderScale: CGFloat(settings.renderScale),
+                             aspectMode: settings.aspectMode,
+                             paused: showMenu)
                 .ignoresSafeArea()
             VStack {
                 HStack {
@@ -141,6 +176,28 @@ struct GameHostView: View {
                 }
                 .padding(.horizontal)
                 .padding(.top, 8)
+                if editMode {
+                    // Layout editor toolbar (docs/05 §5): Done saves, Cancel
+                    // reverts to the snapshot taken at enter.
+                    HStack {
+                        Button("Cancel") {
+                            layout.revertSnapshot()
+                            editMode = false
+                        }
+                        .foregroundStyle(.red)
+                        Spacer()
+                        Text("EDIT CONTROLS")
+                            .font(.caption.bold())
+                            .foregroundStyle(.yellow)
+                        Spacer()
+                        Button("Done") {
+                            layout.commitSnapshot()
+                            editMode = false
+                        }
+                        .foregroundStyle(.green)
+                    }
+                    .padding(.horizontal)
+                }
                 Spacer()
             }
             TouchControlSurface(store: layout, editMode: editMode) { status in
@@ -164,7 +221,12 @@ struct GameHostView: View {
             OverflowMenuView(
                 isPresented: $showMenu,
                 renderScale: $settings.renderScale,
-                onEditLayout: { editMode = true; showMenu = false },
+                aspectMode: $settings.aspectMode,
+                onEditLayout: {
+                    layout.takeSnapshot()
+                    editMode = true
+                    showMenu = false
+                },
                 onResetLayout: {
                     let idiom = UIDevice.current.userInterfaceIdiom
                     layout.reset(deviceClass: idiom == .pad ? "pad" : "phone")
@@ -212,6 +274,63 @@ struct GameHostView: View {
                         log("menu closed")
                     }
                 }
+            }
+        case "multitouch":
+            // M6: stick + trigger + two face buttons simultaneously. Proves the
+            // pad buffer merges multi-input in one sample (the touch surface
+            // emits the same assembled status on multi-touch).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                var s = BallPadStatus()
+                s.err = 0
+                s.stickX = 100
+                s.stickY = -80
+                s.substickX = 60
+                s.triggerLeft = 255
+                s.triggerRight = 220
+                s.button = UInt16(BALLPAD_BUTTON_A) | UInt16(BALLPAD_BUTTON_B)
+                ballpad_pad_set(0, &s)
+                var out = BallPadStatus()
+                ballpad_pad_get(0, &out)
+                let ok = out.button == s.button && out.stickX == 100 &&
+                    out.stickY == -80 && out.triggerLeft == 255
+                log("multitouch stick=\(out.stickX),\(out.stickY) sub=\(out.substickX),\(out.substickY) L=\(out.triggerLeft) R=\(out.triggerRight) btn=0x\(String(out.button, radix: 16)) ok=\(ok)")
+            }
+        case "controls":
+            // M5: sweep every GC control through the pad buffer, logging each.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                let checks: [(String, UInt16)] = [
+                    ("D-LEFT", UInt16(BALLPAD_BUTTON_LEFT)),
+                    ("D-RIGHT", UInt16(BALLPAD_BUTTON_RIGHT)),
+                    ("D-DOWN", UInt16(BALLPAD_BUTTON_DOWN)),
+                    ("D-UP", UInt16(BALLPAD_BUTTON_UP)),
+                    ("Z", UInt16(BALLPAD_TRIGGER_Z)),
+                    ("R", UInt16(BALLPAD_TRIGGER_R)),
+                    ("L", UInt16(BALLPAD_TRIGGER_L)),
+                    ("A", UInt16(BALLPAD_BUTTON_A)),
+                    ("B", UInt16(BALLPAD_BUTTON_B)),
+                    ("X", UInt16(BALLPAD_BUTTON_X)),
+                    ("Y", UInt16(BALLPAD_BUTTON_Y)),
+                    ("START", UInt16(BALLPAD_BUTTON_START)),
+                ]
+                for (name, bit) in checks {
+                    var s = BallPadStatus()
+                    s.err = 0
+                    s.button = bit
+                    ballpad_pad_set(0, &s)
+                    var out = BallPadStatus()
+                    ballpad_pad_get(0, &out)
+                    log("control \(name)=0x\(String(out.button, radix: 16)) ok=\((out.button & bit) == bit)")
+                }
+                var stick = BallPadStatus()
+                stick.err = 0
+                stick.stickX = 127
+                stick.stickY = -127
+                stick.substickX = 127
+                stick.substickY = -127
+                ballpad_pad_set(0, &stick)
+                var out = BallPadStatus()
+                ballpad_pad_get(0, &out)
+                log("stick full=\(out.stickX),\(out.stickY) cstick=\(out.substickX),\(out.substickY) ok=\(out.stickX == 127 && out.stickY == -127)")
             }
         default:
             break

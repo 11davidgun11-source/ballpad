@@ -38,6 +38,7 @@ extern "C" void SDL_SetMainReady(void);
 extern "C" bool aurora_begin_frame(void);
 extern "C" void aurora_end_frame(void);
 extern "C" unsigned long long aurora_present_count(void);
+extern "C" void aurora_set_efb_scale(uint32_t scale);
 extern "C" void ballpad_arm_efb_readback(void);
 extern "C" void ballpad_window_probe(void);
 extern "C" unsigned long long g_dec_deliveries;
@@ -70,6 +71,7 @@ unsigned long long g_blocks = 0;
 const char* g_stop_reason = "";
 const unsigned long long kFrameBlocks = 350000ull;
 const unsigned long long kMaxBlocks = 80000000000ull;
+int g_efb_scale = 1;
 
 const char* g_iso_path = nullptr;
 const char* g_dol_path = nullptr;
@@ -130,6 +132,15 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   // render. Make this the permanent iOS behavior (overridable for tests).
   if (getenv("BALLPAD_EFB_NATIVE") == nullptr)
     setenv("BALLPAD_EFB_NATIVE", "1", 1);
+  // EFB supersample scale (M10 resolution 1x/2x/3x/4x). Applied before Aurora
+  // init so the first EFB target creation uses it; set_efb_scale also handles
+  // runtime changes (recreates the targets on the next surface refresh).
+  if (getenv("BALLPAD_EFB_SCALE") != nullptr) {
+    const int envScale = atoi(getenv("BALLPAD_EFB_SCALE"));
+    if (envScale >= 1 && envScale <= 4)
+      g_efb_scale = envScale;
+  }
+  aurora_set_efb_scale((uint32_t)g_efb_scale);
 
   const AuroraBackendConfig backend_config = {
       .app_name = "Ballpad",
@@ -625,6 +636,18 @@ void ballpad_ios_host_stop(void) {
 }
 
 bool ballpad_ios_host_running(void) { return g_started.load(); }
+
+int ballpad_ios_host_get_efb_scale(void) { return g_efb_scale; }
+
+void ballpad_ios_host_set_efb_scale(int scale) {
+  if (scale < 1) scale = 1;
+  if (scale > 4) scale = 4;
+  g_efb_scale = scale;
+  char buf[16];
+  snprintf(buf, sizeof buf, "%d", scale);
+  setenv("BALLPAD_EFB_SCALE", buf, 1);
+  aurora_set_efb_scale((uint32_t)scale);
+}
 
 void ballpad_ios_host_application_did_become_active(void) {}
 void ballpad_ios_host_application_will_resign_active(void) {}
