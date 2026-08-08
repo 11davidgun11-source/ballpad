@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 final class LayoutStore: ObservableObject {
     @Published var nodes: [ControlNode]
@@ -12,8 +13,19 @@ final class LayoutStore: ObservableObject {
            !decoded.isEmpty {
             nodes = decoded
         } else {
-            nodes = deviceClass == "pad" ? DefaultLayouts.padLandscape() : DefaultLayouts.phoneLandscape()
+            nodes = Self.defaults(for: deviceClass)
         }
+    }
+
+    // bellpad-style adaptive defaults computed from the current screen size
+    // (landscape): small screens scale controls down, iPads use fixed larger
+    // sizes. Falls back to the last saved layout when present.
+    private static func defaults(for deviceClass: String) -> [ControlNode] {
+        let bounds = UIScreen.main.bounds
+        let size = CGSize(width: max(bounds.width, bounds.height),
+                          height: min(bounds.width, bounds.height))
+        return deviceClass == "pad" ? DefaultLayouts.computedPad(in: size)
+                                    : DefaultLayouts.computedPhone(in: size)
     }
 
     func save() {
@@ -65,7 +77,7 @@ final class LayoutStore: ObservableObject {
     }
 
     func reset(deviceClass: String) {
-        nodes = deviceClass == "pad" ? DefaultLayouts.padLandscape() : DefaultLayouts.phoneLandscape()
+        nodes = Self.defaults(for: deviceClass)
         save()
     }
 }

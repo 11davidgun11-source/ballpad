@@ -332,6 +332,31 @@ struct GameHostView: View {
                 ballpad_pad_get(0, &out)
                 log("stick full=\(out.stickX),\(out.stickY) cstick=\(out.substickX),\(out.substickY) ok=\(out.stickX == 127 && out.stickY == -127)")
             }
+        case "saves":
+            // M11: export the active card, then import it back and verify the
+            // file round-trips byte-identically.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                let docs = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? ""
+                let dir = (docs as NSString).appendingPathComponent("Saves")
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                let card = String(cString: ballpad_ios_host_card_path())
+                guard FileManager.default.fileExists(atPath: card) else {
+                    log("saves: active card missing at \(card)")
+                    return
+                }
+                let cardData = (try? Data(contentsOf: URL(fileURLWithPath: card))) ?? Data()
+                let export = (dir as NSString).appendingPathComponent("uitest-roundtrip.dolcard")
+                let exported = ballpad_ios_host_export_card(export)
+                let exportedData = (try? Data(contentsOf: URL(fileURLWithPath: export))) ?? Data()
+                let exportMatch = exported && cardData == exportedData
+                log("saves: export ok=\(exported) bytes=\(exportedData.count) match=\(exportMatch)")
+                // Corrupt the active card, then import the export back.
+                try? Data(repeating: 0xEE, count: cardData.count).write(to: URL(fileURLWithPath: card))
+                let imported = ballpad_ios_host_import_card(export)
+                let restoredData = (try? Data(contentsOf: URL(fileURLWithPath: card))) ?? Data()
+                let restoredMatch = imported && restoredData == cardData
+                log("saves: import ok=\(imported) restored=\(restoredMatch) bytes=\(restoredData.count)")
+            }
         default:
             break
         }

@@ -66,6 +66,11 @@ bool ballpad_ios_host_frame_size(uint32_t* width_out, uint32_t* height_out);
 int  ballpad_ios_host_get_efb_scale(void);
 void ballpad_ios_host_set_efb_scale(int scale);
 
+/* M11 memory card. The active card lives at Documents/Saves/CardA.dolcard. */
+const char* ballpad_ios_host_card_path(void);
+bool ballpad_ios_host_export_card(const char* dest_path);
+bool ballpad_ios_host_import_card(const char* src_path);
+
 #ifdef __cplusplus
 }
 #endif

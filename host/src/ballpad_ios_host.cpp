@@ -28,6 +28,7 @@ extern "C" {
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <sys/stat.h>
 
 extern "C" void ballpad_window_set_scene(void* scene);
 extern "C" void* ballpad_window_get_sdl_window(void);
@@ -75,6 +76,7 @@ int g_efb_scale = 1;
 
 const char* g_iso_path = nullptr;
 const char* g_dol_path = nullptr;
+const char* g_card_path = nullptr;
 } // namespace
 
 void ballpad_ios_host_set_window_scene(void* uiWindowScene) { g_scene = uiWindowScene; }
@@ -122,6 +124,18 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
                              : strdup((std::string(docs) + "/game.iso").c_str());
   g_dol_path = cfg->dol_path ? strdup(cfg->dol_path)
                              : strdup((std::string(docs) + "/main.dol").c_str());
+  // M11: virtual memory card lives in the app's Documents/Saves (user-visible
+  // in the Files app for import/export). The memory-card runtime creates the
+  // container on first open.
+  static std::string s_card_path;
+  if (cfg->card_path && cfg->card_path[0]) {
+    s_card_path = cfg->card_path;
+  } else {
+    std::string savesDir = std::string(docs) + "/Saves";
+    mkdir(savesDir.c_str(), 0755);
+    s_card_path = savesDir + "/CardA.dolcard";
+  }
+  g_card_path = s_card_path.c_str();
 
   SDL_SetMainReady();
   if (g_scene != nullptr) ballpad_window_set_scene(g_scene);
@@ -146,7 +160,10 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
       .app_name = "Ballpad",
       .window_width = 1280,
       .window_height = 960,
-      .vsync = true,
+      // BALLPAD_VSYNC=0 disables the swapchain present fence (diagnostic: some
+      // simulators stall the vsynced present for hundreds of ms per frame).
+      .vsync = getenv("BALLPAD_VSYNC") == nullptr ||
+               (getenv("BALLPAD_VSYNC")[0] != '0'),
       .allow_texture_dumps = false,
       .info_logging = cfg->verbose,
       .graphics_logging = cfg->verbose,
@@ -159,7 +176,11 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   }
   g_aurora_up = true;
   g_starting.store(false);
-  ballpad_arm_efb_readback();
+  // BALLPAD_DISABLE_READBACK=1 skips arming the continuous EFB readback
+  // (diagnostic: on some simulators the readback map stalls the render worker).
+  if (getenv("BALLPAD_DISABLE_READBACK") == nullptr ||
+      getenv("BALLPAD_DISABLE_READBACK")[0] != '1')
+    ballpad_arm_efb_readback();
   ballpad_window_force_presentable();
   g_sdl_window = ballpad_window_get_sdl_window();
   // Open a frame packet and KEEP it open: guest GX writes during boot must
@@ -179,10 +200,8 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   if (!mmio_install(cpu)) { return false; }
   mmio_attach_efb_readback();
   hle_install(cpu);
-  if (cfg->card_path && cfg->card_path[0]) {
-    if (!hle_card_open(cfg->card_path))
-      std::fprintf(stderr, "[card] slot A unavailable; continuing with no card\n");
-  }
+  if (!hle_card_open(s_card_path.c_str()))
+    std::fprintf(stderr, "[card] slot A unavailable; continuing with no card\n");
   dvd_open_image(g_iso_path);
   mmio_set_disc_present(dvd_image_ready());
   cpu->instruction_fallback = instruction_fallback;
@@ -198,6 +217,21 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
 // Steps one frame of guest work. Must be called on the main thread.
 void ballpad_ios_host_step_frame(void) {
   if (!g_started.load() || !g_cpu_valid) return;
+  // Re-entrancy guard: SDL's event pump inside aurora_backend_present drains
+  // the UIKit run loop, which can fire the SwiftUI step timer NESTED inside a
+  // present. A nested step then opens a second Aurora frame, and the outer
+  // present's begin_frame deadlocks on the frame-slot pool (free=0) — a hard
+  // freeze that manifested on the iPad simulator (slow GPU widens the window).
+  // Skip nested steps; the outer call already covers this work.
+  static bool s_in_step = false;
+  if (s_in_step)
+    return;
+  s_in_step = true;
+  // RAII reset on every exit path.
+  struct StepGuard {
+    bool* flag;
+    ~StepGuard() { *flag = false; }
+  } stepGuard{&s_in_step};
   // Perf instrumentation: wall-clock guest throughput per step_frame call
   // (BALLPAD_PERF_LOG=1). Reports every 60 calls (~1s at 60Hz).
   const auto t_step_begin = std::chrono::steady_clock::now();
@@ -649,6 +683,69 @@ void ballpad_ios_host_set_efb_scale(int scale) {
   aurora_set_efb_scale((uint32_t)scale);
 }
 
+const char* ballpad_ios_host_card_path(void) { return g_card_path; }
+
+// M11: copy the active memory-card container to `dest_path` (export).
+bool ballpad_ios_host_export_card(const char* dest_path) {
+  if (g_card_path == nullptr || g_card_path[0] == '\0' ||
+      dest_path == nullptr || dest_path[0] == '\0')
+    return false;
+  FILE* src = fopen(g_card_path, "rb");
+  if (src == nullptr)
+    return false;
+  FILE* dst = fopen(dest_path, "wb");
+  if (dst == nullptr) {
+    fclose(src);
+    return false;
+  }
+  char buf[65536];
+  size_t n = 0;
+  bool ok = true;
+  while ((n = fread(buf, 1, sizeof buf, src)) > 0u) {
+    if (fwrite(buf, 1, n, dst) != n) {
+      ok = false;
+      break;
+    }
+  }
+  fclose(src);
+  fclose(dst);
+  return ok;
+}
+
+// M11: copy `src_path` over the active card and re-open it (import).
+bool ballpad_ios_host_import_card(const char* src_path) {
+  if (g_card_path == nullptr || g_card_path[0] == '\0' ||
+      src_path == nullptr || src_path[0] == '\0')
+    return false;
+  FILE* src = fopen(src_path, "rb");
+  if (src == nullptr)
+    return false;
+  FILE* dst = fopen(g_card_path, "wb");
+  if (dst == nullptr) {
+    fclose(src);
+    return false;
+  }
+  char buf[65536];
+  size_t n = 0;
+  bool ok = true;
+  while ((n = fread(buf, 1, sizeof buf, src)) > 0u) {
+    if (fwrite(buf, 1, n, dst) != n) {
+      ok = false;
+      break;
+    }
+  }
+  fclose(src);
+  fclose(dst);
+  if (!ok)
+    return false;
+  // Re-open so the guest sees the imported card.
+  if (!hle_card_open(g_card_path)) {
+    std::fprintf(stderr, "[card] import re-open failed for %s\n", g_card_path);
+    return false;
+  }
+  return true;
+}
+
 void ballpad_ios_host_application_did_become_active(void) {}
 void ballpad_ios_host_application_will_resign_active(void) {}
 bool ballpad_ios_host_frame_size(uint32_t* w, uint32_t* h) {
@@ -712,24 +809,6 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
       fclose(f);
       std::fprintf(stderr, "[ballpad-ios] poke dump %s fill=%llu\n", path,
                    (unsigned long long)efb->fill_count);
-    }
-  }
-  // Debug: dump a frame periodically for inspection.
-  static unsigned long long s_dump_prev = 0;
-  if (efb->fill_count - s_dump_prev >= 60u && efb->fill_count > 30u) {
-    s_dump_prev = efb->fill_count;
-    FILE* f = fopen("/Users/chrissotraidis/GitHub/ballpad/work/tmp/ios_frame.rgba", "wb");
-    if (f) {
-      const u32 fw = efb->width, fh = efb->height;
-      for (u32 i = 0; i < fw * fh; ++i) {
-        const u32 argb = efb->color[i];
-        const uint8_t px[4] = {(uint8_t)(argb >> 16), (uint8_t)(argb >> 8),
-                               (uint8_t)(argb), (uint8_t)(argb >> 24)};
-        fwrite(px, 1, 4, f);
-      }
-      fclose(f);
-      std::fprintf(stderr, "[ballpad-ios] dumped frame %ux%u fill=%llu\n",
-                   fw, fh, (unsigned long long)efb->fill_count);
     }
   }
   const u32 fw = efb->width;

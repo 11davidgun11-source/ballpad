@@ -100,6 +100,33 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
 - Result:
 ```
 
+## 2026-08-08 — Touch interface feedback: adopt bellpad's GC control design
+
+- **Symptom:** User: "the interface is terrible. use bellpad (which I put in
+  ref folder) as a reference for specifically how to do good gamecube touch
+  controls. fix and add to the list of things to fix."
+- **Root cause:** Ballpad's first touch overlay (session 7) followed
+  docs/05's normalized layout but placed the C-stick bottom-LEFT, used a
+  large single-gesture D-pad cross, and oversized controls — poor ergonomics
+  vs a real GameCube layout (C-stick is a right-thumb control, the D-pad is
+  thumb-reachable from the left stick, and the face cluster should be
+  anchored on A).
+- **Fix (done):** rewrote `app/Ballpad/Touch/{ControlNodes,TouchControlSurface,
+  LayoutStore}.swift` to bellpad's design: move stick bottom-left, C-stick
+  bottom-right, A-anchored face cluster above it (B/X/Y around A), four
+  per-key D-pad buttons right of the move stick, L/R shoulder plates + Z,
+  START top-center, adaptive sizing (phone min(1, w/800, h/380); iPad fixed
+  larger), opacity 0.76, press animation, bellpad colors (A green / B red /
+  X blue / Y yellow / C yellow), direct linear stick mapping with 0.12
+  deadzone.
+- **Reference:** bellpad source at
+  /Users/chrissotraidis/GitHub/bellpad (`apple/ios/BellpadGameOverlay.mm`).
+  `ref/bellpad/` is intentionally empty (bellpad's original code is not
+  outbound-licensed); see `ref/bellpad/README.md`.
+- **Open items:** visually verify the new layout on phone and iPad; hardware
+  controller auto-hide (bellpad hides touch controls when a GCController
+  connects); per-control size scales in the layout editor.
+
 ## 2026-08-07 — Path S first frame blocked by early CPU exception
 - **Symptom:** StrikersRecomp boots OS, then stops with `cpu exception`, final pc `0x00000800`, blocks ~687k, gxcore submitted=0.
 - **Hypothesis:** GXRuntime pin (2026-07-21) lags modern DolRecomp helper ABI; ballpad_ppc_helpers bridge unblocks compile/link but guest still traps (DSI/exception vector).

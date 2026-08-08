@@ -8,7 +8,6 @@ struct TouchControlSurface: View {
     @State private var buttons: Set<ControlID> = []
     @State private var stickVec: CGSize = .zero
     @State private var cStickVec: CGSize = .zero
-    @State private var dpadVec: CGSize = .zero
     @State private var lTrigger: CGFloat = 0   // 0...1
     @State private var rTrigger: CGFloat = 0
 
@@ -22,13 +21,9 @@ struct TouchControlSurface: View {
                 }
             }
             .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { _ in }
-            )
             .onChange(of: buttons) { _, _ in emit() }
             .onChange(of: stickVec) { _, _ in emit() }
             .onChange(of: cStickVec) { _, _ in emit() }
-            .onChange(of: dpadVec) { _, _ in emit() }
             .onChange(of: lTrigger) { _, _ in emit() }
             .onChange(of: rTrigger) { _, _ in emit() }
         }
@@ -45,14 +40,12 @@ struct TouchControlSurface: View {
             height: node.normH * size.height * scale
         )
         if editMode {
-            // Layout editor: drag any control to reposition it; no game input.
             return AnyView(
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
                         .strokeBorder(.yellow.opacity(0.9), style: StrokeStyle(lineWidth: 2, dash: [6]))
-                    Text(node.label.isEmpty ? node.id.rawValue : node.label).font(.caption.bold()).foregroundStyle(.yellow)
-                    // Corner scale handle (docs/05 §5): drag bottom-right to
-                    // resize 0.6x-1.8x.
+                    Text(node.label.isEmpty ? node.id.rawValue : node.label)
+                        .font(.caption.bold()).foregroundStyle(.yellow)
                     Circle()
                         .fill(.yellow)
                         .frame(width: 18, height: 18)
@@ -82,17 +75,13 @@ struct TouchControlSurface: View {
             )
         }
         let fill = ControlSkin.fill(node.id)
-        let on = isActive(node.id)
-        let opacity = on ? ControlSkin.activeOpacity(node.id) : ControlSkin.idleOpacity(node.id)
         switch node.id {
         case .stick, .cStick:
-            return AnyView(stick(node: node, rect: rect, fill: fill, opacity: opacity))
-        case .dpad:
-            return AnyView(dpad(node: node, rect: rect, opacity: opacity))
+            return AnyView(stick(node: node, rect: rect, fill: fill))
         case .l, .r:
-            return AnyView(trigger(node: node, rect: rect, fill: fill, opacity: opacity))
+            return AnyView(trigger(node: node, rect: rect, fill: fill))
         default:
-            return AnyView(button(node: node, rect: rect, fill: fill, opacity: opacity))
+            return AnyView(button(node: node, rect: rect, fill: fill))
         }
     }
 
@@ -100,78 +89,26 @@ struct TouchControlSurface: View {
         switch id {
         case .stick: return stickVec != .zero
         case .cStick: return cStickVec != .zero
-        case .dpad: return dpadVec != .zero
         case .l: return lTrigger > 0
         case .r: return rTrigger > 0
         default: return buttons.contains(id)
         }
     }
 
-    // 8-way D-pad with center deadzone (docs/05 §4.4).
-    private func dpad(node: ControlNode, rect: CGRect, opacity: Double) -> some View {
-        let v = dpadVec
-        let on = v != .zero
-        let crossW = rect.width * 0.30
-        return ZStack {
-            RoundedRectangle(cornerRadius: crossW / 2)
-                .fill(.white.opacity(on ? 0.45 : 0.22))
-                .frame(width: rect.width, height: crossW)
-            RoundedRectangle(cornerRadius: crossW / 2)
-                .fill(.white.opacity(on ? 0.45 : 0.22))
-                .frame(width: crossW, height: rect.height)
-            Circle()
-                .fill(.white.opacity(on ? 0.5 : 0))
-                .frame(width: rect.width * 0.28, height: rect.height * 0.28)
-                .offset(v)
-            Text(node.label).font(.caption2).foregroundStyle(.white.opacity(0.8))
-        }
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.white.opacity(0.35), lineWidth: 1))
-        .frame(width: rect.width, height: rect.height)
-        .position(x: rect.midX, y: rect.midY)
-        .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-            let maxR = min(rect.width, rect.height) * 0.38
-            var dx = value.translation.width
-            var dy = value.translation.height
-            let mag = sqrt(dx*dx + dy*dy)
-            if mag < maxR * 0.25 {
-                dpadVec = .zero
-                return
-            }
-            if mag > maxR { dx *= maxR/mag; dy *= maxR/mag }
-            // Snap to the nearest of 8 directions (22.5 deg bins).
-            let deg = atan2(dy, dx) * 180 / .pi
-            var dir: CGSize = .zero
-            if deg >= -22.5 && deg < 22.5 {
-                dir = CGSize(width: maxR, height: 0)
-            } else if deg >= 22.5 && deg < 67.5 {
-                dir = CGSize(width: maxR * 0.707, height: maxR * 0.707)
-            } else if deg >= 67.5 && deg < 112.5 {
-                dir = CGSize(width: 0, height: maxR)
-            } else if deg >= 112.5 && deg < 157.5 {
-                dir = CGSize(width: -maxR * 0.707, height: maxR * 0.707)
-            } else if deg >= 157.5 || deg < -157.5 {
-                dir = CGSize(width: -maxR, height: 0)
-            } else if deg >= -157.5 && deg < -112.5 {
-                dir = CGSize(width: -maxR * 0.707, height: -maxR * 0.707)
-            } else if deg >= -112.5 && deg < -67.5 {
-                dir = CGSize(width: 0, height: -maxR)
-            } else {
-                dir = CGSize(width: maxR * 0.707, height: -maxR * 0.707)
-            }
-            dpadVec = dir
-        }.onEnded { _ in dpadVec = .zero })
-    }
-
-    // Analog stick: octagonal well + knob, deadzone 0.12, curve gamma 1.2.
-    private func stick(node: ControlNode, rect: CGRect, fill: Color, opacity: Double) -> some View {
+    // bellpad-style analog stick: circular dark well, white border, thumb.
+    // Output maps linearly to [-127,127] (deadzone 0.12 applied in emit).
+    private func stick(node: ControlNode, rect: CGRect, fill: Color) -> some View {
         let isC = node.id == .cStick
         let vec = isC ? cStickVec : stickVec
+        let on = vec != .zero
         return ZStack {
-            OctagonShape().strokeBorder(.white.opacity(0.45), lineWidth: 2)
-            OctagonShape().fill(.black.opacity(0.35))
             Circle()
-                .fill(fill.opacity(opacity))
-                .frame(width: rect.width * 0.44, height: rect.height * 0.44)
+                .fill(Color(white: 0.08).opacity(on ? 0.5 : 0.38))
+            Circle()
+                .strokeBorder(.white.opacity(0.46), lineWidth: 2)
+            Circle()
+                .fill(fill.opacity(on ? ControlSkin.activeOpacity : ControlSkin.idleOpacity))
+                .frame(width: rect.width * 0.42, height: rect.height * 0.42)
                 .overlay(Circle().strokeBorder(.white.opacity(0.7), lineWidth: 1.5))
                 .shadow(color: .black.opacity(0.4), radius: 3)
                 .offset(vec)
@@ -192,14 +129,14 @@ struct TouchControlSurface: View {
         })
     }
 
-    // Analog shoulder trigger: vertical slide, rest 0, full travel 1 (docs/05
-    // §4.3). Digital bit sets at 180/255.
-    private func trigger(node: ControlNode, rect: CGRect, fill: Color, opacity: Double) -> some View {
+    // Analog shoulder trigger: vertical slide, rest 0, full travel 1.
+    // Digital bit sets at 180/255 (docs/05 §4.3).
+    private func trigger(node: ControlNode, rect: CGRect, fill: Color) -> some View {
         let isL = node.id == .l
         let value = isL ? lTrigger : rTrigger
         return ZStack(alignment: .bottom) {
             RoundedRectangle(cornerRadius: 10)
-                .fill(fill.opacity(opacity))
+                .fill(fill.opacity(ControlSkin.idleOpacity))
             RoundedRectangle(cornerRadius: 10)
                 .fill(.white.opacity(0.35))
                 .frame(height: rect.height * value)
@@ -209,12 +146,11 @@ struct TouchControlSurface: View {
             }
             .padding(.top, 4)
         }
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.6), lineWidth: 1.5))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.42), lineWidth: 1.5))
         .frame(width: rect.width, height: rect.height)
         .position(x: rect.midX, y: rect.midY)
         .contentShape(RoundedRectangle(cornerRadius: 10))
         .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-            // Slide up = press. Value from the finger's offset within the plate.
             let rel = (rect.minY - value.location.y) / max(rect.height, 1)
             let v = min(max(rel, 0), 1)
             if isL { lTrigger = v } else { rTrigger = v }
@@ -223,52 +159,23 @@ struct TouchControlSurface: View {
         })
     }
 
-    // Face buttons: A big circle, B smaller offset circle, X/Y lozenges,
-    // Z rectangle, START pill.
-    private func button(node: ControlNode, rect: CGRect, fill: Color, opacity: Double) -> some View {
-        let on = buttons.contains(node.id)
-        let activeOpacity = on ? ControlSkin.activeOpacity(node.id) : opacity
-        let body: AnyView
-        switch node.id {
-        case .a, .b:
-            body = AnyView(
-                Circle()
-                    .fill(fill.opacity(activeOpacity))
-                    .overlay(Circle().strokeBorder(.white.opacity(0.75), lineWidth: 2))
-            )
-        case .x, .y:
-            body = AnyView(
-                RoundedRectangle(cornerRadius: rect.width * 0.18)
-                    .fill(fill.opacity(activeOpacity))
-                    .rotationEffect(.degrees(45))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: rect.width * 0.18)
-                            .strokeBorder(.white.opacity(0.75), lineWidth: 2)
-                            .rotationEffect(.degrees(45))
-                    )
-            )
-        case .start:
-            body = AnyView(
-                Capsule()
-                    .fill(fill.opacity(activeOpacity))
-                    .overlay(Capsule().strokeBorder(.white.opacity(0.75), lineWidth: 1.5))
-            )
-        default:
-            body = AnyView(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(fill.opacity(activeOpacity))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.75), lineWidth: 1.5))
-            )
-        }
+    // Face buttons + D-pad keys: bellpad-style round caps, press animation
+    // (0.92 scale), white bold label, white 0.38 border.
+    private func button(node: ControlNode, rect: CGRect, fill: Color) -> some View {
+        let on = isActive(node.id)
+        let opacity = on ? ControlSkin.activeOpacity : ControlSkin.idleOpacity
+        let label = node.label
         return ZStack {
-            body
-                .frame(width: rect.width, height: rect.height)
+            Circle()
+                .fill(fill.opacity(opacity))
+                .overlay(Circle().strokeBorder(.white.opacity(0.38), lineWidth: 1.5))
                 .shadow(color: .black.opacity(0.35), radius: 2, y: 2)
-            Text(node.label)
+                .scaleEffect(on ? 0.92 : 1.0)
+            Text(label)
                 .font(.system(size: min(rect.width, rect.height) * 0.34, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
         }
-        .frame(width: rect.width * 1.25, height: rect.height * 1.25) // generous hit target
+        .frame(width: rect.width, height: rect.height)
         .position(x: rect.midX, y: rect.midY)
         .contentShape(Circle())
         .gesture(DragGesture(minimumDistance: 0)
@@ -277,7 +184,7 @@ struct TouchControlSurface: View {
         )
     }
 
-    // Stick output: deadzone 0.12 of radius, curve gamma 1.2, clamp [-127,127].
+    // Stick output: deadzone 0.12 of radius, linear curve, clamp [-127,127].
     private func emit() {
         var s = BallPadStatus()
         s.err = 0
@@ -296,53 +203,24 @@ struct TouchControlSurface: View {
         if buttons.contains(.z) { btn |= UInt16(BALLPAD_TRIGGER_Z) }
         if lTrigger >= 180.0 / 255.0 { btn |= UInt16(BALLPAD_TRIGGER_L) }
         if rTrigger >= 180.0 / 255.0 { btn |= UInt16(BALLPAD_TRIGGER_R) }
-        if dpadVec.width < 0 { btn |= UInt16(BALLPAD_BUTTON_LEFT) }
-        if dpadVec.width > 0 { btn |= UInt16(BALLPAD_BUTTON_RIGHT) }
-        if dpadVec.height < 0 { btn |= UInt16(BALLPAD_BUTTON_UP) }
-        if dpadVec.height > 0 { btn |= UInt16(BALLPAD_BUTTON_DOWN) }
+        if buttons.contains(.dpadLeft) { btn |= UInt16(BALLPAD_BUTTON_LEFT) }
+        if buttons.contains(.dpadRight) { btn |= UInt16(BALLPAD_BUTTON_RIGHT) }
+        if buttons.contains(.dpadUp) { btn |= UInt16(BALLPAD_BUTTON_UP) }
+        if buttons.contains(.dpadDown) { btn |= UInt16(BALLPAD_BUTTON_DOWN) }
         s.button = btn
         onPadChanged(s)
     }
 
     private func stickAxis(_ v: CGFloat) -> Int8 {
-        // v is in points; normalize by a nominal full deflection of ~60pt,
-        // then apply deadzone + curve.
         let norm = Swift.max(Swift.min(v / 60.0, 1), -1)
         let mag = Swift.abs(norm)
         let dz: CGFloat = 0.12
         guard mag > dz else { return 0 }
-        let curved = pow((mag - dz) / (1 - dz), 1.2)
-        return Int8(clamping: Int((norm >= 0 ? curved : -curved) * 127))
+        let scaled = (mag - dz) / (1 - dz)
+        return Int8(clamping: Int((norm >= 0 ? scaled : -scaled) * 127))
     }
 
     private func triggerByte(_ v: CGFloat) -> UInt8 {
         UInt8(clamping: Int(v * 255))
-    }
-}
-
-// Octagonal well for the analog sticks.
-struct OctagonShape: InsettableShape {
-    var insetAmount: CGFloat = 0
-    func inset(by amount: CGFloat) -> OctagonShape {
-        var s = self
-        s.insetAmount += amount
-        return s
-    }
-    func path(in rect: CGRect) -> Path {
-        let r = min(rect.width, rect.height) / 2 - insetAmount
-        let cx = rect.midX
-        let cy = rect.midY
-        let s = r * 0.4142 // octagon edge offset
-        var p = Path()
-        p.move(to: CGPoint(x: cx - s, y: cy - r))
-        p.addLine(to: CGPoint(x: cx + s, y: cy - r))
-        p.addLine(to: CGPoint(x: cx + r, y: cy - s))
-        p.addLine(to: CGPoint(x: cx + r, y: cy + s))
-        p.addLine(to: CGPoint(x: cx + s, y: cy + r))
-        p.addLine(to: CGPoint(x: cx - s, y: cy + r))
-        p.addLine(to: CGPoint(x: cx - r, y: cy + s))
-        p.addLine(to: CGPoint(x: cx - r, y: cy - s))
-        p.closeSubpath()
-        return p
     }
 }
