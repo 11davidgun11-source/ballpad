@@ -194,3 +194,50 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   (not available on the simulator). A vertex-decode cache would add a few fps.
   On real Apple-silicon hardware (no simulator translation) the same AOT code
   should run 2-4x faster.
+
+# Where the project is at (2026-08-08 — final status)
+
+## Definition of Done: GREEN
+All must-pass gates in [12-acceptance-proofs.md](12-acceptance-proofs.md) pass on
+BOTH the iPhone and iPad simulators, with visible-frame screenshots and logs in
+`build/proofs/` and the scoreboard in [15-validation-log.md](15-validation-log.md):
+
+M1 cold launch · M2 visible title/menu · M3 touch-only match start · M4 60s
+in-match no crash · M5 all 12 GC controls · M6 multi-touch merge · M7/M8 layout
+editor + persistence · M9 ⋯ menu (pauses) · M10 EFB resolution 1x/2x · M11 save
+export/import round-trip · M12 one simulator · M13 no ISO/dol/generated in git ·
+M14 AOT-only (no JIT/RWX).
+
+## What works
+- The game boots to a live match on both simulators, renders the real guest
+  frames (health screen, menus, teams, match + HUD), and accepts touch input
+  through the bellpad-style overlay (move stick, C-stick, D-pad, A/B/X/Y,
+  L/R analog, Z, START).
+- Touch controls: bellpad-fidelity shapes in a single unconditional view
+  (iPadOS 26 AttributeGraph constraint), adaptive layout, size/opacity sliders,
+  edit-mode drag-to-move, layout persistence.
+- ⋯ menu: resolution 1x-4x (EFB supersample), aspect native/16:9-crop/stretch,
+  control size/opacity, Show FPS, save export/import, About.
+- Performance: menus/boot 60 fps; in-match ~20 fps (see below).
+
+## Performance ceiling (honest)
+The AOT-recompiled guest runs at ~20.6M blocks/s on the simulators. Light
+scenes need ~350K blocks/frame (60 fps); heavy match scenes render every 2nd VI
+retrace (~700K blocks/frame) plus ~16M vertex-bytes + ~290 draws of decode per
+frame, so in-match is ~20 fps (the ~29 fps ceiling is the guest alone). Reaching
+30 fps in-match requires the guest ~50% faster — not available on the
+simulator; the same AOT code should run 2-4x faster on real Apple silicon.
+
+## Known gaps / tech debt (ranked)
+1. In-match ~20 fps (vertex-decode/draw-plan cache would add a few fps; the
+   guest CPU is the real wall).
+2. True 16:9 widescreen projection hack not implemented (native/16:9-crop/
+   stretch display modes exist).
+3. Boot-to-match ~7-8 min (block-paced autostart; a quick-boot/savestate would
+   fix iteration time).
+4. iPad screenshots capture a rotated portrait framebuffer (rotate 90° for
+   viewing); the app itself is landscape.
+5. Hardware GCController merge (bellpad hides touch on connect) not done;
+   3+ layout slots, portrait layout, audio output are best-effort/unwired.
+6. ref/ trees are untracked local working trees with patches captured in
+   docs/patches/ (never re-clone; reapply if lost).
