@@ -185,6 +185,45 @@ void ballpad_ios_host_step_frame(void) {
     interrupt_poll(cpu);
     hle_poll_callback(cpu);
     u32 pc = cpu->pc;
+    // Task-run counters: which game task Runners actually execute (the pad
+    // update path is suspected stuck). The entry pc is only visible before the
+    // dispatch consumes it.
+    if (getenv("BALLPAD_DEBUG_THREADS") != nullptr) {
+      static unsigned long long s_tasks[4] = {0, 0, 0, 0};
+      if (pc == 0x801D2914u) s_tasks[0]++;       // nlTaskManager::RunAllTasks
+      else if (pc == 0x8016E330u) s_tasks[1]++;  // FixedUpdateTask::Run
+      else if (pc == 0x8017071Cu) s_tasks[2]++;  // FrontEndTask::Run
+      else if (pc == 0x80170BACu) s_tasks[3]++;  // GameRenderTask::Run
+      static unsigned long long s_padcalls[2] = {0, 0};
+      if (pc == 0x801C3A78u) s_padcalls[0]++;    // UpdatePlatPad
+      else if (pc == 0x801C3808u) s_padcalls[1]++;  // PadStatus::Update
+      if (pc == 0x8016E330u) {  // FixedUpdateTask::Run: sample per-frame ticker delta
+        static u64 s_prev_tb = 0;
+        static unsigned long long s_delta_samples = 0;
+        if (s_prev_tb != 0u) {
+          const u64 delta = cpu->timebase - s_prev_tb;
+          static u64 s_delta_min = ~0ull, s_delta_max = 0, s_delta_sum = 0;
+          static unsigned long long s_delta_n = 0;
+          if (delta < s_delta_min) s_delta_min = delta;
+          if (delta > s_delta_max) s_delta_max = delta;
+          s_delta_sum += delta;
+          s_delta_n++;
+          if ((s_delta_n % 200u) == 0u)
+            std::fprintf(stderr, "[tasks] tbDelta n=%llu min=%llu avg=%llu max=%llu\n",
+                         (unsigned long long)s_delta_n, (unsigned long long)s_delta_min,
+                         (unsigned long long)(s_delta_sum / s_delta_n),
+                         (unsigned long long)s_delta_max);
+        }
+        s_prev_tb = cpu->timebase;
+      }
+      static unsigned long long s_task_log_at = 2000000000ull;
+      if (g_blocks >= s_task_log_at) {
+        s_task_log_at += 500000000ull;
+        std::fprintf(stderr, "[tasks] b=%llu runAll=%llu fixed=%llu frontEnd=%llu gameRender=%llu updPlat=%llu padUpdate=%llu\n",
+                     (unsigned long long)g_blocks, s_tasks[0], s_tasks[1], s_tasks[2], s_tasks[3],
+                     s_padcalls[0], s_padcalls[1]);
+      }
+    }
     if (!dolrecomp_call(cpu, pc)) {
       g_stop_reason = "pc left recompiled code";
       std::fprintf(stderr, "[run] left recompiled code: pc=0x%08X\n", cpu->pc);
@@ -314,6 +353,73 @@ void ballpad_ios_host_step_frame(void) {
                    padPtr ? (s8)mem_read8(cpu, padPtr + 10u) : 0,
                    mem_read16(cpu, 0x80372FF8u), (s8)mem_read8(cpu, 0x80372FFAu),
                    (s8)mem_read8(cpu, 0x80372FFBu));
+      // PadStatus edge pipeline (PadStatus::Update output) + cPadManager pads.
+      const u32 padStat = mem_read32(cpu, 0x80382FF8u);   // padStatus* (UpdatePlatPad lwz r13+0x9FB8)
+      const u32 padObj = mem_read32(cpu, 0x80343368u);    // m_aPads[0]
+      const u32 remap = mem_read32(cpu, 0x80374350u);     // m_pRemapArray
+      std::fprintf(stderr, "[threads] padStat=0x%08X justPressed=0x%04X prevBtn=0x%04X prevErr=%d padObj=0x%08X connected=%u\n",
+                   padStat,
+                   padStat ? mem_read16(cpu, padStat + 0x380u) : 0u,
+                   padStat ? mem_read16(cpu, padStat + 0x390u) : 0u,
+                   padStat ? (s8)mem_read8(cpu, padStat + 0x398u) : 0,
+                    padObj,
+                    padObj ? mem_read8(cpu, padObj + 0x1Cu) : 0u);
+      if (remap != 0u && remap >= 0x80000000u)
+        std::fprintf(stderr, "[threads] remap=0x%08X [0]=%08X [1]=%08X [4]=%08X [8]=%08X\n",
+                     remap, mem_read32(cpu, remap), mem_read32(cpu, remap + 4u),
+                     mem_read32(cpu, remap + 16u), mem_read32(cpu, remap + 32u));
+      else
+        std::fprintf(stderr, "[threads] remap=0x%08X (NULL!)\n", remap);
+      // GameSceneManager scene stack (SCENE_TITLE=2, MAIN_MENU=3, ...).
+      const u32 gsm = mem_read32(cpu, 0x80373840u);
+      const u32 gsmDepth = gsm ? mem_read32(cpu, gsm + 0x04u) : 0u;
+      if (gsmDepth != 0u && gsmDepth <= 16u) {
+        std::fprintf(stderr, "[threads] sceneDepth=%u top=0x%08X bottom=0x%08X\n",
+                     gsmDepth, mem_read32(cpu, gsm + 0x08u + (gsmDepth - 1u) * 4u),
+                     mem_read32(cpu, gsm + 0x08u));
+        // If the top scene is a popup menu, read its selection + option labels.
+        const u32 topScene = mem_read32(cpu, gsm + 0x08u + (gsmDepth - 1u) * 4u);
+        if (topScene == 0x1Bu) {  // SCENE_POPUP_MENU
+          const u32 handler = mem_read32(cpu, gsm + 0x88u + (gsmDepth - 1u) * 4u);
+          const u32 numOpt = handler ? mem_read32(cpu, handler + 0xA28u + 0x14u) : 0u;
+          std::fprintf(stderr, "[threads] popup handler=0x%08X hl=%d opts=%d\n",
+                       handler, handler ? (int)mem_read32(cpu, handler + 0xA20u) : -1, numOpt);
+          if (handler)
+            std::fprintf(stderr, "[threads]   popupType=%d\n",
+                         (int)mem_read32(cpu, handler + 0xA7Cu));
+          // Presentation slide state (accept animation progress).
+          if (handler) {
+            const u32 feScene = mem_read32(cpu, handler + 0x10u);
+            const u32 fePkg = feScene ? mem_read32(cpu, feScene) : 0u;
+            const u32 pres = fePkg ? mem_read32(cpu, fePkg + 0x04u) : 0u;
+            const u32 slide = pres ? mem_read32(cpu, pres + 0x04u) : 0u;
+            float fStart = 0, fDur = 0, fTime = 0, fAccept = 0;
+            if (slide) {
+              const u32 uS = mem_read32(cpu, slide + 0x10u), uD = mem_read32(cpu, slide + 0x14u),
+                        uT = mem_read32(cpu, slide + 0x18u);
+              memcpy(&fStart, &uS, 4); memcpy(&fDur, &uD, 4); memcpy(&fTime, &uT, 4);
+            }
+            const u32 uA = mem_read32(cpu, handler + 0xA24u);
+            memcpy(&fAccept, &uA, 4);
+            std::fprintf(stderr, "[threads] popupSlide pkg=0x%08X pres=0x%08X slide=0x%08X start=%.2f dur=%.2f time=%.2f acceptDelay=%.2f\n",
+                         fePkg, pres, slide, fStart, fDur, fTime, fAccept);
+          }
+          for (u32 oi = 0; oi < numOpt && oi < 4u; oi++) {
+            const u32 labelPtr = handler ? mem_read32(cpu, handler + 0xA28u + 0x04u + oi * 4u) : 0u;
+            char label[48];
+            u32 lp = labelPtr;
+            u32 ci = 0;
+            while (lp >= 0x80000000u && ci < 46u) {
+              const u16 ch = mem_read16(cpu, lp);
+              if (ch == 0u || ch > 0x7Fu) break;
+              label[ci++] = (char)ch;
+              lp += 2u;
+            }
+            label[ci] = 0;
+            std::fprintf(stderr, "[threads]   opt%u=%s\n", oi, labelPtr ? label : "(null)");
+          }
+        }
+      }
       if (gameClock != 0u && gameClock >= 0x80000000u) {
         float fTimer = 0.f, fEnd = 0.f;
         const u32 uTimer = mem_read32(cpu, gameClock + 0x08u);
@@ -366,56 +472,53 @@ void ballpad_ios_host_step_frame(void) {
         // CONTINUE WITHOUT SAVING (save creation hangs on the chassis oracle).
         {0x0004, 0, 0, 15000000ull, 1500000000ull},
         {0x0100, 0, 0, 20000000ull, 2200000000ull},
-        // Title -> main menu.
-        {0x1000, 0, 0, 20000000ull, 2600000000ull},
-        // GRUDGE MATCH -> captain select -> sidekick select -> CPU captain grid.
-        {0x0100, 0, 0, 20000000ull, 3000000000ull},
-        {0x0100, 0, 0, 20000000ull, 3400000000ull},
-        {0x0100, 0, 0, 20000000ull, 3800000000ull},
-        // Match-start drive: repeat START + the full (menu -> captain ->
-        // sidekick -> CPU captain -> CPU sidekick -> side choice -> stadium)
-        // sequence on a cadence. START retries cover a late-appearing title;
-        // once in-match the presses are harmless.
-        {0x1000, 0, 0, 20000000ull, 3000000000ull},
+        // The boot reaches the memcard save/load popup (option 0 = Retry
+        // loops forever): D_DOWN selects "Continue without ...", A confirms.
+        {0x0004, 0, 0, 15000000ull, 2500000000ull},
+        {0x0100, 0, 0, 20000000ull, 2600000000ull},
+        // Title advances on A (0x100) -> main menu.
+        {0x0100, 0, 0, 20000000ull, 2900000000ull},
+        // Match-start drive: repeat (D_LEFT, A x3, D_LEFT, A x3) on a cadence.
+        // The A's advance menus/rosters; a D_LEFT that lands on the side-choice
+        // screen (after a roster A chain, or right after a popup dismiss)
+        // picks the left side and the following A starts the match. In-match
+        // the presses are harmless (left + tackle).
+        {0x0001, 0, 0, 15000000ull, 3000000000ull},
         {0x0100, 0, 0, 20000000ull, 3100000000ull},
         {0x0100, 0, 0, 20000000ull, 3200000000ull},
-        {0x0001, 0, 0, 15000000ull, 3300000000ull},
-        {0x0100, 0, 0, 20000000ull, 3400000000ull},
+        {0x0100, 0, 0, 20000000ull, 3300000000ull},
+        {0x0001, 0, 0, 15000000ull, 3400000000ull},
         {0x0100, 0, 0, 20000000ull, 3500000000ull},
-        {0x0001, 0, 0, 15000000ull, 3600000000ull},
+        {0x0100, 0, 0, 20000000ull, 3600000000ull},
         {0x0100, 0, 0, 20000000ull, 3700000000ull},
-        {0x1000, 0, 0, 20000000ull, 4400000000ull},
+        {0x0001, 0, 0, 15000000ull, 3900000000ull},
+        {0x0100, 0, 0, 20000000ull, 4000000000ull},
+        {0x0100, 0, 0, 20000000ull, 4100000000ull},
+        {0x0100, 0, 0, 20000000ull, 4200000000ull},
+        {0x0001, 0, 0, 15000000ull, 4300000000ull},
+        {0x0100, 0, 0, 20000000ull, 4400000000ull},
         {0x0100, 0, 0, 20000000ull, 4500000000ull},
         {0x0100, 0, 0, 20000000ull, 4600000000ull},
-        {0x0001, 0, 0, 15000000ull, 4700000000ull},
-        {0x0100, 0, 0, 20000000ull, 4800000000ull},
+        {0x0001, 0, 0, 15000000ull, 4800000000ull},
         {0x0100, 0, 0, 20000000ull, 4900000000ull},
-        {0x0001, 0, 0, 15000000ull, 5000000000ull},
+        {0x0100, 0, 0, 20000000ull, 5000000000ull},
         {0x0100, 0, 0, 20000000ull, 5100000000ull},
-        {0x1000, 0, 0, 20000000ull, 5800000000ull},
+        {0x0001, 0, 0, 15000000ull, 5200000000ull},
+        {0x0100, 0, 0, 20000000ull, 5300000000ull},
+        {0x0100, 0, 0, 20000000ull, 5400000000ull},
+        {0x0100, 0, 0, 20000000ull, 5500000000ull},
+        {0x0001, 0, 0, 15000000ull, 5700000000ull},
+        {0x0100, 0, 0, 20000000ull, 5800000000ull},
         {0x0100, 0, 0, 20000000ull, 5900000000ull},
         {0x0100, 0, 0, 20000000ull, 6000000000ull},
         {0x0001, 0, 0, 15000000ull, 6100000000ull},
         {0x0100, 0, 0, 20000000ull, 6200000000ull},
         {0x0100, 0, 0, 20000000ull, 6300000000ull},
-        {0x0001, 0, 0, 15000000ull, 6400000000ull},
-        {0x0100, 0, 0, 20000000ull, 6500000000ull},
-        {0x1000, 0, 0, 20000000ull, 7200000000ull},
-        {0x0100, 0, 0, 20000000ull, 7300000000ull},
-        {0x0100, 0, 0, 20000000ull, 7400000000ull},
-        {0x0001, 0, 0, 15000000ull, 7500000000ull},
-        {0x0100, 0, 0, 20000000ull, 7600000000ull},
-        {0x0100, 0, 0, 20000000ull, 7700000000ull},
-        {0x0001, 0, 0, 15000000ull, 7800000000ull},
-        {0x0100, 0, 0, 20000000ull, 7900000000ull},
-        {0x1000, 0, 0, 20000000ull, 8600000000ull},
-        {0x0100, 0, 0, 20000000ull, 8700000000ull},
-        {0x0100, 0, 0, 20000000ull, 8800000000ull},
-        {0x0001, 0, 0, 15000000ull, 8900000000ull},
-        {0x0100, 0, 0, 20000000ull, 9000000000ull},
-        {0x0100, 0, 0, 20000000ull, 9100000000ull},
-        {0x0001, 0, 0, 15000000ull, 9200000000ull},
-        {0x0100, 0, 0, 20000000ull, 9300000000ull},
+        {0x0100, 0, 0, 20000000ull, 6400000000ull},
+        {0x0001, 0, 0, 15000000ull, 6600000000ull},
+        {0x0100, 0, 0, 20000000ull, 6700000000ull},
+        {0x0100, 0, 0, 20000000ull, 6800000000ull},
+        {0x0100, 0, 0, 20000000ull, 6900000000ull},
     };
     static const unsigned kAutoCount =
         static_cast<unsigned>(sizeof(kAutoSteps) / sizeof(kAutoSteps[0]));
