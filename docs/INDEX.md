@@ -36,6 +36,12 @@ Living table of contents. Numbered for reading order.
 | [15-validation-log.md](15-validation-log.md) | **Final scoreboard — DoD green on phone + iPad** |
 | `build/proofs/PROGRESS.md` | Live step tracker (gitignored build tree) |
 
+## Post-DoD review (2026-08-08)
+| Doc | Title |
+|-----|-------|
+| [20-review-and-next-steps.md](20-review-and-next-steps.md) | **Independent review: ranked issues, original-agent mistakes, phase plan (start here)** |
+| [BOT4_LAUNCH_PROMPT.md](BOT4_LAUNCH_PROMPT.md) | **Next agent goal loop: performance, UI, usability — paste into a new chat** |
+
 ## Final status (2026-08-08)
 Definition of Done is **green** on both the iPhone and iPad simulators
 (M1-M14, see 15-validation-log.md). Touch controls, the ⋯ menu, resolution
