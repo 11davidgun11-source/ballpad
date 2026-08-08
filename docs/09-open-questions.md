@@ -153,3 +153,20 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   phone run, and the M4 71s in-match run) survive fine.
 - **Fallback:** always `shutdown all` BEFORE installing/launching, never
   while the app is running; fresh-boot the sim before long gate runs.
+
+## 2026-08-08 — Touch + menu iteration (user: "make the touch controls better, better menu etc, use examples")
+- Reference: bellpad's iOS overlay (/Users/chrissotraidis/GitHub/bellpad,
+  apple/ios/BellpadGameOverlay.mm) — shoulder plates, Z plate, START pill,
+  face circles, D-pad keys, opacity/scale sliders.
+- Touch: all controls now render bellpad-fidelity shapes (stick wells+thumbs,
+  purple L/R plates with analog fill, Z plate, START pill, colored face
+  circles, D-pad arrow keys) inside ONE unconditional view (opacity-gated
+  shapes; the iPadOS 26 AttributeGraph constraint forbids conditional view
+  structure). Global Size (0.7-1.35) and Opacity (0.25-1.0) settings via menu
+  sliders. Edit-mode chrome (yellow dashed outline + drag-to-move) restored.
+- Menu: Controls section gains Size/Opacity sliders; Graphics gains Show FPS;
+  About section (version + provide-your-own-game). FPS overlay from a rolling
+  present-rate helper (ballpad_ios_host_fps) — verified 60 fps during boot.
+- Gate checks re-passed after the rewrite: controls 13/13 ok=true, multitouch
+  ok=true, edit-move saved=true. Screenshots: v2-phone-controls.png,
+  v2-menu4.png, v2-fps-label.png, v2-pad-final.png.

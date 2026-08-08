@@ -74,3 +74,11 @@ M12: one simulator booted (simctl list count 1).
 - Result: the iPad A16 simulator now boots, renders, reaches a match, and shows
   visible frames (pad-inmatch-visible*.png) with the bellpad touch controls.
 
+
+## 2026-08-08 — Touch + menu iteration (post-DoD polish)
+- Controls: bellpad-fidelity shapes via opacity-gated single view (sticks,
+  shoulder plates, Z, START pill, face circles, D-pad keys); Size/Opacity
+  sliders; edit chrome restored. Gate re-checks: controls 13/13 ok=true,
+  multitouch ok=true, edit-move saved=true.
+- Menu: sliders, Show FPS (60 fps verified), About. Proofs: v2-phone-controls,
+  v2-menu4, v2-fps-label, v2-pad-final (phone + iPad).
