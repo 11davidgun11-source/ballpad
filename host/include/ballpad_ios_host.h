@@ -59,6 +59,8 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* width_out,
 
 /* Current EFB frame size; false when no frame has been presented yet. */
 bool ballpad_ios_host_frame_size(uint32_t* width_out, uint32_t* height_out);
+/* Monotonic frame version (EFB fill count); unchanged when no new frame. */
+uint64_t ballpad_ios_host_frame_version(void);
 
 /* EFB supersample scale (M10 resolution). 1x = 640x528 baseline; 2x/3x/4x
  * recreate the EFB render target + readback at the scaled size (re-applied on

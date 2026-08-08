@@ -96,6 +96,15 @@ struct SDLGameContainer: UIViewRepresentable {
                 if frameDiag == 0 { NSLog("[ballpad] no frame yet") }
                 return
             }
+            // Perf: skip the copy + CGImage render when the guest has not
+            // produced a new frame (slow scenes: the display timer runs at
+            // 60 Hz regardless, and re-rendering the same image steals
+            // main-thread CPU the guest loop needs).
+            let version = ballpad_ios_host_frame_version()
+            if version == lastFrameVersion {
+                return
+            }
+            lastFrameVersion = version
             let count = Int(w * h * 4)
             var buf = [UInt8](repeating: 0, count: count)
             guard ballpad_ios_host_take_frame(&buf, &w, &h) else {
@@ -154,6 +163,7 @@ struct SDLGameContainer: UIViewRepresentable {
 
         var frameDiag = 0
         var diagCount = 0
+        var lastFrameVersion: UInt64 = 0
     }
 }
 

@@ -801,6 +801,19 @@ bool ballpad_ios_host_frame_size(uint32_t* w, uint32_t* h) {
   return *w > 0u && *h > 0u;
 }
 
+// Monotonic frame version (EFB fill count). The SwiftUI display path uses
+// this to skip re-copying + re-rendering the CGImage when the guest has not
+// produced a new frame (slow scenes would otherwise burn main-thread CPU the
+// guest loop needs at 60 Hz even when the game is at 15 fps).
+uint64_t ballpad_ios_host_frame_version(void) {
+  if (!g_started.load())
+    return 0;
+  DolEfbAccess* efb = mmio_efb();
+  if (efb == nullptr)
+    return 0;
+  return (uint64_t)efb->fill_count;
+}
+
 bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
   if (!g_started.load() || rgba_out == nullptr || w == nullptr || h == nullptr)
     return false;
