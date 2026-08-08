@@ -8,6 +8,7 @@
 		19AD1FC40D5943B1BC6F5E2A /* BallpadApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36AD4E354D964E1984E25A3E /* BallpadApp.swift */; };
 		EA155112F5AA4687861188F8 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FE00511A0C49289FB52626 /* AppDelegate.swift */; };
 		45B1A317CDB741AC82AFDC4D /* GameHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9D1F5024FB14DE3984A5789 /* GameHostView.swift */; };
+		6A1B2C3D4E5F60718293A4B5 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8C7D6E5F4A3B2C1D0E9F8A /* OnboardingView.swift */; };
 		842429CA77954E8F966360A9 /* ControlNodes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1C22A779DE64296A158FE90 /* ControlNodes.swift */; };
 		F04090CA95EA494288493379 /* LayoutStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 628FF6CEA1124D0A908E41F1 /* LayoutStore.swift */; };
 		A4F8A05FE1C84FE496D0991F /* TouchControlSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B7DDB8BD9542EFAC244425 /* TouchControlSurface.swift */; };
@@ -22,6 +23,7 @@
 		36AD4E354D964E1984E25A3E /* BallpadApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BallpadApp.swift; sourceTree = "<group>"; };
 		07FE00511A0C49289FB52626 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		C9D1F5024FB14DE3984A5789 /* GameHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameHostView.swift; sourceTree = "<group>"; };
+		9B8C7D6E5F4A3B2C1D0E9F8A /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		C1C22A779DE64296A158FE90 /* ControlNodes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlNodes.swift; sourceTree = "<group>"; };
 		628FF6CEA1124D0A908E41F1 /* LayoutStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutStore.swift; sourceTree = "<group>"; };
 		A4B7DDB8BD9542EFAC244425 /* TouchControlSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchControlSurface.swift; sourceTree = "<group>"; };
@@ -42,7 +44,7 @@
 /* End PBXFrameworksBuildPhase section */
 /* Begin PBXGroup section */
 		CCCC42810C50426691176AAD = {isa = PBXGroup; children = (FC2D9B32AC8E4BCBB224F780 /* Ballpad */, 03A41FC51A804ACD9E6508F2 /* Products */,); sourceTree = "<group>"; };
-		FC2D9B32AC8E4BCBB224F780 /* Ballpad */ = {isa = PBXGroup; children = (36AD4E354D964E1984E25A3E /* BallpadApp.swift */, 07FE00511A0C49289FB52626 /* AppDelegate.swift */, C9D1F5024FB14DE3984A5789 /* GameHostView.swift */, A9A869C4ABCB4129BE58135F /* BridgingHeader.h */, 68804A618A6C42DD8AE7BAB6 /* Info.plist */, B7E46DDF3AF647CE9A8236AF /* Touch */, EF1D5D81A4B84B4380468DD6 /* Menu */,); path = Ballpad; sourceTree = "<group>"; };
+		FC2D9B32AC8E4BCBB224F780 /* Ballpad */ = {isa = PBXGroup; children = (36AD4E354D964E1984E25A3E /* BallpadApp.swift */, 07FE00511A0C49289FB52626 /* AppDelegate.swift */, 9B8C7D6E5F4A3B2C1D0E9F8A /* OnboardingView.swift */, C9D1F5024FB14DE3984A5789 /* GameHostView.swift */, A9A869C4ABCB4129BE58135F /* BridgingHeader.h */, 68804A618A6C42DD8AE7BAB6 /* Info.plist */, B7E46DDF3AF647CE9A8236AF /* Touch */, EF1D5D81A4B84B4380468DD6 /* Menu */,); path = Ballpad; sourceTree = "<group>"; };
 		B7E46DDF3AF647CE9A8236AF /* Touch */ = {isa = PBXGroup; children = (C1C22A779DE64296A158FE90 /* ControlNodes.swift */, 628FF6CEA1124D0A908E41F1 /* LayoutStore.swift */, A4B7DDB8BD9542EFAC244425 /* TouchControlSurface.swift */,); path = Touch; sourceTree = "<group>"; };
 		EF1D5D81A4B84B4380468DD6 /* Menu */ = {isa = PBXGroup; children = (51E866A6D7A64BCB997E958B /* OverflowMenuView.swift */, E52AF3E0E7484EC198EE3978 /* SettingsStore.swift */,); path = Menu; sourceTree = "<group>"; };
 		650CB3BB9F374DD0A0C499E7 /* HostBridge */ = {isa = PBXGroup; children = (2674848C0EA64BA785A528E8 /* ballpad_pad.c */, 4FE4C7926CCC46EDB188B29C /* ballpad_runtime.cpp */, 4E9B2CC106284EEC9E91F1FE /* ballpad_ios_host.cpp */, 5663499CAA5A43CF9018DA13 /* libBallpadEngine.a */, 492B807071EF49F288ABDA14 /* libBallpadHost.a */,); name = HostBridge; sourceTree = "<group>"; };
@@ -61,6 +63,7 @@
 		6F54189A867E4569B58919D7 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
 				19AD1FC40D5943B1BC6F5E2A /* BallpadApp.swift in Sources */,
 				EA155112F5AA4687861188F8 /* AppDelegate.swift in Sources */,
+				6A1B2C3D4E5F60718293A4B5 /* OnboardingView.swift in Sources */,
 				45B1A317CDB741AC82AFDC4D /* GameHostView.swift in Sources */,
 				842429CA77954E8F966360A9 /* ControlNodes.swift in Sources */,
 				F04090CA95EA494288493379 /* LayoutStore.swift in Sources */,

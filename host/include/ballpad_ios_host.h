@@ -85,6 +85,14 @@ bool ballpad_ios_host_save_quickboot(void);
 /* True when this session resumed from the quick-boot savestate. */
 bool ballpad_ios_host_quickbooted(void);
 
+/* A2 in-app game import. game_files_present() is true when the sandbox
+ * Documents holds both game.iso and main.dol (the boot paths the host uses).
+ * import_game(iso_path) copies a user-picked disc image into Documents and
+ * extracts sys/main.dol from it (GameCube disc header + DOL section table),
+ * so a fresh install can get a game without CLI-copying files. */
+bool ballpad_ios_host_game_files_present(void);
+bool ballpad_ios_host_import_game(const char* iso_path);
+
 #ifdef __cplusplus
 }
 #endif

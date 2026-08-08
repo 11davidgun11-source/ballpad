@@ -232,6 +232,146 @@ bool ballpad_ios_host_save_quickboot(void) {
 
 bool ballpad_ios_host_quickbooted(void) { return g_quickbooted; }
 
+// ---- A2 in-app game import (document picker -> game.iso + main.dol) ----
+bool ballpad_ios_host_game_files_present(void) {
+  const std::string dir = quickboot_documents_dir();
+  struct stat st;
+  const std::string iso = dir + "/game.iso";
+  const std::string dol = dir + "/main.dol";
+  return stat(iso.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
+         stat(dol.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+namespace {
+// GameCube disc header: DOL offset/FST offset/FST size at 0x420..0x42B.
+// The DOL's own header sizes live at the DolRecomp-extract layout (text sizes
+// at 0x90+i*4, data offsets at 0x1C+i*4, data sizes at 0xAC+i*4).
+uint32_t qb_read_be32(const uint8_t* p) {
+  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+         ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+bool stream_copy(FILE* in, FILE* out, uint64_t bytes) {
+  char buf[1 << 16];
+  uint64_t done = 0;
+  while (bytes == ~0ull || done < bytes) {
+    const size_t want = (bytes == ~0ull)
+                            ? sizeof buf
+                            : (size_t)((bytes - done) < sizeof buf
+                                           ? bytes - done
+                                           : sizeof buf);
+    const size_t got = fread(buf, 1, want, in);
+    if (got == 0)
+      return bytes == ~0ull || done >= bytes;
+    if (fwrite(buf, 1, got, out) != got)
+      return false;
+    done += got;
+  }
+  return true;
+}
+
+uint32_t dol_file_size_from_header(const uint8_t* h) {
+  uint32_t max_end = 0x100u;
+  for (uint32_t i = 0; i < 7; ++i) {
+    const uint32_t off = qb_read_be32(h + i * 4u);
+    const uint32_t size = qb_read_be32(h + 0x90u + i * 4u);
+    if (size != 0u && off + size > max_end)
+      max_end = off + size;
+  }
+  for (uint32_t i = 0; i < 11u; ++i) {
+    const uint32_t off = qb_read_be32(h + 0x1Cu + i * 4u);
+    const uint32_t size = qb_read_be32(h + 0xACu + i * 4u);
+    if (size != 0u && off + size > max_end)
+      max_end = off + size;
+  }
+  return max_end;
+}
+} // namespace
+
+bool ballpad_ios_host_import_game(const char* iso_path) {
+  if (iso_path == nullptr || iso_path[0] == '\0')
+    return false;
+  const std::string dir = quickboot_documents_dir();
+  FILE* in = fopen(iso_path, "rb");
+  if (in == nullptr) {
+    std::fprintf(stderr, "[import] cannot open %s\n", iso_path);
+    return false;
+  }
+  const std::string isoDest = dir + "/game.iso";
+  const std::string dolDest = dir + "/main.dol";
+  const std::string isoTmp = isoDest + ".tmp";
+  const std::string dolTmp = dolDest + ".tmp";
+
+  bool ok = true;
+  // Copy the disc image.
+  FILE* out = fopen(isoTmp.c_str(), "wb");
+  if (out == nullptr) {
+    std::fprintf(stderr, "[import] cannot write %s\n", isoTmp.c_str());
+    fclose(in);
+    return false;
+  }
+  ok = stream_copy(in, out, ~0ull);
+  fclose(out);
+  if (!ok) {
+    std::fprintf(stderr, "[import] iso copy failed\n");
+    fclose(in);
+    remove(isoTmp.c_str());
+    return false;
+  }
+
+  // Extract sys/main.dol from the disc header + DOL section table.
+  uint8_t discHeader[0x430];
+  if (fseek(in, 0, SEEK_SET) != 0 ||
+      fread(discHeader, 1, sizeof discHeader, in) != sizeof discHeader) {
+    std::fprintf(stderr, "[import] disc header read failed\n");
+    ok = false;
+  }
+  const uint32_t dolOffset = qb_read_be32(discHeader + 0x420u);
+  if (ok && (dolOffset == 0u || dolOffset < 0x100u)) {
+    std::fprintf(stderr, "[import] bad dol offset 0x%X\n", dolOffset);
+    ok = false;
+  }
+  uint8_t dolHeader[0x100];
+  if (ok && (fseek(in, dolOffset, SEEK_SET) != 0 ||
+             fread(dolHeader, 1, sizeof dolHeader, in) != sizeof dolHeader)) {
+    std::fprintf(stderr, "[import] dol header read failed\n");
+    ok = false;
+  }
+  const uint32_t dolSize = ok ? dol_file_size_from_header(dolHeader) : 0u;
+  if (ok && (dolSize < 0x100u)) {
+    std::fprintf(stderr, "[import] bad dol size %u\n", dolSize);
+    ok = false;
+  }
+  if (ok) {
+    FILE* dout = fopen(dolTmp.c_str(), "wb");
+    if (dout == nullptr || fseek(in, dolOffset, SEEK_SET) != 0 ||
+        !stream_copy(in, dout, dolSize)) {
+      std::fprintf(stderr, "[import] dol extract failed\n");
+      ok = false;
+    }
+    fclose(dout);
+  }
+  fclose(in);
+
+  if (!ok) {
+    remove(isoTmp.c_str());
+    remove(dolTmp.c_str());
+    return false;
+  }
+  // Atomic-ish rename (best effort).
+  if (rename(isoTmp.c_str(), isoDest.c_str()) != 0 ||
+      rename(dolTmp.c_str(), dolDest.c_str()) != 0) {
+    remove(isoTmp.c_str());
+    remove(dolTmp.c_str());
+    std::fprintf(stderr, "[import] rename failed\n");
+    return false;
+  }
+  std::fprintf(stderr, "[import] game imported: iso -> %s dol -> %s "
+                       "(dolSize=%u)\n",
+               isoDest.c_str(), dolDest.c_str(), dolSize);
+  return true;
+}
+
 // Part 1 of a quick-boot restore: CPU registers + guest RAM. Runs before
 // mmio_install so the install re-wires the session's external-memory hooks.
 static bool quickboot_restore_cpu(CPUState* cpu) {
