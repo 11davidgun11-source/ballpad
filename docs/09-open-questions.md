@@ -143,6 +143,25 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   work/tmp/a1-timed3.log. Build caveat: capture runs need BALLPAD_NO_QUICKBOOT=1
   (otherwise the stale QuickBoot.bss is restored instead of a fresh boot).
 
+## 2026-08-08 — A2 import proof: XCUITest + Files provider quirks (Bot 4)
+- A2 implemented (AppRootView onboarding routing + document-picker import with
+  DOL extraction) and proven on the phone via an XCUITest target
+  (app/BallpadUITests): onboarding shown for a missing game
+  (a2-onboarding.png), Import Game → real picker → Strikers.iso → import
+  (game.iso 1.46 GB + main.dol 3210784 bytes) → game boots (a2-imported-game.png).
+- Quirk 1: the document picker is a separate process; its AX elements ARE
+  reachable through the app's XCUIApplication tree (the tab bar, the
+  browsing-root cells), but element queries must use exact labels
+  ("Strikers.iso"), not substrings — "Strikers" false-matched the onboarding
+  copy "Super Mario Strikers".
+- Quirk 2: host-copied files placed in the Files app's
+  `Containers/Shared/AppGroup/<id>/File Provider Storage/` (the LocalStorage
+  provider root, per checkpoint-__default__.plist) are NOT indexed until the
+  simulator is rebooted; before that the picker shows "On My iPhone is Empty".
+- Quirk 3: BALLPAD_LOG_FILE is a plain freopen target; the host now expands a
+  leading $HOME so tests can use "$HOME/Documents/import.log" (the container
+  UUID changes on every test reinstall).
+
 ## 2026-08-08 — Touch interface feedback: adopt bellpad's GC control design
 
 - **Symptom:** User: "the interface is terrible. use bellpad (which I put in

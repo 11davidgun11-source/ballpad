@@ -69,8 +69,20 @@ namespace {
 struct StderrRedirect {
   StderrRedirect() {
     const char* path = getenv("BALLPAD_LOG_FILE");
-    if (path != nullptr && path[0] != '\0')
-      freopen(path, "w", stderr);
+    if (path != nullptr && path[0] != '\0') {
+      std::string resolved = path;
+      if (resolved.rfind("$HOME", 0) == 0) {
+        char home[1024] = {0};
+        FILE* f = popen("echo $HOME", "r");
+        if (f) {
+          if (fgets(home, sizeof(home), f))
+            home[strcspn(home, "\n")] = 0;
+          pclose(f);
+        }
+        resolved.replace(0, 5, home);
+      }
+      freopen(resolved.c_str(), "w", stderr);
+    }
   }
 };
 StderrRedirect s_stderr_redirect;

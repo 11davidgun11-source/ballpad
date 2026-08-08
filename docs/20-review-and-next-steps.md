@@ -119,6 +119,16 @@ Phase A — usage fundamentals (do these first):
 2. A2 in-app game import + onboarding screen (P0-b). Gate: fresh sim
    container, import via document picker, game boots; missing-game state
    shows instructions, never a black screen.
+   **STATUS: PASS (phone, 2026-08-08 Bot 4).** AppRootView routes to an
+   onboarding screen when Documents lacks game.iso/main.dol (proof
+   build/proofs/a2-onboarding.png); "Import Game" opens the real document
+   picker (fileImporter); the pick selection is stream-copied into Documents
+   and sys/main.dol is extracted from the disc header + DOL section table.
+   XCUITest (app/BallpadUITests, scheme TestAction) drove the full flow:
+   onboarding -> picker -> Strikers.iso -> import (log: game imported,
+   dolSize=3210784) -> game booted (build/proofs/a2-imported-game.png).
+   Simulator gotcha: host-copied files in the Files app's File Provider
+   Storage app group are only indexed after a simulator reboot.
 3. A3 real-touch verification (3-a). Gate: M3/M6 re-proven through the
    actual overlay (XCUITest or a recorded manual session), not buffer
    injection.
