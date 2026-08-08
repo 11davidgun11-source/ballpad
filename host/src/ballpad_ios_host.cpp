@@ -183,6 +183,11 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
     ballpad_arm_efb_readback();
   ballpad_window_force_presentable();
   g_sdl_window = ballpad_window_get_sdl_window();
+  if (g_sdl_window != nullptr) {
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(g_sdl_window), &w, &h);
+    std::fprintf(stderr, "[ballpad-window] size=%dx%d\n", w, h);
+  }
   // Open a frame packet and KEEP it open: guest GX writes during boot must
   // land in a live frame (mirrors dol_aurora_initialize on desktop, which
   // leaves g_frame_open true). Present cycles close/reopen it.
@@ -672,6 +677,20 @@ void ballpad_ios_host_stop(void) {
 bool ballpad_ios_host_running(void) { return g_started.load(); }
 
 int ballpad_ios_host_get_efb_scale(void) { return g_efb_scale; }
+
+// Rolling present-rate helper for the SwiftUI FPS overlay.
+double ballpad_ios_host_fps(void) {
+  static unsigned long long s_last = 0;
+  static auto s_t0 = std::chrono::steady_clock::now();
+  const auto now = std::chrono::steady_clock::now();
+  const double secs =
+      std::chrono::duration<double>(now - s_t0).count();
+  const unsigned long long cur = aurora_present_count();
+  const double fps = secs > 0.0 ? (double)(cur - s_last) / secs : 0.0;
+  s_last = cur;
+  s_t0 = now;
+  return fps;
+}
 
 void ballpad_ios_host_set_efb_scale(int scale) {
   if (scale < 1) scale = 1;

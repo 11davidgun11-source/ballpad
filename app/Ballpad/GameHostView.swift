@@ -164,6 +164,7 @@ struct GameHostView: View {
     @State private var showMenu = false
     @State private var editMode = false
     @State private var lastPad = "pad: idle"
+    @State private var fps: Double = 0
 
     init() {
         let idiom = UIDevice.current.userInterfaceIdiom
@@ -185,6 +186,11 @@ struct GameHostView: View {
                     Text(lastPad)
                         .font(.caption2.monospaced())
                         .foregroundStyle(.green.opacity(0.9))
+                    if settings.showFps {
+                        Text(String(format: "%.0f fps", fps))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.yellow.opacity(0.9))
+                    }
                     Button("⋯") { showMenu = true }
                         .font(.title2.bold())
                         .foregroundStyle(.white)
@@ -216,7 +222,10 @@ struct GameHostView: View {
                 }
                 Spacer()
             }
-            TouchControlSurface(store: layout, editMode: editMode) { status in
+            TouchControlSurface(store: layout,
+                                editMode: editMode,
+                                controlScale: CGFloat(settings.controlScale),
+                                controlOpacity: settings.controlOpacity) { status in
                 var s = status
                 ballpad_pad_set(0, &s)
                 ballpad_runtime_frame()
@@ -231,6 +240,9 @@ struct GameHostView: View {
             if let cstr = ballpad_runtime_banner() {
                 banner = String(cString: cstr)
             }
+            Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+                fps = ballpad_ios_host_fps()
+            }
             runUITest()
         }
         .sheet(isPresented: $showMenu) {
@@ -238,6 +250,9 @@ struct GameHostView: View {
                 isPresented: $showMenu,
                 renderScale: $settings.renderScale,
                 aspectMode: $settings.aspectMode,
+                controlScale: $settings.controlScale,
+                controlOpacity: $settings.controlOpacity,
+                showFps: $settings.showFps,
                 onEditLayout: {
                     layout.takeSnapshot()
                     editMode = true
@@ -284,10 +299,14 @@ struct GameHostView: View {
                 self.showMenu = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     self.settings.renderScale = 2
+                    self.settings.showFps = true
                     log("scale set to 2")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                         self.showMenu = false
                         log("menu closed")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            log("fps=\(String(format: "%.0f", self.fps))")
+                        }
                     }
                 }
             }

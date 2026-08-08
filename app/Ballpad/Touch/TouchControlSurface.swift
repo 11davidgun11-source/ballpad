@@ -3,6 +3,8 @@ import SwiftUI
 struct TouchControlSurface: View {
     @ObservedObject var store: LayoutStore
     var editMode: Bool = false
+    var controlScale: CGFloat = 1.0
+    var controlOpacity: Double = 0.76
     var onPadChanged: (BallPadStatus) -> Void
 
     @State private var buttons: Set<ControlID> = []
@@ -51,38 +53,90 @@ struct TouchControlSurface: View {
     // Unified control view: ONE unconditional structure for every control.
     // iPadOS 26 triggers an AttributeGraph layout cycle (detaching the hosting
     // window) for any conditional view structure inside this overlay, so all
-    // differentiation (colors, sizes, gestures, active state) is done with
-    // value expressions — never if/else view branching.
+    // differentiation (colors, sizes, shapes, gestures, active state) is done
+    // with value expressions — never if/else view branching. Each bellpad
+    // shape (stick well+thumb, shoulder plate, Z plate, START pill, face
+    // circle, D-pad key) is always in the ZStack and gated by .opacity().
     private func controlView(node: ControlNode, uiScale: CGFloat) -> some View {
         let scale = node.scale
         let rect = CGRect(
-            x: node.normX * logicalW - node.normW * logicalW * scale / 2,
-            y: node.normY * logicalH - node.normH * logicalH * scale / 2,
-            width: node.normW * logicalW * scale,
-            height: node.normH * logicalH * scale
+            x: node.normX * logicalW - node.normW * logicalW * scale * controlScale / 2,
+            y: node.normY * logicalH - node.normH * logicalH * scale * controlScale / 2,
+            width: node.normW * logicalW * scale * controlScale,
+            height: node.normH * logicalH * scale * controlScale
         )
         let isStick = node.id == .stick || node.id == .cStick
         let isTrigger = node.id == .l || node.id == .r
-        let isFace = !isStick && !isTrigger
+        let isStart = node.id == .start
+        let isZ = node.id == .z
+        let isFace = !isStick && !isTrigger && !isStart && !isZ
         let fill = ControlSkin.fill(node.id)
         let on = isActive(node.id)
         let vec = activeVec(node.id)
+        let trigVal = triggerValue(node.id)
         let hidden = editMode == false && node.hidden
+        let shapeOpacity = on ? min(0.95, controlOpacity + 0.2) : controlOpacity
+        let labelSize = min(rect.width, rect.height) * 0.30
         return ZStack {
+            // Stick well (dark) + white border.
             Circle()
-                .fill(Color(white: 0.08).opacity(on ? 0.5 : 0.38))
+                .fill(Color(white: 0.08).opacity(shapeOpacity))
+                .opacity(isStick ? 1 : 0)
             Circle()
                 .strokeBorder(.white.opacity(0.46), lineWidth: 2)
+                .opacity(isStick ? 1 : 0)
+            // Stick thumb.
             Circle()
                 .fill(fill.opacity(on ? ControlSkin.activeOpacity : ControlSkin.idleOpacity))
                 .frame(width: rect.width * 0.42, height: rect.height * 0.42)
                 .overlay(Circle().strokeBorder(.white.opacity(0.7), lineWidth: 1.5))
                 .shadow(color: .black.opacity(0.4), radius: 3)
-                .scaleEffect(on && isFace ? 0.92 : 1.0)
                 .offset(isStick ? vec : .zero)
+                .opacity(isStick ? 1 : 0)
+            // Shoulder trigger plate + analog fill.
+            RoundedRectangle(cornerRadius: rect.height * 0.25)
+                .fill(fill.opacity(shapeOpacity))
+                .overlay(RoundedRectangle(cornerRadius: rect.height * 0.25)
+                    .strokeBorder(.white.opacity(0.42), lineWidth: 1.5))
+                .frame(width: rect.width, height: rect.height)
+                .opacity(isTrigger ? 1 : 0)
+            RoundedRectangle(cornerRadius: rect.height * 0.25)
+                .fill(.white.opacity(0.35))
+                .frame(width: rect.width, height: max(rect.height * trigVal, 0))
+                .frame(height: rect.height, alignment: .bottom)
+                .opacity(isTrigger ? 1 : 0)
+            // Z plate.
+            RoundedRectangle(cornerRadius: 8)
+                .fill(fill.opacity(shapeOpacity))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(.white.opacity(0.42), lineWidth: 1.5))
+                .frame(width: rect.width, height: rect.height)
+                .opacity(isZ ? 1 : 0)
+            // START pill.
+            Capsule()
+                .fill(fill.opacity(shapeOpacity))
+                .overlay(Capsule().strokeBorder(.white.opacity(0.42), lineWidth: 1.5))
+                .frame(width: rect.width, height: rect.height)
+                .opacity(isStart ? 1 : 0)
+            // Face / D-pad circles.
+            Circle()
+                .fill(fill.opacity(shapeOpacity))
+                .overlay(Circle().strokeBorder(.white.opacity(0.38), lineWidth: 1.5))
+                .shadow(color: .black.opacity(0.35), radius: 2, y: 2)
+                .frame(width: rect.width, height: rect.height)
+                .scaleEffect(on && isFace ? 0.92 : 1.0)
+                .opacity(isFace ? 1 : 0)
+            // Layout-editor chrome: yellow dashed outline + drag-to-move,
+            // always in the tree but only visible in edit mode.
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(.yellow.opacity(0.9), style: StrokeStyle(lineWidth: 2, dash: [6]))
+                .frame(width: rect.width, height: rect.height)
+                .opacity(editMode ? 1 : 0)
+            // Label (only on buttons/shoulders/sticks that carry one).
             Text(node.label)
-                .font(.system(size: min(rect.width, rect.height) * 0.30, weight: .bold, design: .rounded))
+                .font(.system(size: labelSize, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
+                .opacity(editMode ? 1 : (isStick ? 0.85 : 1))
         }
         .frame(width: rect.width, height: rect.height)
         .position(x: rect.midX, y: rect.midY)
@@ -90,7 +144,12 @@ struct TouchControlSurface: View {
         .contentShape(Circle())
         .gesture(DragGesture(minimumDistance: 0)
             .onChanged { value in
-                if isStick {
+                if editMode {
+                    store.move(id: node.id,
+                               to: CGPoint(x: rect.midX + value.translation.width / uiScale,
+                                           y: rect.midY + value.translation.height / uiScale),
+                               in: CGSize(width: logicalW, height: logicalH))
+                } else if isStick {
                     let maxR = min(rect.width, rect.height) * 0.36
                     var dx = value.translation.width / uiScale
                     var dy = value.translation.height / uiScale
@@ -107,7 +166,9 @@ struct TouchControlSurface: View {
                 }
             }
             .onEnded { _ in
-                if isStick {
+                if editMode {
+                    store.save()
+                } else if isStick {
                     if node.id == .cStick { cStickVec = .zero } else { stickVec = .zero }
                 } else if isTrigger {
                     if node.id == .l { lTrigger = 0 } else { rTrigger = 0 }
@@ -133,6 +194,14 @@ struct TouchControlSurface: View {
         case .stick: return stickVec
         case .cStick: return cStickVec
         default: return .zero
+        }
+    }
+
+    private func triggerValue(_ id: ControlID) -> CGFloat {
+        switch id {
+        case .l: return lTrigger
+        case .r: return rTrigger
+        default: return 0
         }
     }
 

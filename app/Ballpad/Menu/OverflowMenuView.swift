@@ -4,6 +4,9 @@ struct OverflowMenuView: View {
     @Binding var isPresented: Bool
     @Binding var renderScale: Int
     @Binding var aspectMode: String
+    @Binding var controlScale: Double
+    @Binding var controlOpacity: Double
+    @Binding var showFps: Bool
     var onEditLayout: () -> Void
     var onResetLayout: () -> Void
 
@@ -32,6 +35,28 @@ struct OverflowMenuView: View {
                 Section("Controls") {
                     Button("Edit layout", action: onEditLayout)
                     Button("Reset layout", role: .destructive, action: onResetLayout)
+                    HStack {
+                        Text("Size")
+                        Slider(value: $controlScale, in: 0.7...1.35)
+                            .onChange(of: controlScale) { _, newValue in
+                                print("[menu] controlScale=\(newValue)")
+                            }
+                        Text(String(format: "%.2f", controlScale))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                    HStack {
+                        Text("Opacity")
+                        Slider(value: $controlOpacity, in: 0.25...1.0)
+                            .onChange(of: controlOpacity) { _, newValue in
+                                print("[menu] controlOpacity=\(newValue)")
+                            }
+                        Text(String(format: "%.2f", controlOpacity))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
                 }
                 Section("Saves") {
                     // M11: file-level card export/import (docs/06). The active
@@ -64,6 +89,16 @@ struct OverflowMenuView: View {
                             print("[saves] import \(newest) ok=\(ok)")
                         }
                     }
+                }
+                Section("Graphics") {
+                    Toggle("Show FPS", isOn: $showFps)
+                }
+                Section("About") {
+                    Text("Ballpad \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")")
+                        .foregroundStyle(.secondary)
+                    Text("Provide your own game copy. Ballpad runs your GameCube disc image locally; no game data is bundled.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Ballpad")

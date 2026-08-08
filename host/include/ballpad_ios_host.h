@@ -65,6 +65,8 @@ bool ballpad_ios_host_frame_size(uint32_t* width_out, uint32_t* height_out);
  * the next surface refresh). Call any time after init. */
 int  ballpad_ios_host_get_efb_scale(void);
 void ballpad_ios_host_set_efb_scale(int scale);
+/* Rolling present rate (fps) for the debug overlay. */
+double ballpad_ios_host_fps(void);
 
 /* M11 memory card. The active card lives at Documents/Saves/CardA.dolcard. */
 const char* ballpad_ios_host_card_path(void);
