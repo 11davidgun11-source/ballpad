@@ -595,7 +595,7 @@ index 7af8fca..add12a5 100644
      g_requested.store(false, std::memory_order_release);
    else
 diff --git a/graphics/aurora/lib/gfx/gxcore_draw.cpp b/graphics/aurora/lib/gfx/gxcore_draw.cpp
-index 71136b9..ad64c51 100644
+index 71136b9..bea71f5 100644
 --- a/graphics/aurora/lib/gfx/gxcore_draw.cpp
 +++ b/graphics/aurora/lib/gfx/gxcore_draw.cpp
 @@ -235,6 +235,17 @@ absl::flat_hash_map<TextureKey, TextureHandle> g_textureCache;
@@ -635,7 +635,25 @@ index 71136b9..ad64c51 100644
  const TextureCacheStats& texture_cache_stats() { return g_textureCacheStats; }
  
  // Resolve the current EFB region into a texture the guest-identity path can bind
-@@ -839,10 +855,21 @@ bool submit_draw_plan(const gxc::DrawPlan& plan) {
+@@ -726,11 +742,14 @@ void copy_efb_to_texture(const gxc::EfbCopyCommand& cmd) {
+   // E7 YUYV→RAM: when display-copy dest is programmed, also encode the EFB
+   // source rect into guest MEM1 as YUYV 4:2:2 (Dolphin copy_to_ram XFB path).
+   // Source pixels: latest present-source readback when available; skip if no
+-  // snapshot yet (async map) so GPU Virtual XFB still presents. Strikers that
+-  // never read XFB RAM stay safe.
++  // snapshot yet (async map) so GPU Virtual XFB still presents. The iOS
++  // product presents EFB-direct and never reads XFB RAM, so the encode is
++  // pure waste there (BALLPAD_DISABLE_XFB_RAM=1 set by the iOS host).
+   // dest_stride_bytes = BP 0x4D << 5 when set; else tight width*2.
+   // XFB dest height from y_scale (byte_size/stride or cmd.xfb_height).
+-  if (is_xfb && cmd.dest_address != 0u && cmd.width >= 2u &&
++  static const bool s_xfbRamDisabled =
++      getenv("BALLPAD_DISABLE_XFB_RAM") != nullptr;
++  if (is_xfb && !s_xfbRamDisabled && cmd.dest_address != 0u && cmd.width >= 2u &&
+       (cmd.width & 1u) == 0u) {
+     if (!efb_readback::continuous()) {
+       efb_readback::set_continuous(true);
+@@ -839,10 +858,21 @@ bool submit_draw_plan(const gxc::DrawPlan& plan) {
      const uint32_t size = std::min(tsize, available);
      // Hash the actual source texels (+ TLUT for CI) so a content change under an
      // unchanged guest identity is a distinct cache entry — see TextureKey.

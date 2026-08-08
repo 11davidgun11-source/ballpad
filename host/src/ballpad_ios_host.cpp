@@ -180,6 +180,10 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   // Perf: no SDL audio stream on the iOS host (enable_audio=false); skip the
   // per-block audio DMA polling that would otherwise run with no output.
   audio_set_enabled(cfg->enable_audio);
+  // Perf: the iOS display presents EFB-direct; the E7 XFB YUYV-to-RAM encode
+  // on every display copy is never read by the guest. Disable it.
+  if (getenv("BALLPAD_DISABLE_XFB_RAM") == nullptr)
+    setenv("BALLPAD_DISABLE_XFB_RAM", "1", 1);
   // BALLPAD_DISABLE_READBACK=1 skips arming the continuous EFB readback
   // (diagnostic: on some simulators the readback map stalls the render worker).
   if (getenv("BALLPAD_DISABLE_READBACK") == nullptr ||
