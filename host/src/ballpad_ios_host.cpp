@@ -219,8 +219,29 @@ void ballpad_ios_host_step_frame(void) {
   }
   // Debug: dump guest OS thread states during the match-load zone to find what
   // the loading threads wait on (BALLPAD_DEBUG_THREADS=1).
-  if (getenv("BALLPAD_DEBUG_THREADS") != nullptr && g_blocks >= 5500000000ull &&
+  if (getenv("BALLPAD_DEBUG_THREADS") != nullptr && g_blocks >= 2500000000ull &&
       (g_blocks % 200000000ull) < 1000000ull) {
+    // Save a screen-history snapshot every 400M blocks for offline review.
+    if ((g_blocks % 400000000ull) == 0u) {
+      DolEfbAccess* efb = mmio_efb();
+      if (efb != nullptr && efb->color != nullptr && efb->fill_count > 0u) {
+        char path[128];
+        std::snprintf(path, sizeof path,
+                      "/Users/chrissotraidis/GitHub/ballpad/work/tmp/snap_%llu.rgba",
+                      (unsigned long long)g_blocks);
+        FILE* f = fopen(path, "wb");
+        if (f) {
+          const u32 fw = efb->width, fh = efb->height;
+          for (u32 i = 0; i < fw * fh; ++i) {
+            const u32 argb = efb->color[i];
+            const uint8_t px[4] = {(uint8_t)(argb >> 16), (uint8_t)(argb >> 8),
+                                   (uint8_t)(argb), (uint8_t)(argb >> 24)};
+            fwrite(px, 1, 4, f);
+          }
+          fclose(f);
+        }
+      }
+    }
     static unsigned long long s_last_dump_blocks = 0;
     if (g_blocks - s_last_dump_blocks >= 200000000ull) {
       s_last_dump_blocks = g_blocks;
@@ -254,6 +275,44 @@ void ballpad_ios_host_step_frame(void) {
                    lm ? mem_read32(cpu, lm + 0x20u) : 0u,
                    lm ? mem_read32(cpu, lm + 0x28u) : 0u,
                    lm ? mem_read32(cpu, lm + 0x24u) : 0u);
+      // Match clocks (ClockManager active list).
+      u32 clk = mem_read32(cpu, 0x8037446Cu);  // m_activeList head
+      for (int ci = 0; ci < 6 && clk != 0u && clk >= 0x80000000u; ci++) {
+        float fTimer = 0.f, fEnd = 0.f;
+        const u32 uTimer = mem_read32(cpu, clk + 0x08u);
+        const u32 uEnd = mem_read32(cpu, clk + 0x0Cu);
+        memcpy(&fTimer, &uTimer, 4);
+        memcpy(&fEnd, &uEnd, 4);
+        std::fprintf(stderr, "[threads] clock=0x%08X state=%u timer=%.1f end=%.1f\n",
+                     clk, mem_read32(cpu, clk + 0x18u), fTimer, fEnd);
+        clk = mem_read32(cpu, clk + 0x24u);
+      }
+      const u32 game = mem_read32(cpu, 0x80373708u);  // g_pGame (cGame*)
+      const u32 gameClock = game ? mem_read32(cpu, game + 0x0Cu) : 0u;
+      std::fprintf(stderr, "[threads] cGame=0x%08X state=%d gameClock=0x%08X\n",
+                   game, game ? (int)mem_read32(cpu, game + 0x24u) : -1, gameClock);
+      std::fprintf(stderr, "[threads] feStateCur=%d feStatePending=%d\n",
+                   (int)mem_read32(cpu, 0x80395408u), (int)mem_read32(cpu, 0x8039540Cu));
+      std::fprintf(stderr, "[threads] menuType=%d feSceneMgr=0x%08X topScene=0x%08X vtab=0x%08X\n",
+                   (int)mem_read32(cpu, 0x803713D4u),
+                   mem_read32(cpu, 0x80374450u),
+                   mem_read32(cpu, 0x80374450u) ? mem_read32(cpu, mem_read32(cpu, 0x80374450u) + 0x1Cu) : 0u,
+                   0u);
+      const u32 taskMgr = mem_read32(cpu, 0x803742B8u);  // nlTaskManager*
+      std::fprintf(stderr, "[threads] taskMgr=0x%08X currState=%u pendingState=%u locked=%u\n",
+                   taskMgr,
+                   taskMgr ? mem_read32(cpu, taskMgr + 0x08u) : 0u,
+                   taskMgr ? mem_read32(cpu, taskMgr + 0x0Cu) : 0u,
+                   taskMgr ? mem_read32(cpu, taskMgr + 0x10u) : 0u);
+      if (gameClock != 0u && gameClock >= 0x80000000u) {
+        float fTimer = 0.f, fEnd = 0.f;
+        const u32 uTimer = mem_read32(cpu, gameClock + 0x08u);
+        const u32 uEnd = mem_read32(cpu, gameClock + 0x0Cu);
+        memcpy(&fTimer, &uTimer, 4);
+        memcpy(&fEnd, &uEnd, 4);
+        std::fprintf(stderr, "[threads] gameClock state=%u timer=%.1f end=%.1f\n",
+                     mem_read32(cpu, gameClock + 0x18u), fTimer, fEnd);
+      }
       for (int rq = 0; rq < 4; rq++) {
         const u32 q = 0x80347E18u + (u32)rq * 8u;
         const u32 h = mem_read32(cpu, q);
@@ -307,14 +366,19 @@ void ballpad_ios_host_step_frame(void) {
         {0x0001, 0, 0, 15000000ull, 3900000000ull},
         {0x0100, 0, 0, 20000000ull, 4300000000ull},
         {0x0100, 0, 0, 20000000ull, 4700000000ull},
-        // Assign P1 to the left team -> match (stadium card).
-        {0x0001, 0, 0, 15000000ull, 4800000000ull},
-        {0x0100, 0, 0, 20000000ull, 5400000000ull},
-        // The stadium card is a selection screen: press A to confirm it, with
-        // generous retries (the card appears a bit after the match start).
-        {0x0100, 0, 0, 20000000ull, 6500000000ull},
-        {0x0100, 0, 0, 20000000ull, 8000000000ull},
-        {0x0100, 0, 0, 20000000ull, 9500000000ull},
+        // Assign P1 to the left team -> match. Screen arrival drifts run to
+        // run, so retry on a cadence: (D_LEFT, A) covers the side-choice
+        // screen; a lone A confirms the stadium card (D_LEFT would move the
+        // carousel). Once the match starts the inputs are harmless.
+        {0x0001, 0, 0, 15000000ull, 5400000000ull},
+        {0x0100, 0, 0, 20000000ull, 5500000000ull},
+        {0x0100, 0, 0, 20000000ull, 6000000000ull},
+        {0x0001, 0, 0, 15000000ull, 6800000000ull},
+        {0x0100, 0, 0, 20000000ull, 6900000000ull},
+        {0x0100, 0, 0, 20000000ull, 7500000000ull},
+        {0x0001, 0, 0, 15000000ull, 8200000000ull},
+        {0x0100, 0, 0, 20000000ull, 8300000000ull},
+        {0x0100, 0, 0, 20000000ull, 9000000000ull},
     };
     static const unsigned kAutoCount =
         static_cast<unsigned>(sizeof(kAutoSteps) / sizeof(kAutoSteps[0]));
