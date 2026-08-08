@@ -18,6 +18,7 @@ extern "C" {
 #include "host/mmio.h"
 #include "host/hle.h"
 #include "host/interrupt.h"
+#include "host/audio.h"
 }
 
 #include <SDL3/SDL_init.h>
@@ -176,6 +177,9 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   }
   g_aurora_up = true;
   g_starting.store(false);
+  // Perf: no SDL audio stream on the iOS host (enable_audio=false); skip the
+  // per-block audio DMA polling that would otherwise run with no output.
+  audio_set_enabled(cfg->enable_audio);
   // BALLPAD_DISABLE_READBACK=1 skips arming the continuous EFB readback
   // (diagnostic: on some simulators the readback map stalls the render worker).
   if (getenv("BALLPAD_DISABLE_READBACK") == nullptr ||
@@ -248,8 +252,22 @@ void ballpad_ios_host_step_frame(void) {
   // consumed ~90% of the main-thread CPU and capped the guest at ~8M blocks/s.
   static const bool s_debug_threads =
       getenv("BALLPAD_DEBUG_THREADS") != nullptr;
+  // Perf: replace the per-block 64-bit modulo checks with compare counters
+  // (a 64-bit `%` by a non-power-of-two constant is a multi-instruction
+  // multiply-shift sequence, ~15-30 cycles each, twice per guest block).
+  static unsigned long long s_next_block_log = 1000000ull;
+  static unsigned long long s_next_window_probe = 2500000ull;
+  // Batch the window-close check: the event is rare; checking every ~100K
+  // blocks (hundreds of times/sec) is more than enough.
+  static unsigned long long s_next_quit_check = 100000ull;
   while (g_blocks < until && g_blocks < kMaxBlocks && !g_stop.load()) {
-    if (dol_platform_should_quit()) { g_stop_reason = "window closed"; break; }
+    if (g_blocks >= s_next_quit_check) {
+      s_next_quit_check += 100000ull;
+      if (dol_platform_should_quit()) {
+        g_stop_reason = "window closed";
+        break;
+      }
+    }
     interrupt_poll(cpu);
     hle_poll_callback(cpu);
     u32 pc = cpu->pc;
@@ -307,16 +325,19 @@ void ballpad_ios_host_step_frame(void) {
       break;
     }
     g_blocks++;
-    if ((g_blocks % 1000000ull) == 0u)
+    if (g_blocks >= s_next_block_log) {
+      s_next_block_log += 1000000ull;
       std::fprintf(stderr, "[ballpad-ios] blocks=%llu pc=0x%08X msr=0x%08X dec=%u\n",
                    (unsigned long long)g_blocks, cpu->pc, cpu->msr, cpu->spr[22]);
+    }
     if (g_blocks >= 5500000000ull && (g_blocks % 100000ull) == 0u &&
         cpu->pc != 0x80259294u && cpu->pc != 0x8025929Cu &&
         cpu->pc != 0x80259298u && cpu->pc != 0x802592A0u &&
         s_debug_threads)
       std::fprintf(stderr, "[loadpc] b=%llu pc=0x%08X\n",
                    (unsigned long long)g_blocks, cpu->pc);
-    if ((g_blocks % 2500000ull) == 0u) {
+    if (g_blocks >= s_next_window_probe) {
+      s_next_window_probe += 2500000ull;
       ballpad_window_probe();
     }
   }
