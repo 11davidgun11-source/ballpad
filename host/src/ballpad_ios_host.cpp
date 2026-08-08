@@ -24,6 +24,7 @@ extern "C" {
 #include <SDL3/SDL_video.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -36,6 +37,7 @@ extern "C" void ballpad_ios_host_attach_sdl_view(void*);
 extern "C" void SDL_SetMainReady(void);
 extern "C" bool aurora_begin_frame(void);
 extern "C" void aurora_end_frame(void);
+extern "C" unsigned long long aurora_present_count(void);
 extern "C" void ballpad_arm_efb_readback(void);
 extern "C" void ballpad_window_probe(void);
 extern "C" unsigned long long g_dec_deliveries;
@@ -185,8 +187,17 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
 // Steps one frame of guest work. Must be called on the main thread.
 void ballpad_ios_host_step_frame(void) {
   if (!g_started.load() || !g_cpu_valid) return;
+  // Perf instrumentation: wall-clock guest throughput per step_frame call
+  // (BALLPAD_PERF_LOG=1). Reports every 60 calls (~1s at 60Hz).
+  const auto t_step_begin = std::chrono::steady_clock::now();
+  const unsigned long long blocks_step_begin = g_blocks;
   CPUState* cpu = &g_cpu;
   unsigned long long until = g_blocks + kFrameBlocks;
+  // Hoisted once per step: the per-block debug gate used to call getenv()
+  // (an unfair-lock + linear environ scan) on every guest block, which
+  // consumed ~90% of the main-thread CPU and capped the guest at ~8M blocks/s.
+  static const bool s_debug_threads =
+      getenv("BALLPAD_DEBUG_THREADS") != nullptr;
   while (g_blocks < until && g_blocks < kMaxBlocks && !g_stop.load()) {
     if (dol_platform_should_quit()) { g_stop_reason = "window closed"; break; }
     interrupt_poll(cpu);
@@ -195,7 +206,7 @@ void ballpad_ios_host_step_frame(void) {
     // Task-run counters: which game task Runners actually execute (the pad
     // update path is suspected stuck). The entry pc is only visible before the
     // dispatch consumes it.
-    if (getenv("BALLPAD_DEBUG_THREADS") != nullptr) {
+    if (s_debug_threads) {
       static unsigned long long s_tasks[4] = {0, 0, 0, 0};
       if (pc == 0x801D2914u) s_tasks[0]++;       // nlTaskManager::RunAllTasks
       else if (pc == 0x8016E330u) s_tasks[1]++;  // FixedUpdateTask::Run
@@ -252,7 +263,7 @@ void ballpad_ios_host_step_frame(void) {
     if (g_blocks >= 5500000000ull && (g_blocks % 100000ull) == 0u &&
         cpu->pc != 0x80259294u && cpu->pc != 0x8025929Cu &&
         cpu->pc != 0x80259298u && cpu->pc != 0x802592A0u &&
-        getenv("BALLPAD_DEBUG_THREADS") != nullptr)
+        s_debug_threads)
       std::fprintf(stderr, "[loadpc] b=%llu pc=0x%08X\n",
                    (unsigned long long)g_blocks, cpu->pc);
     if ((g_blocks % 2500000ull) == 0u) {
@@ -265,7 +276,7 @@ void ballpad_ios_host_step_frame(void) {
   }
   // Debug: dump guest OS thread states during the match-load zone to find what
   // the loading threads wait on (BALLPAD_DEBUG_THREADS=1).
-  if (getenv("BALLPAD_DEBUG_THREADS") != nullptr && g_blocks >= 2500000000ull &&
+  if (s_debug_threads && g_blocks >= 2500000000ull &&
       (g_blocks % 200000000ull) < 1000000ull) {
     // Save a screen-history snapshot every 400M blocks for offline review.
     if ((g_blocks % 400000000ull) == 0u) {
@@ -572,6 +583,34 @@ void ballpad_ios_host_step_frame(void) {
                    g_stop_reason, g_blocks, cpu->pc, (unsigned)cpu->exception);
     }
   }
+  static int s_perf_log = -1;
+  if (s_perf_log < 0)
+    s_perf_log = getenv("BALLPAD_PERF_LOG") != nullptr ? 1 : 0;
+  if (s_perf_log) {
+    static unsigned long long s_perf_steps = 0;
+    static unsigned long long s_perf_blocks_total = 0;
+    static auto s_perf_t0 = std::chrono::steady_clock::now();
+    ++s_perf_steps;
+    s_perf_blocks_total += g_blocks - blocks_step_begin;
+    if ((s_perf_steps % 60u) == 0u) {
+      const double wallMs =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - s_perf_t0)
+              .count();
+      const double blocksPerSec =
+          wallMs > 0.0 ? (double)s_perf_blocks_total * 1000.0 / wallMs : 0.0;
+      const double stepMs = wallMs / (double)s_perf_steps;
+      std::fprintf(stderr,
+                   "[perf] steps=%llu wallMs=%.1f stepMs=%.1f blocks=%llu "
+                   "blocksPerSec=%.0f presents=%llu\n",
+                   (unsigned long long)s_perf_steps, wallMs, stepMs,
+                   (unsigned long long)s_perf_blocks_total, blocksPerSec,
+                   (unsigned long long)aurora_present_count());
+      s_perf_steps = 0;
+      s_perf_blocks_total = 0;
+      s_perf_t0 = std::chrono::steady_clock::now();
+    }
+  }
 }
 
 void ballpad_ios_host_stop(void) {
@@ -604,12 +643,16 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
   // Read the latest present-source RGBA8 frame from the software EFB backing
   // filled by the aurora readback hook (mmio_attach_efb_readback).
   DolEfbAccess* efb = mmio_efb();
-  static unsigned long long s_last_fill = 0;
-  if (efb->fill_count != s_last_fill) {
-    s_last_fill = efb->fill_count;
-    std::fprintf(stderr, "[ballpad-ios] efb fill=%llu %ux%u color=%p\n",
-                 (unsigned long long)efb->fill_count, efb->width, efb->height,
-                 (void*)efb->color);
+  // Per-fill log is BALLPAD_DEBUG_EFB-gated (was unconditional noise; each
+  // fill is one unbuffered write to the log file).
+  if (getenv("BALLPAD_DEBUG_EFB") != nullptr) {
+    static unsigned long long s_last_fill = 0;
+    if (efb->fill_count != s_last_fill) {
+      s_last_fill = efb->fill_count;
+      std::fprintf(stderr, "[ballpad-ios] efb fill=%llu %ux%u color=%p\n",
+                   (unsigned long long)efb->fill_count, efb->width, efb->height,
+                   (void*)efb->color);
+    }
   }
   if (efb == nullptr || efb->color == nullptr || efb->fill_count == 0u)
     return false;

@@ -1,5 +1,5 @@
 diff --git a/backends/aurora/aurora_backend.cpp b/backends/aurora/aurora_backend.cpp
-index d94f811..355db9c 100644
+index d94f811..46e7af8 100644
 --- a/backends/aurora/aurora_backend.cpp
 +++ b/backends/aurora/aurora_backend.cpp
 @@ -1,5 +1,6 @@
@@ -17,7 +17,15 @@ index d94f811..355db9c 100644
  #include <SDL3/SDL_audio.h>
  #include <SDL3/SDL_init.h>
  #include <SDL3/SDL_scancode.h>
-@@ -55,6 +57,7 @@ void set_continuous(bool enabled) noexcept;
+@@ -46,6 +48,7 @@ namespace aurora::gfx::gxcore {
+ bool submit_draw_plan(const gxruntime::gxcore::DrawPlan& plan);
+ void copy_efb_to_texture(const gxruntime::gxcore::EfbCopyCommand& cmd);
+ void reset_texture_cache();
++void notify_texture_content_changed(uint32_t guest_address);
+ } // namespace aurora::gfx::gxcore
+ #endif
+ 
+@@ -55,6 +58,7 @@ void set_continuous(bool enabled) noexcept;
  bool continuous() noexcept;
  bool peek(const std::uint8_t** rgba, std::uint32_t* width,
            std::uint32_t* height) noexcept;
@@ -25,7 +33,7 @@ index d94f811..355db9c 100644
  } // namespace aurora::gfx::efb_readback
  
  namespace {
-@@ -1123,6 +1126,10 @@ void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user) {
+@@ -1123,6 +1127,10 @@ void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user) {
      }
  }
  
@@ -36,7 +44,7 @@ index d94f811..355db9c 100644
  void dol_aurora_shutdown(void) {
      g_efb_frame_fill = nullptr;
      g_efb_frame_fill_user = nullptr;
-@@ -1133,6 +1140,7 @@ void dol_aurora_shutdown(void) {
+@@ -1133,6 +1141,7 @@ void dol_aurora_shutdown(void) {
          aurora_end_frame();
          g_frame_open = false;
      }
@@ -44,7 +52,56 @@ index d94f811..355db9c 100644
  #if GXRUNTIME_HAS_AURORA_RECOMP
      // C2: ensure live --gap-report sees gxcore rows even if the host forgot to
      // call dol_aurora_flush_gap_report before write_json (main does call it).
-@@ -1779,6 +1787,10 @@ bool aurora_backend_pad_init(void) {
+@@ -1165,6 +1174,9 @@ bool aurora_backend_should_quit(void) {
+ void aurora_backend_present(void) {
+     if (!g_initialized)
+         return;
++    // Perf instrumentation: wall time for the whole present path (end_frame,
++    // EFB readback fill, surface present). Reported in the frame-pacing log.
++    const auto t_present_begin = std::chrono::steady_clock::now();
+ #if GXRUNTIME_HAS_AURORA_RECOMP
+     // gxcore accumulates the frame's draws as their spans complete; the final
+     // pending draw is only planned at the frame boundary. Submit it into the
+@@ -1215,11 +1227,16 @@ void aurora_backend_present(void) {
+     if (g_frame_pacing_log &&
+         (g_present_count <= 10 || (g_present_count % 60) == 0)) {
+         const AuroraStats* stats = aurora_get_stats();
++        const double presentMs =
++            std::chrono::duration<double, std::milli>(
++                std::chrono::steady_clock::now() - t_present_begin)
++                .count();
+         std::fprintf(stderr,
+-                     "[frame-pacing] frame=%llu fps=%.1f draws=%u "
++                     "[frame-pacing] frame=%llu fps=%.1f presentMs=%.2f draws=%u "
+                      "texture-upload=%u fifo=%llu\n",
+-                     g_present_count, aurora_get_fps(), stats->drawCallCount,
+-                     stats->lastTextureUploadSize, g_fifo_bytes);
++                     g_present_count, aurora_get_fps(), presentMs,
++                     stats->drawCallCount, stats->lastTextureUploadSize,
++                     g_fifo_bytes);
+     }
+     if (g_graphics_log) {
+         const AuroraStats* s = aurora_get_stats();
+@@ -1449,6 +1466,18 @@ void aurora_backend_present(void) {
+                      g_present_count, present_fifo);
+ }
+ 
++unsigned long long aurora_present_count(void) { return g_present_count; }
++
++void dol_aurora_gxcore_notify_texture_changed(uint32_t guest_address) {
++#if GXRUNTIME_HAS_AURORA_RECOMP
++  aurora::gfx::gxcore::notify_texture_content_changed(guest_address);
++#endif
++}
++
++void dol_platform_notify_texture_changed(u32 guest_address) {
++  dol_aurora_gxcore_notify_texture_changed(guest_address);
++}
++
+ void aurora_backend_mark_gx_begin(void) {
+     g_draw_opcode_pending = true;
+ }
+@@ -1779,6 +1808,10 @@ bool aurora_backend_pad_init(void) {
      return true;
  }
  
@@ -55,7 +112,7 @@ index d94f811..355db9c 100644
  u32 aurora_backend_pad_read(DolPadState state[4]) {
      PADStatus status[4]{};
      const u32 motor_mask = PADRead(status);
-@@ -1796,6 +1808,11 @@ u32 aurora_backend_pad_read(DolPadState state[4]) {
+@@ -1796,6 +1829,11 @@ u32 aurora_backend_pad_read(DolPadState state[4]) {
              .error = status[i].err,
          };
      }
@@ -67,7 +124,7 @@ index d94f811..355db9c 100644
      return motor_mask;
  }
  
-@@ -1921,3 +1938,7 @@ void install_platform_ops() {
+@@ -1921,3 +1959,7 @@ void install_platform_ops() {
      dol_platform_install(&ops);
  }
  } // namespace
@@ -314,6 +371,87 @@ index 7af8fca..add12a5 100644
    if (!cont)
      g_requested.store(false, std::memory_order_release);
    else
+diff --git a/graphics/aurora/lib/gfx/gxcore_draw.cpp b/graphics/aurora/lib/gfx/gxcore_draw.cpp
+index 71136b9..ad64c51 100644
+--- a/graphics/aurora/lib/gfx/gxcore_draw.cpp
++++ b/graphics/aurora/lib/gfx/gxcore_draw.cpp
+@@ -235,6 +235,17 @@ absl::flat_hash_map<TextureKey, TextureHandle> g_textureCache;
+ absl::flat_hash_map<uint32_t, TextureKey> g_textureAddrKey;
+ TextureCacheStats g_textureCacheStats;
+ 
++// Perf: memoize the content hash per guest texture address+size. The live game
++// re-binds the same texture bytes every frame and every draw with that texmap
++// re-hashes the full texel data (XXH3) before the cache lookup — in-match that
++// was ~1MB+ hashed per draw across ~250 draws/frame, the single hottest CPU
++// cost. The memo returns the previous hash while the guest identity is
++// unchanged; hle.c notifies this module when it detects a content change (its
++// own per-load hash), erasing the entry so the next resolve re-hashes.
++// Bounded: at most one entry per live texture address, evicted on change.
++absl::flat_hash_map<uint32_t, std::pair<uint32_t, uint64_t>>
++    g_textureHashMemo;
++
+ // EFB copy-to-texture destinations (63/S16): dest guest address -> resolved EFB
+ // texture. A draw binding a texture at one of these addresses samples the copied
+ // EFB content instead of the (stale, never-written-by-us) guest memory there.
+@@ -592,6 +603,7 @@ void render(const DrawData& data, const wgpu::RenderPassEncoder& pass) {
+ void reset_texture_cache() {
+   g_textureCache.clear();
+   g_textureAddrKey.clear();
++  g_textureHashMemo.clear();
+   g_efbCopyTextures.clear();
+   g_ramXfbTextures.clear();
+   g_last_xfb_dest_stride = 0;
+@@ -601,6 +613,10 @@ void reset_texture_cache() {
+   g_xfb_ram_present_count = 0;
+ }
+ 
++void notify_texture_content_changed(uint32_t guest_address) {
++  g_textureHashMemo.erase(guest_address);
++}
++
+ const TextureCacheStats& texture_cache_stats() { return g_textureCacheStats; }
+ 
+ // Resolve the current EFB region into a texture the guest-identity path can bind
+@@ -839,10 +855,21 @@ bool submit_draw_plan(const gxc::DrawPlan& plan) {
+     const uint32_t size = std::min(tsize, available);
+     // Hash the actual source texels (+ TLUT for CI) so a content change under an
+     // unchanged guest identity is a distinct cache entry — see TextureKey.
+-    uint64_t content_hash = XXH3_64bits(bytes, size);
+-    if (gxc::is_ci_format(format) && has_tlut && tlut_data != nullptr)
+-      content_hash =
+-          XXH3_64bits_withSeed(tlut_data, tlut_available, content_hash);
++    // Memoize per (address, size): the game re-binds identical bytes every
++    // frame and every draw, and re-hashing ~MBs of texels per draw was the
++    // hottest main-thread cost in-match. hle.c invalidates the memo when its
++    // own per-load hash detects a content change at this address.
++    uint64_t content_hash = 0;
++    auto memoIt = g_textureHashMemo.find(address);
++    if (memoIt != g_textureHashMemo.end() && memoIt->second.first == size) {
++      content_hash = memoIt->second.second;
++    } else {
++      content_hash = XXH3_64bits(bytes, size);
++      if (gxc::is_ci_format(format) && has_tlut && tlut_data != nullptr)
++        content_hash =
++            XXH3_64bits_withSeed(tlut_data, tlut_available, content_hash);
++      g_textureHashMemo[address] = {size, content_hash};
++    }
+     const TextureKey key{address,     tsize,        format,      width,
+                          height,      tlut_address, tlut_format, tlut_entries,
+                          content_hash};
+diff --git a/graphics/aurora/lib/gfx/gxcore_draw.hpp b/graphics/aurora/lib/gfx/gxcore_draw.hpp
+index 0a23a3f..a335e56 100644
+--- a/graphics/aurora/lib/gfx/gxcore_draw.hpp
++++ b/graphics/aurora/lib/gfx/gxcore_draw.hpp
+@@ -68,6 +68,9 @@ void copy_efb_to_texture(const gxruntime::gxcore::EfbCopyCommand& cmd);
+ bool submit_draw_plan(const gxruntime::gxcore::DrawPlan& plan);
+ // Drop the texture cache + reset its stats (start of a replay run).
+ void reset_texture_cache();
++// Perf: the host detected a content change at `guest_address` (its own
++// per-load hash); drop the memoized content hash so the next resolve re-hashes.
++void notify_texture_content_changed(uint32_t guest_address);
+ 
+ // Texture-cache telemetry (S13 A3): proves the no-reconvert property. `uploads`
+ // counts actual decode+upload (cache miss); `hits` counts cache reuse (no
 diff --git a/graphics/aurora/lib/gfx/tex_copy_conv.cpp b/graphics/aurora/lib/gfx/tex_copy_conv.cpp
 index 754c2b9..e35d486 100644
 --- a/graphics/aurora/lib/gfx/tex_copy_conv.cpp
@@ -514,10 +652,20 @@ index f416854..b285a09 100644
  void ppc_ecowx(CPUState* cpu, u32 ea, u32 value, u32 cia);
  void ppc_tlbie(CPUState* cpu, u32 ea, u32 cia);
 diff --git a/include/gxruntime/aurora_backend.h b/include/gxruntime/aurora_backend.h
-index 6ef4cf4..3f5da60 100644
+index 6ef4cf4..565fb31 100644
 --- a/include/gxruntime/aurora_backend.h
 +++ b/include/gxruntime/aurora_backend.h
-@@ -33,6 +33,10 @@ typedef void (*DolAuroraEfbFrameFillFn)(const uint8_t* rgba, uint32_t width,
+@@ -26,6 +26,9 @@ bool dol_aurora_initialize(int argc, char** argv,
+                            const AuroraBackendConfig* config);
+ void dol_aurora_shutdown(void);
+ 
++// Perf instrumentation: number of presents completed since init.
++unsigned long long aurora_present_count(void);
++
+ // Optional: after each present, push latest present-source RGBA8 into software
+ // EFB (e.g. Strikers mmio_efb + dol_efb_access_fill_color_rgba8). Enables
+ // continuous framebuffer readback while registered. NULL clears.
+@@ -33,6 +36,15 @@ typedef void (*DolAuroraEfbFrameFillFn)(const uint8_t* rgba, uint32_t width,
                                          uint32_t height, void* user);
  void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user);
  
@@ -525,9 +673,29 @@ index 6ef4cf4..3f5da60 100644
 +// Useful to prove the readback pipeline end-to-end (poke -> readback -> fill).
 +void dol_aurora_poke_color(uint16_t x, uint16_t y, uint32_t argb);
 +
++// Perf: the host's texture-binding layer detected a content change at a guest
++// texture address; drop the renderer's memoized content hash so the next draw
++// re-hashes the (new) bytes. Call on change, not on every bind.
++void dol_aurora_gxcore_notify_texture_changed(uint32_t guest_address);
++
  // C2: walk nonzero gxcore GapCounters into the process-global gap_report.
  // Call once before gap_report_write_json on the live Strikers path so
  // --gap-report includes gxcore/* rows (same taxonomy as dolgx_replay --core).
+diff --git a/include/gxruntime/platform.h b/include/gxruntime/platform.h
+index 5b10f8c..64d19c1 100644
+--- a/include/gxruntime/platform.h
++++ b/include/gxruntime/platform.h
+@@ -93,6 +93,10 @@ void dol_platform_load_tlut(u8 slot, const void* data, u32 format, u16 entries,
+ void dol_platform_load_tlut_guest(u8 slot, u32 guest_address,
+                                   const void* data, u32 format, u16 entries,
+                                   u32 object_id, u32 data_version);
++// Perf: notify the renderer that the texture bytes at a guest address changed
++// (the binding layer's own per-load hash detected it), so memoized content
++// hashes are dropped and the next draw re-hashes. Aurora builds only.
++void dol_platform_notify_texture_changed(u32 guest_address);
+ void dol_platform_set_copy_destination(const void* data);
+ void dol_platform_set_copy_destination_guest(u32 guest_address,
+                                              const void* data);
 diff --git a/src/core/cpu.c b/src/core/cpu.c
 index 2f13110..e9527fa 100644
 --- a/src/core/cpu.c

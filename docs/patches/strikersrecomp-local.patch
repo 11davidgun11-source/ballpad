@@ -118,10 +118,69 @@ index 046bcbf..bce99a3 100644
  
  void audio_skip_dsp_init(CPUState* cpu) {
 diff --git a/runtime/host/hle.c b/runtime/host/hle.c
-index 5da95e1..7b7809b 100644
+index 5da95e1..1b988a8 100644
 --- a/runtime/host/hle.c
 +++ b/runtime/host/hle.c
-@@ -3208,6 +3208,9 @@ typedef struct {
+@@ -1731,8 +1731,26 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+     const bool movie_generation =
+         thp_movie_plane_generation(cpu, guest_data, width, height, format,
+                                    &data_bytes, &data_hash, &cache_object);
+-    if (!movie_generation)
+-        data_hash = guest_hash(cpu, guest_data, data_bytes, &data_bytes);
++    // Perf: pace the full-content hash. The game re-binds identical texture
++    // bytes every frame; FNV-hashing the full texel data on every load was a
++    // top in-match CPU cost. Full hash when the binding identity changes
++    // (address/size/dims/format/tlut/flags) or once per HASH_PACE loads, so an
++    // in-place rewrite of the same buffer is detected within a bounded window.
++    if (!movie_generation) {
++        const GxTextureBinding* cur = &g_textures[slot];
++        static u32 s_texture_hash_pace = 0;
++        const bool same_identity = cur->valid &&
++                                   cur->guest_data == guest_data &&
++                                   cur->data_bytes == data_bytes &&
++                                   cur->width == width &&
++                                   cur->height == height &&
++                                   cur->format == format &&
++                                   cur->tlut == tlut &&
++                                   cur->flags == flags;
++        const bool paced_probe = (++s_texture_hash_pace % 8u) == 0u;
++        if (!same_identity || paced_probe)
++            data_hash = guest_hash(cpu, guest_data, data_bytes, &data_bytes);
++    }
+     const u32 version =
+         gx_texture_resource_version(width, height, format, tlut, flags,
+                                     data_bytes, data_hash);
+@@ -1768,6 +1786,10 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+     bool changed = !binding->valid ||
+                    binding->object != cache_object ||
+                    binding->version != version;
++    // Perf: content change detected — drop the renderer's memoized content
++    // hash for this address so the next draw re-hashes the new bytes.
++    if (changed)
++        dol_platform_notify_texture_changed(guest_data);
+     binding->valid = true;
+     binding->object = cache_object;
+     binding->guest_data = guest_data;
+@@ -1779,10 +1801,14 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+     binding->data_bytes = data_bytes;
+     binding->data_hash = data_hash;
+     binding->version = version;
+-    // The retail BP texture-load sequence clears Aurora's recomp metadata.
+-    // Re-emit the stable identity after every guest bind, even when the bytes
+-    // are unchanged, so the renderer can hit its converted-texture cache.
+-    binding->emitted_version = 0;
++    // Perf: emit the resource only when the texture actually changed. The
++    // renderer's texture cache is content-hashed, so unchanged rebinds do not
++    // need a FIFO payload + frontend parse + GPU upload every frame (this was
++    // ~hundreds of KB-1MB+ of texels pushed through the FIFO per frame and
++    // re-hashed per draw in-match). The sink's bound-texture state persists
++    // across frames, so unchanged slots keep resolving.
++    if (changed)
++      binding->emitted_version = 0;
+     if (g_movie_log && format == 1u) {
+         unsigned seq = ++g_movie_texobj_log_count;
+         bool should_log = changed || seq <= 96u || (seq % 60u) == 0u;
+@@ -3208,6 +3234,9 @@ typedef struct {
  } HleAddrEntry;
  
  static const HleAddrEntry kAddrHandlers[] = {
