@@ -170,3 +170,27 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
 - Gate checks re-passed after the rewrite: controls 13/13 ok=true, multitouch
   ok=true, edit-move saved=true. Screenshots: v2-phone-controls.png,
   v2-menu4.png, v2-fps-label.png, v2-pad-final.png.
+
+## 2026-08-08 — Perf round 2: zoomed-out diagnosis + measured fixes (user: "barely running")
+- **The ceiling:** the AOT guest runs at ~20.6M blocks/s on the simulators
+  (measured, consistent). Light scenes need ~350K blocks/frame -> 60fps.
+  Heavy scenes (match) render every 2nd VI retrace (~700K blocks/frame) ->
+  the guest ALONE takes ~34ms/frame, a hard ~29fps ceiling regardless of
+  render work. Match frames are genuinely heavy: ~16M vertex-bytes + ~290
+  draws + ~1.1M FIFO bytes/frame.
+- **Fixed this round (all measured):**
+  - audio_poll ran every guest block with no output stream (~4%) -> gated off
+    (audio_set_enabled(false); interrupt_poll skips the call).
+  - per-block loop: two 64-bit modulo checks + a per-block quit check (~5%)
+    -> compare counters + batched quit check. Boot phase 12-16M -> 20-21M
+    blocks/s.
+  - notify_GXLoadTexObj FNV-1a (~300MB/s) -> XXH3 (~30GB/s) (~7%).
+  - E7 XFB YUYV-to-RAM encode on every display copy (never read on iOS) -> off.
+  - display updateFrame re-rendered the CGImage 60x/s even at 15fps guest ->
+    version-gated (skips unchanged frames).
+- **Result:** boot/menus 60fps; team-select ~20-25fps; in-match 13-20 ->
+  stable ~20fps (avg 19.9). Still ~10fps short of the ~29fps ceiling.
+- **Remaining (honest):** reaching 30fps in-match needs the guest ~50% faster
+  (not available on the simulator). A vertex-decode cache would add a few fps.
+  On real Apple-silicon hardware (no simulator translation) the same AOT code
+  should run 2-4x faster.
