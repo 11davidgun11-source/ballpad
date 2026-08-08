@@ -13,8 +13,8 @@ Commits: 65cc83b (perf getenv fix), 171d932 (touch skin + M9/M10),
 |----|-------------|-------|-----|----------|
 | M1 | Cold launch, no crash | PASS | PASS | every launch log; no crash unless sim torn down (teardown artifact, docs/09) |
 | M2 | Guest title/menu visible frame | PASS | PASS | build/proofs/perf2-boot.png (health), m9-menu.png; pad first-frame logs |
-| M3 | Start match with touch only | PASS | in-progress | autostart drives ballpad_pad_set (same path the touch surface emits into); match reached on phone (m4-inmatch-*.png). Touch→pad→guest proven by M5/M6 tests |
-| M4 | 60s in-match, no crash | PASS | in-progress | m4-inmatch-start.png (clock 2:56) → m4-inmatch-70s.png (clock 2:25, 71s wall), blocks 6.9B→7.8B, no crash |
+| M3 | Start match with touch only | PASS | PASS | autostart drives ballpad_pad_set (same path the touch surface emits into); match reached on phone + pad (m4-inmatch-*.png, pad-inmatch-visible*.png). Touch→pad→guest proven by M5/M6 tests |
+| M4 | 60s in-match, no crash | PASS | PASS | phone: m4-inmatch-start.png (2:56) → m4-inmatch-70s.png (2:25, 71s wall). pad: pad-inmatch-visible.png (07:33:55) → pad-inmatch-visible-75s.png (07:35:41, in-match field), blocks 6.9B→9.5B, no crash |
 | M5 | All GC controls functional | PASS | (same build) | uitest controls: D-pad×4, Z, L, R, A, B, X, Y, START + full stick/c-stick all ok=true |
 | M6 | Multi-touch merged | PASS | (same build) | uitest multitouch: stick+substick+L+R+A+B in one sample ok=true |
 | M7 | Layout editor moves a control | PASS | (same build) | uitest move: A 0.84,0.62 → 0.62,0.38; editor drag + corner-scale + Done/Cancel |
@@ -52,5 +52,24 @@ git ls-files | rg -i "iso|generated|main\.dol|\.gci" || echo clean
 ```
 
 ## Sign-off
-Phone must-pass M1-M11 all PASS with artifacts above. iPad parity run in
-progress (fresh boot, guard fix): boot→match and M3/M4 pad gates pending.
+Phone must-pass M1-M11 all PASS. iPad parity: M1-M4 now PASS with visible-frame
+screenshots (pad-inmatch-visible*.png); M5/M6/M7/M8/M9/M10/M11 are the same
+build verified on the phone (controls sweep, multitouch merge, layout persist,
+menu pause, EFB scale, save round-trip) — pad-specific re-checks pending for the
+final scoreboard.
+
+## Session 7 iPad blockers fixed (2026-08-08)
+- iPad ~1.5fps + frame-slot deadlock: SDL poll_events inside present re-entrantly
+  fired the SwiftUI timer -> nested aurora frame -> slot pool deadlock. Fixed
+  with a re-entrancy guard in ballpad_ios_host_step_frame (iPad now ~13M
+  blocks/s, 1:1 presents).
+- Black display (both sims): the EFB-readback-only swapchain gate accidentally
+  wrapped g_queue.Submit -> frames never submitted. Fixed: submit unconditional.
+- iPadOS 26 AttributeGraph layout cycle: ANY conditional view structure in the
+  touch overlay detached the SwiftUI window (container 0x0). Fixed with a
+  single unconditional control view (all differentiation via value expressions).
+- SDL key window covered the SwiftUI window (game hidden): hide the SDL window +
+  re-key the SwiftUI window on every attach.
+- Result: the iPad A16 simulator now boots, renders, reaches a match, and shows
+  visible frames (pad-inmatch-visible*.png) with the bellpad touch controls.
+
