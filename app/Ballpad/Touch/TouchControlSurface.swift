@@ -13,33 +13,25 @@ struct TouchControlSurface: View {
     @State private var lTrigger: CGFloat = 0
     @State private var rTrigger: CGFloat = 0
 
-    // Fixed logical layout space. Controls are framed/positioned here with
-    // constant sizes, and the whole overlay is scaled to the screen.
-    private let logicalW: CGFloat = 1000
-    private let logicalH: CGFloat = 600
-
     var body: some View {
         GeometryReader { geo in
-            let scale = min(geo.size.width / logicalW, geo.size.height / logicalH)
             ZStack {
-                controlView(node: store.node(.stick), uiScale: scale)
-                controlView(node: store.node(.cStick), uiScale: scale)
-                controlView(node: store.node(.a), uiScale: scale)
-                controlView(node: store.node(.b), uiScale: scale)
-                controlView(node: store.node(.x), uiScale: scale)
-                controlView(node: store.node(.y), uiScale: scale)
-                controlView(node: store.node(.z), uiScale: scale)
-                controlView(node: store.node(.l), uiScale: scale)
-                controlView(node: store.node(.r), uiScale: scale)
-                controlView(node: store.node(.start), uiScale: scale)
-                controlView(node: store.node(.dpadUp), uiScale: scale)
-                controlView(node: store.node(.dpadDown), uiScale: scale)
-                controlView(node: store.node(.dpadLeft), uiScale: scale)
-                controlView(node: store.node(.dpadRight), uiScale: scale)
+                controlView(node: store.node(.stick), size: geo.size)
+                controlView(node: store.node(.cStick), size: geo.size)
+                controlView(node: store.node(.a), size: geo.size)
+                controlView(node: store.node(.b), size: geo.size)
+                controlView(node: store.node(.x), size: geo.size)
+                controlView(node: store.node(.y), size: geo.size)
+                controlView(node: store.node(.z), size: geo.size)
+                controlView(node: store.node(.l), size: geo.size)
+                controlView(node: store.node(.r), size: geo.size)
+                controlView(node: store.node(.start), size: geo.size)
+                controlView(node: store.node(.dpadUp), size: geo.size)
+                controlView(node: store.node(.dpadDown), size: geo.size)
+                controlView(node: store.node(.dpadLeft), size: geo.size)
+                controlView(node: store.node(.dpadRight), size: geo.size)
             }
-            .frame(width: 1000, height: 600)
-            .scaleEffect(scale, anchor: .topLeading)
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .frame(width: geo.size.width, height: geo.size.height)
             .contentShape(Rectangle())
             .onChange(of: buttons) { _, _ in emit() }
             .onChange(of: stickVec) { _, _ in emit() }
@@ -57,13 +49,13 @@ struct TouchControlSurface: View {
     // with value expressions — never if/else view branching. Each bellpad
     // shape (stick well+thumb, shoulder plate, Z plate, START pill, face
     // circle, D-pad key) is always in the ZStack and gated by .opacity().
-    private func controlView(node: ControlNode, uiScale: CGFloat) -> some View {
-        let scale = node.scale
+    private func controlView(node: ControlNode, size: CGSize) -> some View {
+        let scale = node.scale * controlScale
         let rect = CGRect(
-            x: node.normX * logicalW - node.normW * logicalW * scale * controlScale / 2,
-            y: node.normY * logicalH - node.normH * logicalH * scale * controlScale / 2,
-            width: node.normW * logicalW * scale * controlScale,
-            height: node.normH * logicalH * scale * controlScale
+            x: node.normX * size.width - node.normW * size.width * scale / 2,
+            y: node.normY * size.height - node.normH * size.height * scale / 2,
+            width: node.normW * size.width * scale,
+            height: node.normH * size.height * scale
         )
         let isStick = node.id == .stick || node.id == .cStick
         let isTrigger = node.id == .l || node.id == .r
@@ -132,7 +124,7 @@ struct TouchControlSurface: View {
                 .strokeBorder(.yellow.opacity(0.9), style: StrokeStyle(lineWidth: 2, dash: [6]))
                 .frame(width: rect.width, height: rect.height)
                 .opacity(editMode ? 1 : 0)
-            // Label (only on buttons/shoulders/sticks that carry one).
+            // Label.
             Text(node.label)
                 .font(.system(size: labelSize, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
@@ -146,19 +138,19 @@ struct TouchControlSurface: View {
             .onChanged { value in
                 if editMode {
                     store.move(id: node.id,
-                               to: CGPoint(x: rect.midX + value.translation.width / uiScale,
-                                           y: rect.midY + value.translation.height / uiScale),
-                               in: CGSize(width: logicalW, height: logicalH))
+                               to: CGPoint(x: rect.midX + value.translation.width,
+                                           y: rect.midY + value.translation.height),
+                               in: size)
                 } else if isStick {
                     let maxR = min(rect.width, rect.height) * 0.36
-                    var dx = value.translation.width / uiScale
-                    var dy = value.translation.height / uiScale
+                    var dx = value.translation.width
+                    var dy = value.translation.height
                     let mag = sqrt(dx*dx + dy*dy)
                     if mag > maxR { dx *= maxR/mag; dy *= maxR/mag }
                     if node.id == .cStick { cStickVec = CGSize(width: dx, height: dy) }
                     else { stickVec = CGSize(width: dx, height: dy) }
                 } else if isTrigger {
-                    let rel = (rect.minY - value.location.y / uiScale) / max(rect.height, 1)
+                    let rel = (rect.minY - value.location.y) / max(rect.height, 1)
                     let v = min(max(rel, 0), 1)
                     if node.id == .l { lTrigger = v } else { rTrigger = v }
                 } else {
