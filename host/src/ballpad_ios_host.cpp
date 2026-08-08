@@ -304,6 +304,16 @@ void ballpad_ios_host_step_frame(void) {
                    taskMgr ? mem_read32(cpu, taskMgr + 0x08u) : 0u,
                    taskMgr ? mem_read32(cpu, taskMgr + 0x0Cu) : 0u,
                    taskMgr ? mem_read32(cpu, taskMgr + 0x10u) : 0u);
+      // Game PAD status buffers: does the guest see the injected input?
+      const u32 padPtr = mem_read32(cpu, 0x80372FF0u);
+      std::fprintf(stderr, "[threads] padCurPtr=0x%08X btn=0x%04X st=%d,%d err=%d padStat0=0x%04X st=%d,%d\n",
+                   padPtr,
+                   padPtr ? mem_read16(cpu, padPtr) : 0u,
+                   padPtr ? (s8)mem_read8(cpu, padPtr + 2u) : 0,
+                   padPtr ? (s8)mem_read8(cpu, padPtr + 3u) : 0,
+                   padPtr ? (s8)mem_read8(cpu, padPtr + 10u) : 0,
+                   mem_read16(cpu, 0x80372FF8u), (s8)mem_read8(cpu, 0x80372FFAu),
+                   (s8)mem_read8(cpu, 0x80372FFBu));
       if (gameClock != 0u && gameClock >= 0x80000000u) {
         float fTimer = 0.f, fEnd = 0.f;
         const u32 uTimer = mem_read32(cpu, gameClock + 0x08u);
@@ -347,7 +357,7 @@ void ballpad_ios_host_step_frame(void) {
   }();
   if (s_autostart) {
     struct AutoStep { u16 button; int sx, sy; unsigned long long hold_blocks, at_blocks; };
-    static const AutoStep kAutoSteps[] = {
+    static AutoStep kAutoSteps[] = {
         // 0: boot wait; guest reaches the health screen on its own.
         {0x0000, 0, 0, 0, 1150000000ull},
         // A past the health screen (~1.15B); A past the memory-card check.
@@ -362,23 +372,50 @@ void ballpad_ios_host_step_frame(void) {
         {0x0100, 0, 0, 20000000ull, 3000000000ull},
         {0x0100, 0, 0, 20000000ull, 3400000000ull},
         {0x0100, 0, 0, 20000000ull, 3800000000ull},
-        // CPU captain choice (left) -> CPU sidekick grid -> controller screen.
-        {0x0001, 0, 0, 15000000ull, 3900000000ull},
-        {0x0100, 0, 0, 20000000ull, 4300000000ull},
-        {0x0100, 0, 0, 20000000ull, 4700000000ull},
-        // Assign P1 to the left team -> match. Screen arrival drifts run to
-        // run, so retry on a cadence: (D_LEFT, A) covers the side-choice
-        // screen; a lone A confirms the stadium card (D_LEFT would move the
-        // carousel). Once the match starts the inputs are harmless.
-        {0x0001, 0, 0, 15000000ull, 5400000000ull},
-        {0x0100, 0, 0, 20000000ull, 5500000000ull},
+        // Match-start drive: repeat START + the full (menu -> captain ->
+        // sidekick -> CPU captain -> CPU sidekick -> side choice -> stadium)
+        // sequence on a cadence. START retries cover a late-appearing title;
+        // once in-match the presses are harmless.
+        {0x1000, 0, 0, 20000000ull, 3000000000ull},
+        {0x0100, 0, 0, 20000000ull, 3100000000ull},
+        {0x0100, 0, 0, 20000000ull, 3200000000ull},
+        {0x0001, 0, 0, 15000000ull, 3300000000ull},
+        {0x0100, 0, 0, 20000000ull, 3400000000ull},
+        {0x0100, 0, 0, 20000000ull, 3500000000ull},
+        {0x0001, 0, 0, 15000000ull, 3600000000ull},
+        {0x0100, 0, 0, 20000000ull, 3700000000ull},
+        {0x1000, 0, 0, 20000000ull, 4400000000ull},
+        {0x0100, 0, 0, 20000000ull, 4500000000ull},
+        {0x0100, 0, 0, 20000000ull, 4600000000ull},
+        {0x0001, 0, 0, 15000000ull, 4700000000ull},
+        {0x0100, 0, 0, 20000000ull, 4800000000ull},
+        {0x0100, 0, 0, 20000000ull, 4900000000ull},
+        {0x0001, 0, 0, 15000000ull, 5000000000ull},
+        {0x0100, 0, 0, 20000000ull, 5100000000ull},
+        {0x1000, 0, 0, 20000000ull, 5800000000ull},
+        {0x0100, 0, 0, 20000000ull, 5900000000ull},
         {0x0100, 0, 0, 20000000ull, 6000000000ull},
-        {0x0001, 0, 0, 15000000ull, 6800000000ull},
-        {0x0100, 0, 0, 20000000ull, 6900000000ull},
-        {0x0100, 0, 0, 20000000ull, 7500000000ull},
-        {0x0001, 0, 0, 15000000ull, 8200000000ull},
-        {0x0100, 0, 0, 20000000ull, 8300000000ull},
+        {0x0001, 0, 0, 15000000ull, 6100000000ull},
+        {0x0100, 0, 0, 20000000ull, 6200000000ull},
+        {0x0100, 0, 0, 20000000ull, 6300000000ull},
+        {0x0001, 0, 0, 15000000ull, 6400000000ull},
+        {0x0100, 0, 0, 20000000ull, 6500000000ull},
+        {0x1000, 0, 0, 20000000ull, 7200000000ull},
+        {0x0100, 0, 0, 20000000ull, 7300000000ull},
+        {0x0100, 0, 0, 20000000ull, 7400000000ull},
+        {0x0001, 0, 0, 15000000ull, 7500000000ull},
+        {0x0100, 0, 0, 20000000ull, 7600000000ull},
+        {0x0100, 0, 0, 20000000ull, 7700000000ull},
+        {0x0001, 0, 0, 15000000ull, 7800000000ull},
+        {0x0100, 0, 0, 20000000ull, 7900000000ull},
+        {0x1000, 0, 0, 20000000ull, 8600000000ull},
+        {0x0100, 0, 0, 20000000ull, 8700000000ull},
+        {0x0100, 0, 0, 20000000ull, 8800000000ull},
+        {0x0001, 0, 0, 15000000ull, 8900000000ull},
         {0x0100, 0, 0, 20000000ull, 9000000000ull},
+        {0x0100, 0, 0, 20000000ull, 9100000000ull},
+        {0x0001, 0, 0, 15000000ull, 9200000000ull},
+        {0x0100, 0, 0, 20000000ull, 9300000000ull},
     };
     static const unsigned kAutoCount =
         static_cast<unsigned>(sizeof(kAutoSteps) / sizeof(kAutoSteps[0]));
