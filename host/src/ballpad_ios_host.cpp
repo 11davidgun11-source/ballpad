@@ -8,6 +8,7 @@
 
 extern "C" {
 #include "generated.h"
+#include "gxruntime/aram.h"
 #include "gxruntime/aurora_backend.h"
 #include "gxruntime/boot.h"
 #include "gxruntime/dvd.h"
@@ -26,10 +27,12 @@ extern "C" {
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <sys/stat.h>
+#include <vector>
 
 extern "C" void ballpad_window_set_scene(void* scene);
 extern "C" void* ballpad_window_get_sdl_window(void);
@@ -43,6 +46,20 @@ extern "C" unsigned long long aurora_present_count(void);
 extern "C" void aurora_set_efb_scale(uint32_t scale);
 extern "C" void ballpad_arm_efb_readback(void);
 extern "C" void ballpad_window_probe(void);
+extern "C" void aram_save(void* dst);
+extern "C" void aram_restore(const void* src);
+extern "C" uint32_t interrupt_save_state_size(void);
+extern "C" void interrupt_save_state(void* dst);
+extern "C" void interrupt_restore_state(const void* src);
+extern "C" uint32_t mmio_save_state_size(void);
+extern "C" void mmio_save_state(void* dst);
+extern "C" void mmio_restore_state(const void* src);
+extern "C" bool dol_aurora_frontend_save_state(void* dst, uint32_t* size);
+extern "C" bool dol_aurora_frontend_restore_state(const void* src,
+                                                  uint32_t size);
+extern "C" bool dol_aurora_gxcore_save_state(void* dst, uint32_t* size);
+extern "C" bool dol_aurora_gxcore_restore_state(const void* src,
+                                                uint32_t size);
 extern "C" unsigned long long g_dec_deliveries;
 
 namespace {
@@ -78,7 +95,238 @@ int g_efb_scale = 1;
 const char* g_iso_path = nullptr;
 const char* g_dol_path = nullptr;
 const char* g_card_path = nullptr;
+bool g_quickbooted = false;
 } // namespace
+
+// ---- A1 quick-boot savestate (resume a match on cold launch) ----
+namespace {
+constexpr char kQuickbootMagic[4] = {'B', 'P', 'S', 'V'};
+constexpr uint32_t kQuickbootVersion = 3;
+constexpr uint32_t kQuickbootHeaderSize = 64;
+
+// File layout (host byte order): header, CPU registers block, CPU scalar tail,
+// guest RAM, ARAM, interrupt runtime blob, MMIO runtime blob.
+struct QuickbootHeader {
+  char magic[4];
+  uint32_t version;
+  uint32_t header_size;
+  uint64_t saved_blocks;
+  uint32_t cpu_regs_size;  // [0, offsetof(CPUState, external_read))
+  uint32_t cpu_tail_size;  // [offsetof(CPUState, ram), sizeof(CPUState))
+  uint32_t ram_size;
+  uint32_t aram_size;
+  uint32_t interrupt_size;
+  uint32_t mmio_size;
+  uint32_t frontend_size;
+  uint32_t gxcore_size;
+  uint32_t reserved[2];
+};
+
+std::string quickboot_documents_dir() {
+  char docs[1024] = {0};
+  FILE* f = popen("echo $HOME/Documents", "r");
+  if (f) {
+    if (fgets(docs, sizeof(docs), f))
+      docs[strcspn(docs, "\n")] = 0;
+    pclose(f);
+  }
+  return std::string(docs);
+}
+
+std::string quickboot_path() {
+  return quickboot_documents_dir() + "/QuickBoot.bss";
+}
+
+bool quickboot_file_exists(const char* path) {
+  struct stat st;
+  return path != nullptr && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+} // namespace
+
+// Capture the running match into Documents/QuickBoot.bss. The image covers
+// everything a resume needs: CPU registers, guest RAM, ARAM, and the
+// host-side interrupt/MMIO device state (see interrupt_save_state /
+// mmio_save_state / aram_save).
+bool ballpad_ios_host_save_quickboot(void) {
+  if (!g_started.load() || !g_cpu_valid)
+    return false;
+  CPUState* cpu = &g_cpu;
+  const uint32_t cpuRegsSize = (uint32_t)offsetof(CPUState, external_read);
+  const uint32_t cpuTailSize =
+      (uint32_t)(sizeof(CPUState) - offsetof(CPUState, ram));
+  const uint32_t ramSize = cpu->ram_size;
+  const uint32_t aramSize = ARAM_SIZE;
+  const uint32_t interruptSize = interrupt_save_state_size();
+  const uint32_t mmioSize = mmio_save_state_size();
+  uint32_t frontendSize = 0;
+  dol_aurora_frontend_save_state(nullptr, &frontendSize);
+  uint32_t gxcoreSize = 0;
+  dol_aurora_gxcore_save_state(nullptr, &gxcoreSize);
+
+  QuickbootHeader h;
+  memset(&h, 0, sizeof h);
+  memcpy(h.magic, kQuickbootMagic, 4);
+  h.version = kQuickbootVersion;
+  h.header_size = kQuickbootHeaderSize;
+  h.saved_blocks = g_blocks;
+  h.cpu_regs_size = cpuRegsSize;
+  h.cpu_tail_size = cpuTailSize;
+  h.ram_size = ramSize;
+  h.aram_size = aramSize;
+  h.interrupt_size = interruptSize;
+  h.mmio_size = mmioSize;
+  h.frontend_size = frontendSize;
+  h.gxcore_size = gxcoreSize;
+
+  const std::string path = quickboot_path();
+  FILE* f = fopen(path.c_str(), "wb");
+  if (f == nullptr) {
+    std::fprintf(stderr, "[quickboot] save failed to open %s\n", path.c_str());
+    return false;
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  bool ok = true;
+  ok = ok && fwrite(&h, 1, sizeof h, f) == sizeof h;
+  ok = ok && fwrite((const char*)cpu, 1, cpuRegsSize, f) == cpuRegsSize;
+  ok = ok && fwrite((const char*)cpu + offsetof(CPUState, ram), 1,
+                    cpuTailSize, f) == cpuTailSize;
+  ok = ok && fwrite(cpu->ram, 1, ramSize, f) == ramSize;
+  std::vector<uint8_t> aram(aramSize);
+  aram_save(aram.data());
+  ok = ok && fwrite(aram.data(), 1, aramSize, f) == aramSize;
+  std::vector<uint8_t> ib(interruptSize);
+  interrupt_save_state(ib.data());
+  ok = ok && fwrite(ib.data(), 1, interruptSize, f) == interruptSize;
+  std::vector<uint8_t> mb(mmioSize);
+  mmio_save_state(mb.data());
+  ok = ok && fwrite(mb.data(), 1, mmioSize, f) == mmioSize;
+  std::vector<uint8_t> fb(frontendSize);
+  if (frontendSize != 0u) {
+    ok = ok && dol_aurora_frontend_save_state(fb.data(), &frontendSize) &&
+               fwrite(fb.data(), 1, frontendSize, f) == frontendSize;
+  }
+  std::vector<uint8_t> gb(gxcoreSize);
+  if (gxcoreSize != 0u) {
+    ok = ok && dol_aurora_gxcore_save_state(gb.data(), &gxcoreSize) &&
+               fwrite(gb.data(), 1, gxcoreSize, f) == gxcoreSize;
+  }
+  fclose(f);
+  if (!ok) {
+    remove(path.c_str());
+    std::fprintf(stderr, "[quickboot] save write error\n");
+    return false;
+  }
+  const double ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+  std::fprintf(stderr,
+               "[quickboot] saved %s (%u+%u+%u+%u+%u+%u+%u+%u bytes, "
+               "%llu blocks) "
+               "in %.1f ms\n",
+               path.c_str(), (unsigned)cpuRegsSize, (unsigned)cpuTailSize,
+               (unsigned)ramSize, (unsigned)aramSize, (unsigned)interruptSize,
+               (unsigned)mmioSize, (unsigned)frontendSize, (unsigned)gxcoreSize,
+               (unsigned long long)g_blocks, ms);
+  return true;
+}
+
+bool ballpad_ios_host_quickbooted(void) { return g_quickbooted; }
+
+// Part 1 of a quick-boot restore: CPU registers + guest RAM. Runs before
+// mmio_install so the install re-wires the session's external-memory hooks.
+static bool quickboot_restore_cpu(CPUState* cpu) {
+  const std::string path = quickboot_path();
+  if (!quickboot_file_exists(path.c_str()))
+    return false;
+  FILE* f = fopen(path.c_str(), "rb");
+  if (f == nullptr)
+    return false;
+  QuickbootHeader h;
+  bool ok = fread(&h, 1, sizeof h, f) == sizeof h;
+  ok = ok && memcmp(h.magic, kQuickbootMagic, 4) == 0;
+  ok = ok && h.version == kQuickbootVersion;
+  ok = ok && h.header_size == kQuickbootHeaderSize;
+  const uint32_t cpuRegsSize = (uint32_t)offsetof(CPUState, external_read);
+  const uint32_t cpuTailSize =
+      (uint32_t)(sizeof(CPUState) - offsetof(CPUState, ram));
+  ok = ok && h.cpu_regs_size == cpuRegsSize && h.cpu_tail_size == cpuTailSize;
+  ok = ok && h.ram_size == cpu->ram_size && h.aram_size == ARAM_SIZE;
+  ok = ok && h.interrupt_size == interrupt_save_state_size();
+  ok = ok && h.mmio_size == mmio_save_state_size();
+  uint32_t frontendSize = 0;
+  dol_aurora_frontend_save_state(nullptr, &frontendSize);
+  ok = ok && h.frontend_size == frontendSize;
+  uint32_t gxcoreSize = 0;
+  dol_aurora_gxcore_save_state(nullptr, &gxcoreSize);
+  ok = ok && h.gxcore_size == gxcoreSize;
+  if (!ok) {
+    fclose(f);
+    std::fprintf(stderr, "[quickboot] restore: header mismatch, ignoring\n");
+    return false;
+  }
+  // Keep this session's memory pointers; the captured tail carried stale ones.
+  u8* sessionRam = cpu->ram;
+  u8* sessionMem2 = cpu->mem2;
+  const u32 sessionRamSize = cpu->ram_size;
+  const u32 sessionMem2Size = cpu->mem2_size;
+  ok = ok && fread((char*)cpu, 1, cpuRegsSize, f) == cpuRegsSize;
+  ok = ok && fread((char*)cpu + offsetof(CPUState, ram), 1, cpuTailSize, f) ==
+                 cpuTailSize;
+  cpu->ram = sessionRam;
+  cpu->mem2 = sessionMem2;
+  cpu->ram_size = sessionRamSize;
+  cpu->mem2_size = sessionMem2Size;
+  ok = ok && fread(cpu->ram, 1, cpu->ram_size, f) == cpu->ram_size;
+  fclose(f);
+  if (!ok) {
+    std::fprintf(stderr, "[quickboot] restore: read error, ignoring\n");
+    return false;
+  }
+  g_blocks = h.saved_blocks;
+  g_quickbooted = true;
+  return true;
+}
+
+// Part 2 of a quick-boot restore: ARAM + interrupt/MMIO runtime blobs. Runs
+// after mmio_install (which re-inits the devices and zeroes ARAM) so the
+// captured device state wins over the fresh init.
+static bool quickboot_restore_runtime(void) {
+  const std::string path = quickboot_path();
+  FILE* f = fopen(path.c_str(), "rb");
+  if (f == nullptr)
+    return false;
+  QuickbootHeader h;
+  bool ok = fread(&h, 1, sizeof h, f) == sizeof h;
+  if (!ok || memcmp(h.magic, kQuickbootMagic, 4) != 0 ||
+      h.version != kQuickbootVersion) {
+    fclose(f);
+    return false;
+  }
+  const long dataOff = (long)(h.header_size + h.cpu_regs_size +
+                              h.cpu_tail_size + h.ram_size);
+  ok = ok && fseek(f, dataOff, SEEK_SET) == 0;
+  std::vector<uint8_t> aram(h.aram_size);
+  ok = ok && fread(aram.data(), 1, h.aram_size, f) == h.aram_size;
+  std::vector<uint8_t> ib(h.interrupt_size);
+  ok = ok && fread(ib.data(), 1, h.interrupt_size, f) == h.interrupt_size;
+  std::vector<uint8_t> mb(h.mmio_size);
+  ok = ok && fread(mb.data(), 1, h.mmio_size, f) == h.mmio_size;
+  std::vector<uint8_t> fb(h.frontend_size);
+  ok = ok && fread(fb.data(), 1, h.frontend_size, f) == h.frontend_size;
+  std::vector<uint8_t> gb(h.gxcore_size);
+  ok = ok && fread(gb.data(), 1, h.gxcore_size, f) == h.gxcore_size;
+  fclose(f);
+  if (!ok)
+    return false;
+  aram_restore(aram.data());
+  interrupt_restore_state(ib.data());
+  mmio_restore_state(mb.data());
+  if (!dol_aurora_frontend_restore_state(fb.data(), h.frontend_size))
+    return false;
+  if (!dol_aurora_gxcore_restore_state(gb.data(), h.gxcore_size))
+    return false;
+  return true;
+}
 
 void ballpad_ios_host_set_window_scene(void* uiWindowScene) { g_scene = uiWindowScene; }
 
@@ -204,26 +452,52 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
 
   CPUState* cpu = &g_cpu;
   if (!cpu_init(cpu)) { return false; }
-  DolLayout layout;
-  if (!dol_load_into_ram(cpu, g_dol_path, &layout)) {
-    std::fprintf(stderr, "[ballpad-ios] dol load failed: %s\n", g_dol_path);
-    return false;
+  // A1 quick-boot: when a savestate exists, resume it instead of replaying the
+  // full boot. BALLPAD_NO_QUICKBOOT=1 forces a fresh boot (to capture a new
+  // savestate). The CPU/regs part restores before mmio_install so the install
+  // can re-wire this session's external-memory hooks; the ARAM/device blobs
+  // restore afterwards (see quickboot_restore_runtime).
+  bool quickboot = false;
+  if (getenv("BALLPAD_NO_QUICKBOOT") == nullptr) {
+    const auto t0 = std::chrono::steady_clock::now();
+    quickboot = quickboot_restore_cpu(cpu);
+    if (quickboot) {
+      const double ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+      std::fprintf(stderr,
+                   "[quickboot] restored CPU+RAM (%u MB) in %.1f ms "
+                   "blocks=%llu pc=0x%08X\n",
+                   cpu->ram_size / (1024u * 1024u), ms,
+                   (unsigned long long)g_blocks, cpu->pc);
+    }
   }
-  boot_setup_os_globals(cpu, &layout);
+  if (!quickboot) {
+    DolLayout layout;
+    if (!dol_load_into_ram(cpu, g_dol_path, &layout)) {
+      std::fprintf(stderr, "[ballpad-ios] dol load failed: %s\n", g_dol_path);
+      return false;
+    }
+    boot_setup_os_globals(cpu, &layout);
+    cpu->pc = layout.entry_point;
+    g_blocks = 0;
+  }
   if (!mmio_install(cpu)) { return false; }
   mmio_attach_efb_readback();
   hle_install(cpu);
+  if (quickboot && !quickboot_restore_runtime())
+    std::fprintf(stderr, "[quickboot] runtime restore failed\n");
   if (!hle_card_open(s_card_path.c_str()))
     std::fprintf(stderr, "[card] slot A unavailable; continuing with no card\n");
   dvd_open_image(g_iso_path);
   mmio_set_disc_present(dvd_image_ready());
   cpu->instruction_fallback = instruction_fallback;
-  cpu->pc = layout.entry_point;
   g_cpu_valid = true;
-  g_blocks = 0;
   g_stop = false;
   g_started = true;
-  std::fprintf(stderr, "[ballpad-ios] booted entry=0x%08X\n", cpu->pc);
+  std::fprintf(stderr, "[ballpad-ios] booted %s entry=0x%08X blocks=%llu\n",
+               quickboot ? "from quickboot" : "fresh", cpu->pc,
+               (unsigned long long)g_blocks);
   return true;
 }
 
@@ -648,6 +922,70 @@ void ballpad_ios_host_step_frame(void) {
         std::fprintf(stderr, "[ballpad-ios] autostart complete at blocks=%llu\n",
                      (unsigned long long)g_blocks);
       }
+    }
+    // A1 quick-boot: capture the savestate while the phase machine is parked
+    // at the final match-start step (the game is on the side-choice /
+    // stadium-card screen — a stable menu state with the DVD idle). On
+    // restore, the host replays the match-start A; the match scene setup
+    // re-emits the full GX state into the fresh renderer.
+    // (Capturing mid-match produced a dark frame: the guest believes its GX
+    // state is already set, so per-frame deltas never re-establish the
+    // renderer's lights/TEV state. docs/09 2026-08-08.)
+    //
+    // The snapshot must be taken while the guest is parked in the OS idle
+    // loop (VI retrace wait): capturing mid-render resumes the guest
+    // mid-GX-command, the shadow frontend rejects the truncated stream
+    // (opcode 0x23), and rendering dies (draws=0).
+    static bool s_quickboot_captured = false;
+    if (!s_quickboot_captured && s_auto_phase == kAutoCount - 1 &&
+        !s_auto_holding &&
+        (cpu->pc == 0x800051B4u || cpu->pc == 0x800051D8u)) {
+      s_quickboot_captured = true;
+      ballpad_ios_host_save_quickboot();
+    }
+  }
+  // Quick-boot restore input: press the match-start A (the autostart's final
+  // steps were A@6.7B/A@6.8B/A@6.9B and the capture parked the machine one A
+  // short of the match) so the game starts the match from the side-choice /
+  // stadium-card screen. The match scene setup re-emits the full GX state into
+  // the fresh renderer (a mid-match restore skips that setup and renders
+  // dark). Presses are ~100M blocks apart to match the proven autostart
+  // cadence; extras are harmless once in-match.
+  static bool s_qb_drive_done = false;
+  if (g_quickbooted && !s_qb_drive_done) {
+    static bool s_qb_drive_started = false;
+    static unsigned long long s_qb_drive_blocks = 0;
+    static unsigned s_qb_drive_step = 0;
+    static bool s_qb_holding = false;
+    if (!s_qb_drive_started) {
+      s_qb_drive_started = true;
+      s_qb_drive_blocks = g_blocks + 80000000ull;  // ~4 s settle
+      std::fprintf(stderr, "[quickboot] driving match start\n");
+    }
+    if (g_blocks >= s_qb_drive_blocks && !s_qb_drive_done) {
+      static const u16 kQbButtons[] = {BALLPAD_BUTTON_A, BALLPAD_BUTTON_A,
+                                       BALLPAD_BUTTON_A};
+      static const unsigned long long kQbSpacing[] = {
+          20000000ull, 100000000ull, 100000000ull};
+      BallPadStatus s{};
+      s.err = 0;
+      if (!s_qb_holding) {
+        s_qb_holding = true;
+        s_qb_drive_blocks = g_blocks + kQbSpacing[s_qb_drive_step];
+        std::fprintf(stderr, "[quickboot] drive step %u btn=0x%04X\n",
+                     s_qb_drive_step, kQbButtons[s_qb_drive_step]);
+      }
+      if (g_blocks < s_qb_drive_blocks) {
+        s.button = kQbButtons[s_qb_drive_step];
+      } else {
+        ++s_qb_drive_step;
+        s_qb_holding = false;
+        if (s_qb_drive_step >= 3) {
+          s_qb_drive_done = true;
+          std::fprintf(stderr, "[quickboot] match-start drive complete\n");
+        }
+      }
+      ballpad_pad_set(0, &s);
     }
   }
   if (g_stop_reason[0]) {

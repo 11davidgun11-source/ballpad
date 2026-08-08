@@ -102,6 +102,17 @@ g. Doc sprawl. Status lived in five places with contradictory numbers
 Phase A — usage fundamentals (do these first):
 1. A1 quick-boot/savestate to a match (P0-a). Gate: cold launch to
    in-match in under 60 s wall on the phone simulator, screenshot proof.
+   **STATUS: PASS (phone, 2026-08-08 Bot 4).** Cold launch -> in-match
+   15 s wall (cGame state=4 present at 15 s; live-match screenshot
+   build/proofs/a1-quickboot-inmatch-final.png); baseline was 505 s.
+   Savestate (v3) captures CPUState + 24 MB RAM + 16 MB ARAM + the
+   interrupt/MMIO device blobs + the gxcore/frontend parsed renderer state
+   (BP regs, XF matrices/viewport/projection/lights, VCD/VAT, pending FIFO);
+   capture happens at the side-choice/stadium-card screen while the guest is
+   parked in the OS idle loop; restore re-drives the match-start A so the
+   match scene setup re-emits per-frame state into the re-seeded renderer.
+   Pitfalls logged in docs/09 (dark-frame renderer desync; mid-command
+   capture desyncs the shadow frontend). iPad re-verification pending.
 2. A2 in-app game import + onboarding screen (P0-b). Gate: fresh sim
    container, import via document picker, game boots; missing-game state
    shows instructions, never a black screen.

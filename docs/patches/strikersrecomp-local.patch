@@ -254,7 +254,7 @@ index 5da95e1..433e9ba 100644
      // modeled DSP. Audio is routed through Aurora, so skip the hardware init.
      { 0x80254718u, hle_noop,                     "__OSInitAudioSystem" },
 diff --git a/runtime/host/interrupt.c b/runtime/host/interrupt.c
-index 6efc385..4c0a234 100644
+index 6efc385..15f3722 100644
 --- a/runtime/host/interrupt.c
 +++ b/runtime/host/interrupt.c
 @@ -16,6 +16,16 @@
@@ -283,7 +283,69 @@ index 6efc385..4c0a234 100644
  
  #define FPU_CONTEXT_CACHE_CAPACITY 32u
  typedef struct {
-@@ -140,6 +152,7 @@ void interrupt_init(void) {
+@@ -65,6 +77,61 @@ static FpuContextCacheEntry fpu_context_cache[FPU_CONTEXT_CACHE_CAPACITY];
+ static u32 fpu_context_cache_next;
+ static bool fpu_context_cache_miss_reported;
+ 
++// Savestate image for the interrupt layer. POD: every field is either a device
++// register surface or a scalar, so the blob can be memcpy'd verbatim.
++typedef struct {
++    DolInterrupts interrupts;
++    DolSiDevice si;
++    DolViClock vi_clock;
++    u32 interrupt_poll_accum;
++    u32 s_dec_fired;
++    u64 g_dec_deliveries;
++    FpuContextCacheEntry fpu_context_cache[FPU_CONTEXT_CACHE_CAPACITY];
++    u32 fpu_context_cache_next;
++    u32 fpu_context_cache_miss_reported;
++} InterruptSaveState;
++
++uint32_t interrupt_save_state_size(void) {
++    return (uint32_t)sizeof(InterruptSaveState);
++}
++
++void interrupt_save_state(void* dst) {
++    if (dst == NULL)
++        return;
++    InterruptSaveState* s = (InterruptSaveState*)dst;
++    s->interrupts = interrupts;
++    s->si = si;
++    s->vi_clock = vi_clock;
++    s->interrupt_poll_accum = interrupt_poll_accum;
++    s->s_dec_fired = s_dec_fired ? 1u : 0u;
++    s->g_dec_deliveries = g_dec_deliveries;
++    memcpy(s->fpu_context_cache, fpu_context_cache,
++           sizeof fpu_context_cache);
++    s->fpu_context_cache_next = fpu_context_cache_next;
++    s->fpu_context_cache_miss_reported =
++        fpu_context_cache_miss_reported ? 1u : 0u;
++}
++
++void interrupt_restore_state(const void* src) {
++    if (src == NULL)
++        return;
++    const InterruptSaveState* s = (const InterruptSaveState*)src;
++    // Restore the device surfaces + clock verbatim: the VI event schedule is
++    // relative to the captured `now`, so re-running dol_vi_clock_configure
++    // (which resets the schedule) would desync the retrace cadence.
++    interrupts = s->interrupts;
++    si = s->si;
++    vi_clock = s->vi_clock;
++    interrupt_poll_accum = s->interrupt_poll_accum;
++    s_dec_fired = s->s_dec_fired != 0u;
++    g_dec_deliveries = s->g_dec_deliveries;
++    memcpy(fpu_context_cache, s->fpu_context_cache,
++           sizeof fpu_context_cache);
++    fpu_context_cache_next = s->fpu_context_cache_next;
++    fpu_context_cache_miss_reported =
++        s->fpu_context_cache_miss_reported != 0u;
++}
++
+ static FpuContextCacheEntry* find_fpu_context(u32 context) {
+     for (u32 i = 0; i < FPU_CONTEXT_CACHE_CAPACITY; ++i) {
+         if (fpu_context_cache[i].valid &&
+@@ -140,6 +207,7 @@ void interrupt_init(void) {
      dol_si_init(&si);
      dol_vi_clock_init(&vi_clock);
      interrupt_poll_accum = 0;
@@ -291,7 +353,7 @@ index 6efc385..4c0a234 100644
      frame_work_units = DEFAULT_FRAME_BLOCKS;
      memset(fpu_context_cache, 0, sizeof fpu_context_cache);
      fpu_context_cache_next = 0;
-@@ -156,6 +169,42 @@ void interrupt_init(void) {
+@@ -156,6 +224,42 @@ void interrupt_init(void) {
      audio_set_vi_clock(frame_work_units, (u32)VI_REFRESH_HZ);
  }
  
@@ -334,7 +396,7 @@ index 6efc385..4c0a234 100644
  void interrupt_commit_pe_finish(void) {
      dol_interrupts_commit_pe_finish(&interrupts);
  }
-@@ -238,7 +287,11 @@ static void deliver_external(CPUState* cpu) {
+@@ -238,7 +342,11 @@ static void deliver_external(CPUState* cpu) {
  // (INTERRUPT_POLL_INTERVAL + interrupt_poll_accum declared once above.)
  
  void interrupt_poll(CPUState* cpu) {
@@ -347,7 +409,7 @@ index 6efc385..4c0a234 100644
  
      if (++interrupt_poll_accum < INTERRUPT_POLL_INTERVAL)
          return;
-@@ -254,11 +307,35 @@ void interrupt_poll(CPUState* cpu) {
+@@ -254,11 +362,35 @@ void interrupt_poll(CPUState* cpu) {
      u64 ticks = 0;
      while (dol_vi_clock_pop_retrace(&vi_clock, &ticks)) {
          cpu->timebase += ticks;
@@ -383,6 +445,22 @@ index 6efc385..4c0a234 100644
      // Deliver only when the guest can take an external interrupt and at least one
      // pending source is unmasked in the PI. One delivery drains every pending,
      // unmasked source: __OSDispatchInterrupt loops over the PI cause bits.
+diff --git a/runtime/host/interrupt.h b/runtime/host/interrupt.h
+index e1b353b..b084eb2 100644
+--- a/runtime/host/interrupt.h
++++ b/runtime/host/interrupt.h
+@@ -41,4 +41,11 @@ void interrupt_poll(CPUState* cpu);
+ // standalone GXSetDrawDone, so the loading screen used to hang here forever).
+ void interrupt_commit_pe_finish(void);
+ 
++// Savestate support: serialize/deserialize all host-side interrupt/VI/SI/DEC
++// state so a guest snapshot can be resumed deterministically. The saved image
++// is opaque; use interrupt_save_state_size() to allocate the buffer.
++uint32_t interrupt_save_state_size(void);
++void interrupt_save_state(void* dst);
++void interrupt_restore_state(const void* src);
++
+ #endif // STRIKERSRECOMP_HOST_INTERRUPT_H
 diff --git a/runtime/host/main.c b/runtime/host/main.c
 index 041328a..5aa14e4 100644
 --- a/runtime/host/main.c
@@ -396,3 +474,67 @@ index 041328a..5aa14e4 100644
  #include "generated.h"
  
  #include "gxruntime/aurora_backend.h"
+diff --git a/runtime/host/mmio.c b/runtime/host/mmio.c
+index adce0b3..4a5e7ba 100644
+--- a/runtime/host/mmio.c
++++ b/runtime/host/mmio.c
+@@ -31,6 +31,43 @@ static DolPe g_pe;
+ static DolMi g_mi;
+ static DolEfbAccess g_efb;
+ 
++// Savestate image for the MMIO layer: the guest-visible register surfaces only.
++// All fields are POD scalars/arrays (DolExi carries the transfer-callback
++// pointers, which are NULL on this host and stay NULL after restore).
++typedef struct {
++    DolExi exi;
++    DolDi di;
++    DolCp cp;
++    DolPe pe;
++    DolMi mi;
++} MmioSaveState;
++
++uint32_t mmio_save_state_size(void) {
++    return (uint32_t)sizeof(MmioSaveState);
++}
++
++void mmio_save_state(void* dst) {
++    if (dst == NULL)
++        return;
++    MmioSaveState* s = (MmioSaveState*)dst;
++    s->exi = g_exi;
++    s->di = g_di;
++    s->cp = g_cp;
++    s->pe = g_pe;
++    s->mi = g_mi;
++}
++
++void mmio_restore_state(const void* src) {
++    if (src == NULL)
++        return;
++    const MmioSaveState* s = (const MmioSaveState*)src;
++    g_exi = s->exi;
++    g_di = s->di;
++    g_cp = s->cp;
++    g_pe = s->pe;
++    g_mi = s->mi;
++}
++
+ #define DSP_BASE 0xCC005000u
+ #define DSP_SIZE 0x40u
+ #define AI_BASE  0xCC006C00u
+diff --git a/runtime/host/mmio.h b/runtime/host/mmio.h
+index e69aac3..b6763b3 100644
+--- a/runtime/host/mmio.h
++++ b/runtime/host/mmio.h
+@@ -34,4 +34,11 @@ struct DolEfbAccess* mmio_efb(void);
+ // Wire continuous present-source readback → software EFB (Aurora builds only).
+ void mmio_attach_efb_readback(void);
+ 
++// Savestate support: serialize/deserialize the guest-visible MMIO device
++// register surfaces (EXI/DI/CP/PE/MI). The EFB buffers and the MMIO bus wiring
++// are re-created by mmio_install() and are not part of the image.
++uint32_t mmio_save_state_size(void);
++void mmio_save_state(void* dst);
++void mmio_restore_state(const void* src);
++
+ #endif /* MELEERECOMP_MMIO_H */

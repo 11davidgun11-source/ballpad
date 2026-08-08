@@ -100,6 +100,49 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
 - Result:
 ```
 
+## 2026-08-08 — A1 quick-boot: three hard-won savestate findings (Bot 4)
+
+### F1 — Mid-match savestate restores the guest but renders a dark frame
+- Symptom: a savestate captured at a running match restores perfectly at the
+  guest level (match clock runs, cGame state=4) but the EFB readback is dark
+  (diag mean ~9 vs ~90 fresh) with the full match geometry still submitting
+  (219-248 draws / 12M verts per frame). Screenshot shows a tiny green field
+  patch + black.
+- Root cause: the renderer (gxcore/frontend) is process-lifetime state rebuilt
+  from the guest's FIFO stream. After restore, the guest believes its GX state
+  is already set (RAM dirty flags clean), so per-frame deltas never
+  re-establish the pipeline state set once at boot/scene load. Verified the
+  viewport, projection, light objects and channel regs all re-emit identically
+  between fresh and restore; the missing piece is the sink-side BP/TEV state
+  (the draw-plan pipeline inputs).
+- Fix: the savestate now also captures the shadow frontend's parsed GX state
+  (DolGxRecompState: BP regs, XF matrices/viewport/projection/lights, VCD/VAT,
+  pending FIFO) and the gxcore sink's applied register state (GxCoreState:
+  bp_regs, tev/konst colors, vcd/vat). Restoring both yields a correct
+  in-match render (diag mean 81).
+
+### F2 — Capturing mid-GX-command desyncs the shadow frontend (opcode 0x23)
+- Symptom: capture at the side-choice/stadium-card screen, then restore →
+  `[gx-core] frontend rejected FIFO ... unsupported FIFO opcode (opcode=0x23)`
+  once, then draws=0 forever (rendering dead), even though the game continues.
+- Root cause: the capture caught the guest mid-GX-command-write; the restored
+  stream resumes mid-command and the fresh frontend parser never realigns.
+- Fix: only capture while the guest is parked in the OS idle loop (VI retrace
+  wait): pc == 0x800051B4 || 0x800051D8. The mid-match capture was clean for
+  the same reason (its pc happened to be idle at capture).
+
+### F3 — Restore-side input must match the proven autostart cadence
+- Symptom: an over-eager restore drive (D_LEFT + A x3 with 20M-block spacing)
+  left the game "in-match" (cGame) but with draws=0; the game's menu flow
+  drifts and the extra D_LEFT/rapid A's land on the wrong screens.
+- Fix: on restore, settle ~80M blocks then press A (hold 20M) at ~100M-block
+  spacing (the autostart's proven final cadence: A@6.7B/A@6.8B/A@6.9B).
+
+- Result (phone): cold launch → in-match 15 s wall (baseline 505 s), live-match
+  screenshot build/proofs/a1-quickboot-inmatch-final.png, log
+  work/tmp/a1-timed3.log. Build caveat: capture runs need BALLPAD_NO_QUICKBOOT=1
+  (otherwise the stale QuickBoot.bss is restored instead of a fresh boot).
+
 ## 2026-08-08 — Touch interface feedback: adopt bellpad's GC control design
 
 - **Symptom:** User: "the interface is terrible. use bellpad (which I put in

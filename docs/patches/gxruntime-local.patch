@@ -1,5 +1,5 @@
 diff --git a/backends/aurora/aurora_backend.cpp b/backends/aurora/aurora_backend.cpp
-index d94f811..46e7af8 100644
+index d94f811..e265c49 100644
 --- a/backends/aurora/aurora_backend.cpp
 +++ b/backends/aurora/aurora_backend.cpp
 @@ -1,5 +1,6 @@
@@ -33,7 +33,7 @@ index d94f811..46e7af8 100644
  } // namespace aurora::gfx::efb_readback
  
  namespace {
-@@ -1123,6 +1127,10 @@ void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user) {
+@@ -1123,6 +1127,50 @@ void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user) {
      }
  }
  
@@ -41,10 +41,50 @@ index d94f811..46e7af8 100644
 +    aurora::gfx::efb_readback::poke_color(x, y, argb);
 +}
 +
++// A1 quick-boot: save/restore the shadow frontend's parsed GX state so a
++// restored guest resumes with the renderer state it expects. The blob is
++// opaque; size via dol_aurora_frontend_save_state(nullptr, &size).
++bool dol_aurora_frontend_save_state(void* dst, uint32_t* size) {
++    if (size != nullptr)
++        *size = g_shadow_frontend_enabled
++                    ? dol_gx_recomp_save_state_size()
++                    : 0u;
++    if (dst == nullptr || !g_shadow_frontend_enabled)
++        return g_shadow_frontend_enabled;
++    return dol_gx_recomp_save_state(&g_shadow_frontend.state(),
++                                    static_cast<uint8_t*>(dst));
++}
++
++bool dol_aurora_frontend_restore_state(const void* src, uint32_t size) {
++    if (src == nullptr || !g_shadow_frontend_enabled)
++        return false;
++    if (size < dol_gx_recomp_save_state_size())
++        return false;
++    g_shadow_frontend_failed = false;
++    return dol_gx_recomp_restore_state(&g_shadow_frontend.state(),
++                                       static_cast<const uint8_t*>(src));
++}
++
++// A1 quick-boot: save/restore the gxcore sink's applied register state (the
++// pipeline state the draw plans read). Size via ...save_state(nullptr, &size).
++bool dol_aurora_gxcore_save_state(void* dst, uint32_t* size) {
++    if (size != nullptr)
++        *size = 0u;
++    if (g_gx_core_enabled)
++        return g_core_sink.save_state(dst, size) != 0u || dst == nullptr;
++    return false;
++}
++
++bool dol_aurora_gxcore_restore_state(const void* src, uint32_t size) {
++    if (!g_gx_core_enabled || src == nullptr)
++        return false;
++    return g_core_sink.restore_state(src, size);
++}
++
  void dol_aurora_shutdown(void) {
      g_efb_frame_fill = nullptr;
      g_efb_frame_fill_user = nullptr;
-@@ -1133,6 +1141,7 @@ void dol_aurora_shutdown(void) {
+@@ -1133,6 +1181,7 @@ void dol_aurora_shutdown(void) {
          aurora_end_frame();
          g_frame_open = false;
      }
@@ -52,7 +92,7 @@ index d94f811..46e7af8 100644
  #if GXRUNTIME_HAS_AURORA_RECOMP
      // C2: ensure live --gap-report sees gxcore rows even if the host forgot to
      // call dol_aurora_flush_gap_report before write_json (main does call it).
-@@ -1165,6 +1174,9 @@ bool aurora_backend_should_quit(void) {
+@@ -1165,6 +1214,9 @@ bool aurora_backend_should_quit(void) {
  void aurora_backend_present(void) {
      if (!g_initialized)
          return;
@@ -62,7 +102,7 @@ index d94f811..46e7af8 100644
  #if GXRUNTIME_HAS_AURORA_RECOMP
      // gxcore accumulates the frame's draws as their spans complete; the final
      // pending draw is only planned at the frame boundary. Submit it into the
-@@ -1215,11 +1227,16 @@ void aurora_backend_present(void) {
+@@ -1215,11 +1267,16 @@ void aurora_backend_present(void) {
      if (g_frame_pacing_log &&
          (g_present_count <= 10 || (g_present_count % 60) == 0)) {
          const AuroraStats* stats = aurora_get_stats();
@@ -82,7 +122,7 @@ index d94f811..46e7af8 100644
      }
      if (g_graphics_log) {
          const AuroraStats* s = aurora_get_stats();
-@@ -1449,6 +1466,18 @@ void aurora_backend_present(void) {
+@@ -1449,6 +1506,18 @@ void aurora_backend_present(void) {
                       g_present_count, present_fifo);
  }
  
@@ -101,7 +141,7 @@ index d94f811..46e7af8 100644
  void aurora_backend_mark_gx_begin(void) {
      g_draw_opcode_pending = true;
  }
-@@ -1779,6 +1808,10 @@ bool aurora_backend_pad_init(void) {
+@@ -1779,6 +1848,10 @@ bool aurora_backend_pad_init(void) {
      return true;
  }
  
@@ -112,7 +152,7 @@ index d94f811..46e7af8 100644
  u32 aurora_backend_pad_read(DolPadState state[4]) {
      PADStatus status[4]{};
      const u32 motor_mask = PADRead(status);
-@@ -1796,6 +1829,11 @@ u32 aurora_backend_pad_read(DolPadState state[4]) {
+@@ -1796,6 +1869,11 @@ u32 aurora_backend_pad_read(DolPadState state[4]) {
              .error = status[i].err,
          };
      }
@@ -124,7 +164,7 @@ index d94f811..46e7af8 100644
      return motor_mask;
  }
  
-@@ -1921,3 +1959,7 @@ void install_platform_ops() {
+@@ -1921,3 +1999,7 @@ void install_platform_ops() {
      dol_platform_install(&ops);
  }
  } // namespace
@@ -959,6 +999,110 @@ index b741e17..762bc91 100644
  void set_title(const char* title);
  void set_fullscreen(bool fullscreen);
  bool get_fullscreen();
+diff --git a/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp b/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp
+index 4d14391..b07c92b 100644
+--- a/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp
++++ b/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp
+@@ -82,6 +82,14 @@ public:
+     return static_cast<std::uint8_t>(unit < 4u ? 0x90u + unit : 0xB0u + (unit - 4u));
+   }
+ 
++  // A1 quick-boot: serialize/deserialize the register state the sink has
++  // applied (BP regs, TEV/konst colors, VCD/VAT). The saved image is POD and
++  // opaque; size via GxCoreState::save(nullptr, &size).
++  static std::uint32_t save(const GxCoreState* state, void* dst,
++                            std::uint32_t* size);
++  static bool restore(GxCoreState* state, const void* src,
++                      std::uint32_t size);
++
+ private:
+   std::uint32_t bp_regs_[256]{};
+   bool bp_valid_[256]{};
+@@ -130,6 +138,17 @@ public:
+   // Frame boundary: plan the final pending draw of the frame.
+   void flush_frame();
+ 
++  // A1 quick-boot: serialize/restore the applied register state (live +
++  // pending snapshots) so a restored guest resumes with the renderer state it
++  // expects. The image is POD and opaque.
++  std::uint32_t save_state(void* dst, std::uint32_t* size) const {
++    return GxCoreState::save(&live_state_, dst, size);
++  }
++  bool restore_state(const void* src, std::uint32_t size) {
++    return GxCoreState::restore(&live_state_, src, size) &&
++           GxCoreState::restore(&pending_state_, src, size);
++  }
++
+   const GapCounters& counters() const { return counters_; }
+   GapCounters& counters() { return counters_; }
+   const gxruntime::aurora_recomp::ConsumingAuroraRenderSink& consumer() const {
+diff --git a/graphics/gxcore/src/state.cpp b/graphics/gxcore/src/state.cpp
+index 10b1a33..ff9d09a 100644
+--- a/graphics/gxcore/src/state.cpp
++++ b/graphics/gxcore/src/state.cpp
+@@ -62,4 +62,62 @@ void GxCoreState::apply(const ar::RenderStatePacket& state) {
+   }
+ }
+ 
++// A1 quick-boot: serialize the applied register state. POD image, opaque;
++// the draw-plan derivation re-reads these fields directly after restore.
++std::uint32_t GxCoreState::save(const GxCoreState* state, void* dst,
++                                std::uint32_t* size) {
++  if (size != nullptr)
++    *size = (std::uint32_t)(sizeof(state->bp_regs_) + sizeof(state->bp_valid_) +
++                            sizeof(state->tev_color_) +
++                            sizeof(state->konst_color_) + sizeof(state->vcd_lo_) +
++                            sizeof(state->vcd_hi_) +
++                            sizeof(state->vcd_lo_valid_) +
++                            sizeof(state->vcd_hi_valid_) +
++                            sizeof(state->vat_) + sizeof(state->vat_valid_));
++  if (dst == nullptr || state == nullptr)
++    return 0u;
++  std::uint8_t* p = static_cast<std::uint8_t*>(dst);
++  auto wr = [&p](const void* src, std::size_t bytes) {
++    std::memcpy(p, src, bytes);
++    p += bytes;
++  };
++  wr(state->bp_regs_, sizeof(state->bp_regs_));
++  wr(state->bp_valid_, sizeof(state->bp_valid_));
++  wr(state->tev_color_, sizeof(state->tev_color_));
++  wr(state->konst_color_, sizeof(state->konst_color_));
++  wr(&state->vcd_lo_, sizeof(state->vcd_lo_));
++  wr(&state->vcd_hi_, sizeof(state->vcd_hi_));
++  wr(&state->vcd_lo_valid_, sizeof(state->vcd_lo_valid_));
++  wr(&state->vcd_hi_valid_, sizeof(state->vcd_hi_valid_));
++  wr(state->vat_, sizeof(state->vat_));
++  wr(state->vat_valid_, sizeof(state->vat_valid_));
++  return (std::uint32_t)(p - static_cast<std::uint8_t*>(dst));
++}
++
++bool GxCoreState::restore(GxCoreState* state, const void* src,
++                          std::uint32_t size) {
++  if (state == nullptr || src == nullptr)
++    return false;
++  std::uint32_t expected = 0u;
++  save(nullptr, nullptr, &expected);
++  if (size != expected)
++    return false;
++  const std::uint8_t* p = static_cast<const std::uint8_t*>(src);
++  auto rd = [&p](void* dst, std::size_t bytes) {
++    std::memcpy(dst, p, bytes);
++    p += bytes;
++  };
++  rd(state->bp_regs_, sizeof(state->bp_regs_));
++  rd(state->bp_valid_, sizeof(state->bp_valid_));
++  rd(state->tev_color_, sizeof(state->tev_color_));
++  rd(state->konst_color_, sizeof(state->konst_color_));
++  rd(&state->vcd_lo_, sizeof(state->vcd_lo_));
++  rd(&state->vcd_hi_, sizeof(state->vcd_hi_));
++  rd(&state->vcd_lo_valid_, sizeof(state->vcd_lo_valid_));
++  rd(&state->vcd_hi_valid_, sizeof(state->vcd_hi_valid_));
++  rd(state->vat_, sizeof(state->vat_));
++  rd(state->vat_valid_, sizeof(state->vat_valid_));
++  return true;
++}
++
+ } // namespace gxruntime::gxcore
 diff --git a/include/core/cpu.h b/include/core/cpu.h
 index f416854..b285a09 100644
 --- a/include/core/cpu.h
@@ -989,8 +1133,23 @@ index f416854..b285a09 100644
  u32 ppc_eciwx(CPUState* cpu, u32 ea, u32 cia);
  void ppc_ecowx(CPUState* cpu, u32 ea, u32 value, u32 cia);
  void ppc_tlbie(CPUState* cpu, u32 ea, u32 cia);
+diff --git a/include/gxruntime/aram.h b/include/gxruntime/aram.h
+index 9c2f7bb..1728a11 100644
+--- a/include/gxruntime/aram.h
++++ b/include/gxruntime/aram.h
+@@ -31,4 +31,10 @@ void aram_write(u32 ea, u64 value, u8 size);
+ void aram_dma_to_aram(const u8* ram, u32 ram_addr, u32 aram_addr, u32 length);
+ void aram_dma_to_ram(u8* ram, u32 ram_addr, u32 aram_addr, u32 length);
+ 
++// Savestate support: copy the whole ARAM buffer out (dst must hold ARAM_SIZE
++// bytes) or back in. Restore re-allocates a zeroed buffer first if needed, so
++// it is safe to call before any ARAM traffic.
++void aram_save(void* dst);
++void aram_restore(const void* src);
++
+ #endif
 diff --git a/include/gxruntime/aurora_backend.h b/include/gxruntime/aurora_backend.h
-index 6ef4cf4..565fb31 100644
+index 6ef4cf4..7ca7b57 100644
 --- a/include/gxruntime/aurora_backend.h
 +++ b/include/gxruntime/aurora_backend.h
 @@ -26,6 +26,9 @@ bool dol_aurora_initialize(int argc, char** argv,
@@ -1003,13 +1162,21 @@ index 6ef4cf4..565fb31 100644
  // Optional: after each present, push latest present-source RGBA8 into software
  // EFB (e.g. Strikers mmio_efb + dol_efb_access_fill_color_rgba8). Enables
  // continuous framebuffer readback while registered. NULL clears.
-@@ -33,6 +36,15 @@ typedef void (*DolAuroraEfbFrameFillFn)(const uint8_t* rgba, uint32_t width,
+@@ -33,6 +36,23 @@ typedef void (*DolAuroraEfbFrameFillFn)(const uint8_t* rgba, uint32_t width,
                                          uint32_t height, void* user);
  void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user);
  
 +// Debug: write one ARGB pixel into the present-source (resolved EFB) texture.
 +// Useful to prove the readback pipeline end-to-end (poke -> readback -> fill).
 +void dol_aurora_poke_color(uint16_t x, uint16_t y, uint32_t argb);
++
++// A1 quick-boot: serialize/restore the shadow frontend's parsed GX state.
++// Size query: dol_aurora_frontend_save_state(NULL, &size).
++bool dol_aurora_frontend_save_state(void* dst, uint32_t* size);
++bool dol_aurora_frontend_restore_state(const void* src, uint32_t size);
++// A1 quick-boot: gxcore sink register state (draw-plan pipeline inputs).
++bool dol_aurora_gxcore_save_state(void* dst, uint32_t* size);
++bool dol_aurora_gxcore_restore_state(const void* src, uint32_t size);
 +
 +// Perf: the host's texture-binding layer detected a content change at a guest
 +// texture address; drop the renderer's memoized content hash so the next draw
@@ -1036,6 +1203,27 @@ index 61c5164..ea4cb7c 100644
  // Bounding-box indices (PE_BBOX_LEFT..BOTTOM / BPMEM_CLEARBBOX packing).
  #define DOL_EFB_BBOX_LEFT 0u
  #define DOL_EFB_BBOX_RIGHT 1u
+diff --git a/include/gxruntime/gx_recomp.h b/include/gxruntime/gx_recomp.h
+index 70bc960..568de92 100644
+--- a/include/gxruntime/gx_recomp.h
++++ b/include/gxruntime/gx_recomp.h
+@@ -322,6 +322,16 @@ bool dol_gx_recomp_indexed_span(const void* vertices, u32 vertex_size,
+                                 u32 element_size, u32 element_bias,
+                                 u32* out_span);
+ 
++/* Savestate support (A1 quick-boot): serialize the renderer's parsed GX state
++ * (VCD/VAT, BP regs, XF matrices/viewport/projection/lights, channel regs,
++ * pending FIFO bytes) so a cold launch can resume with the renderer state the
++ * guest expects. The resolver, texture/tlut bindings and vertex layouts are
++ * re-established from guest RAM and the re-emitted stream after restore, so
++ * they are not part of the image. */
++u32 dol_gx_recomp_save_state_size(void);
++bool dol_gx_recomp_save_state(const DolGxRecompState* gx, void* dst);
++bool dol_gx_recomp_restore_state(DolGxRecompState* gx, const void* src);
++
+ bool dol_gx_recomp_texture_size(u16 width, u16 height, u32 format,
+                                 u32* out_size);
+ bool dol_gx_recomp_resolve_texture_image(DolGxRecompState* gx, u8 slot,
 diff --git a/include/gxruntime/platform.h b/include/gxruntime/platform.h
 index 5b10f8c..64d19c1 100644
 --- a/include/gxruntime/platform.h
@@ -1051,6 +1239,26 @@ index 5b10f8c..64d19c1 100644
  void dol_platform_set_copy_destination(const void* data);
  void dol_platform_set_copy_destination_guest(u32 guest_address,
                                               const void* data);
+diff --git a/src/aram.c b/src/aram.c
+index 264500b..7fc2fd4 100644
+--- a/src/aram.c
++++ b/src/aram.c
+@@ -65,3 +65,15 @@ void aram_dma_to_ram(u8* ram, u32 ram_addr, u32 aram_addr, u32 length) {
+     for (u32 i = 0; i < length; i++)
+         ram[r + i] = g_aram[(off + i) & (ARAM_SIZE - 1u)];
+ }
++
++void aram_save(void* dst) {
++    if (dst != NULL && g_aram != NULL)
++        memcpy(dst, g_aram, ARAM_SIZE);
++}
++
++void aram_restore(const void* src) {
++    if (g_aram == NULL)
++        aram_init();
++    if (src != NULL && g_aram != NULL)
++        memcpy(g_aram, src, ARAM_SIZE);
++}
 diff --git a/src/core/cpu.c b/src/core/cpu.c
 index 2f13110..e9527fa 100644
 --- a/src/core/cpu.c
@@ -1174,7 +1382,7 @@ index 65982ba..dc75f63 100644
          efb->height != height) {
          if (!dol_efb_access_enable_backing(efb, width, height, NULL, NULL))
 diff --git a/src/gx_recomp.c b/src/gx_recomp.c
-index 842e0e6..c25eac2 100644
+index 842e0e6..c2a5f7d 100644
 --- a/src/gx_recomp.c
 +++ b/src/gx_recomp.c
 @@ -1,5 +1,7 @@
@@ -1197,3 +1405,236 @@ index 842e0e6..c25eac2 100644
              gx->projection_type = bits;
          } else if (xf_addr >= DOL_GX_XF_LIGHT_BASE &&
                     xf_addr < DOL_GX_XF_LIGHT_END) {
+@@ -1381,3 +1387,232 @@ dol_gx_recomp_trace_events(const DolGxRecompState* gx, u32* count) {
+         *count = gx != NULL ? gx->trace_count : 0u;
+     return gx != NULL ? gx->trace : NULL;
+ }
++
++/* --- A1 quick-boot: renderer-state savestate ---------------------------- */
++
++#define GXST_MAGIC 0x58535447u /* "GXST" */
++#define GXST_VERSION 1u
++
++typedef struct {
++    u32 magic;
++    u32 version;
++    u32 size;  /* total blob size, header inclusive */
++    u32 fifo_bytes;
++} GxRecompSaveHeader;
++
++static u32 gx_recomp_state_size(void) {
++    return (u32)sizeof(GxRecompSaveHeader) +
++           2u * sizeof(u32) + 2u +                        /* vcd */
++           3u * DOL_GX_RECOMP_VERTEX_FORMATS *
++               (sizeof(u32) + sizeof(u8)) +               /* vat groups */
++           DOL_GX_RECOMP_CP_ARRAY_COUNT *
++               (2u * sizeof(u32) + 2u * sizeof(u8)) +     /* cp arrays */
++           1u +                                           /* cull_all */
++           2u * sizeof(u32) +                             /* mtx idx a, cur pn */
++           256u * (sizeof(u32) + sizeof(u8)) +            /* bp regs */
++           DOL_GX_RECOMP_POSITION_MATRIX_COUNT *
++               (DOL_GX_RECOMP_POSITION_MATRIX_WORDS * sizeof(f32) +
++                sizeof(u16) + sizeof(u8)) +               /* position matrices */
++           DOL_GX_RECOMP_NORMAL_MATRIX_COUNT *
++               (DOL_GX_RECOMP_NORMAL_MATRIX_WORDS * sizeof(f32) +
++                sizeof(u16)) +                            /* normal matrices */
++           2u * sizeof(u16) +                             /* last xf base/count */
++           sizeof(u8) + 6u * sizeof(f32) + sizeof(u32) +  /* projection */
++           sizeof(u8) + 6u * sizeof(f32) +                /* viewport */
++           DOL_GX_RECOMP_LIGHT_COUNT *
++               (DOL_GX_RECOMP_LIGHT_WORDS * sizeof(u32) +
++                sizeof(u16)) +                            /* lights */
++           DOL_GX_RECOMP_CHAN_REG_COUNT * sizeof(u32) +
++               sizeof(u16) +                              /* chan regs */
++           DOL_GX_RECOMP_TEX_MATRIX_COUNT *
++               (DOL_GX_RECOMP_TEX_MATRIX_WORDS * sizeof(f32) +
++                sizeof(u16)) +                            /* tex matrices */
++           DOL_GX_RECOMP_POST_MATRIX_ROWS *
++               (DOL_GX_RECOMP_POST_MATRIX_WORDS * sizeof(f32) +
++                sizeof(u8)) +                             /* post matrices */
++           sizeof(u32) + sizeof(u8) +                     /* dualtex */
++           DOL_GX_RECOMP_XF_REG_COUNT * sizeof(u32) +
++               sizeof(u64) +                              /* xf regs */
++           (u32)sizeof(DolGxRecompCopyState) +            /* copy (raw) */
++           DOL_GX_RECOMP_MAX_FIFO_BYTES;                  /* fifo bytes */
++}
++
++u32 dol_gx_recomp_save_state_size(void) {
++    return gx_recomp_state_size();
++}
++
++static u8* st_write(u8* p, const void* src, u32 bytes) {
++    memcpy(p, src, bytes);
++    return p + bytes;
++}
++
++static const u8* st_read(const u8* p, void* dst, u32 bytes) {
++    memcpy(dst, p, bytes);
++    return p + bytes;
++}
++
++bool dol_gx_recomp_save_state(const DolGxRecompState* gx, void* dst) {
++    if (gx == NULL || dst == NULL)
++        return false;
++    u8* p = (u8*)dst;
++    GxRecompSaveHeader h;
++    h.magic = GXST_MAGIC;
++    h.version = GXST_VERSION;
++    h.size = gx_recomp_state_size();
++    h.fifo_bytes = gx->fifo.size;
++    p = st_write(p, &h, sizeof h);
++    p = st_write(p, &gx->vcd_lo, sizeof gx->vcd_lo);
++    p = st_write(p, &gx->vcd_hi, sizeof gx->vcd_hi);
++    u8 vb = gx->vcd_lo_valid ? 1u : 0u;
++    p = st_write(p, &vb, 1);
++    vb = gx->vcd_hi_valid ? 1u : 0u;
++    p = st_write(p, &vb, 1);
++    p = st_write(p, gx->vat_group0, sizeof gx->vat_group0);
++    p = st_write(p, gx->vat_group1, sizeof gx->vat_group1);
++    p = st_write(p, gx->vat_group2, sizeof gx->vat_group2);
++    for (u32 i = 0; i < DOL_GX_RECOMP_VERTEX_FORMATS; ++i) {
++        vb = gx->vat_group0_valid[i] ? 1u : 0u;
++        p = st_write(p, &vb, 1);
++        vb = gx->vat_group1_valid[i] ? 1u : 0u;
++        p = st_write(p, &vb, 1);
++        vb = gx->vat_group2_valid[i] ? 1u : 0u;
++        p = st_write(p, &vb, 1);
++    }
++    p = st_write(p, gx->arrays, sizeof gx->arrays);
++    vb = gx->cull_all ? 1u : 0u;
++    p = st_write(p, &vb, 1);
++    p = st_write(p, &gx->matrix_index_a, sizeof gx->matrix_index_a);
++    p = st_write(p, &gx->current_pn_matrix, sizeof gx->current_pn_matrix);
++    p = st_write(p, gx->bp_regs, sizeof gx->bp_regs);
++    for (u32 i = 0; i < 256u; ++i) {
++        vb = gx->bp_valid[i] ? 1u : 0u;
++        p = st_write(p, &vb, 1);
++    }
++    p = st_write(p, gx->position_matrices, sizeof gx->position_matrices);
++    p = st_write(p, gx->position_matrix_word_mask,
++                 sizeof gx->position_matrix_word_mask);
++    for (u32 i = 0; i < DOL_GX_RECOMP_POSITION_MATRIX_COUNT; ++i) {
++        vb = gx->position_matrix_valid[i] ? 1u : 0u;
++        p = st_write(p, &vb, 1);
++    }
++    p = st_write(p, gx->normal_matrices, sizeof gx->normal_matrices);
++    p = st_write(p, gx->normal_matrix_word_mask,
++                 sizeof gx->normal_matrix_word_mask);
++    p = st_write(p, &gx->last_xf_base, sizeof gx->last_xf_base);
++    p = st_write(p, &gx->last_xf_count, sizeof gx->last_xf_count);
++    vb = gx->projection_valid ? 1u : 0u;
++    p = st_write(p, &vb, 1);
++    p = st_write(p, gx->projection, sizeof gx->projection);
++    p = st_write(p, &gx->projection_type, sizeof gx->projection_type);
++    vb = gx->viewport_valid ? 1u : 0u;
++    p = st_write(p, &vb, 1);
++    p = st_write(p, gx->viewport, sizeof gx->viewport);
++    p = st_write(p, gx->light_words, sizeof gx->light_words);
++    p = st_write(p, gx->light_word_mask, sizeof gx->light_word_mask);
++    p = st_write(p, gx->chan_regs, sizeof gx->chan_regs);
++    p = st_write(p, &gx->chan_reg_mask, sizeof gx->chan_reg_mask);
++    p = st_write(p, gx->tex_matrices, sizeof gx->tex_matrices);
++    p = st_write(p, gx->tex_matrix_word_mask,
++                 sizeof gx->tex_matrix_word_mask);
++    p = st_write(p, gx->post_matrices, sizeof gx->post_matrices);
++    p = st_write(p, gx->post_matrix_word_mask,
++                 sizeof gx->post_matrix_word_mask);
++    p = st_write(p, &gx->dualtex_info, sizeof gx->dualtex_info);
++    vb = gx->dualtex_valid ? 1u : 0u;
++    p = st_write(p, &vb, 1);
++    p = st_write(p, gx->xf_regs, sizeof gx->xf_regs);
++    p = st_write(p, &gx->xf_reg_mask, sizeof gx->xf_reg_mask);
++    /* Copy state minus the host-pointer range (re-resolved on demand). */
++    DolGxRecompCopyState copy = gx->copy;
++    copy.range_valid = false;
++    p = st_write(p, &copy, sizeof copy);
++    p = st_write(p, gx->fifo.bytes, gx->fifo.size);
++    return true;
++}
++
++bool dol_gx_recomp_restore_state(DolGxRecompState* gx, const void* src) {
++    if (gx == NULL || src == NULL)
++        return false;
++    const u8* p = (const u8*)src;
++    GxRecompSaveHeader h;
++    p = st_read(p, &h, sizeof h);
++    if (h.magic != GXST_MAGIC || h.version != GXST_VERSION ||
++        h.size != gx_recomp_state_size())
++        return false;
++    DolGxRecompState fresh;
++    dol_gx_recomp_init(&fresh, &gx->resolver);
++    p = st_read(p, &fresh.vcd_lo, sizeof fresh.vcd_lo);
++    p = st_read(p, &fresh.vcd_hi, sizeof fresh.vcd_hi);
++    u8 vb;
++    p = st_read(p, &vb, 1);
++    fresh.vcd_lo_valid = vb != 0u;
++    p = st_read(p, &vb, 1);
++    fresh.vcd_hi_valid = vb != 0u;
++    p = st_read(p, fresh.vat_group0, sizeof fresh.vat_group0);
++    p = st_read(p, fresh.vat_group1, sizeof fresh.vat_group1);
++    p = st_read(p, fresh.vat_group2, sizeof fresh.vat_group2);
++    for (u32 i = 0; i < DOL_GX_RECOMP_VERTEX_FORMATS; ++i) {
++        p = st_read(p, &vb, 1);
++        fresh.vat_group0_valid[i] = vb != 0u;
++        p = st_read(p, &vb, 1);
++        fresh.vat_group1_valid[i] = vb != 0u;
++        p = st_read(p, &vb, 1);
++        fresh.vat_group2_valid[i] = vb != 0u;
++    }
++    p = st_read(p, fresh.arrays, sizeof fresh.arrays);
++    p = st_read(p, &vb, 1);
++    fresh.cull_all = vb != 0u;
++    p = st_read(p, &fresh.matrix_index_a, sizeof fresh.matrix_index_a);
++    p = st_read(p, &fresh.current_pn_matrix, sizeof fresh.current_pn_matrix);
++    p = st_read(p, fresh.bp_regs, sizeof fresh.bp_regs);
++    for (u32 i = 0; i < 256u; ++i) {
++        p = st_read(p, &vb, 1);
++        fresh.bp_valid[i] = vb != 0u;
++    }
++    p = st_read(p, fresh.position_matrices, sizeof fresh.position_matrices);
++    p = st_read(p, fresh.position_matrix_word_mask,
++                sizeof fresh.position_matrix_word_mask);
++    for (u32 i = 0; i < DOL_GX_RECOMP_POSITION_MATRIX_COUNT; ++i) {
++        p = st_read(p, &vb, 1);
++        fresh.position_matrix_valid[i] = vb != 0u;
++    }
++    p = st_read(p, fresh.normal_matrices, sizeof fresh.normal_matrices);
++    p = st_read(p, fresh.normal_matrix_word_mask,
++                sizeof fresh.normal_matrix_word_mask);
++    p = st_read(p, &fresh.last_xf_base, sizeof fresh.last_xf_base);
++    p = st_read(p, &fresh.last_xf_count, sizeof fresh.last_xf_count);
++    p = st_read(p, &vb, 1);
++    fresh.projection_valid = vb != 0u;
++    p = st_read(p, fresh.projection, sizeof fresh.projection);
++    p = st_read(p, &fresh.projection_type, sizeof fresh.projection_type);
++    p = st_read(p, &vb, 1);
++    fresh.viewport_valid = vb != 0u;
++    p = st_read(p, fresh.viewport, sizeof fresh.viewport);
++    p = st_read(p, fresh.light_words, sizeof fresh.light_words);
++    p = st_read(p, fresh.light_word_mask, sizeof fresh.light_word_mask);
++    p = st_read(p, fresh.chan_regs, sizeof fresh.chan_regs);
++    p = st_read(p, &fresh.chan_reg_mask, sizeof fresh.chan_reg_mask);
++    p = st_read(p, fresh.tex_matrices, sizeof fresh.tex_matrices);
++    p = st_read(p, fresh.tex_matrix_word_mask,
++                sizeof fresh.tex_matrix_word_mask);
++    p = st_read(p, fresh.post_matrices, sizeof fresh.post_matrices);
++    p = st_read(p, fresh.post_matrix_word_mask,
++                sizeof fresh.post_matrix_word_mask);
++    p = st_read(p, &fresh.dualtex_info, sizeof fresh.dualtex_info);
++    p = st_read(p, &vb, 1);
++    fresh.dualtex_valid = vb != 0u;
++    p = st_read(p, fresh.xf_regs, sizeof fresh.xf_regs);
++    p = st_read(p, &fresh.xf_reg_mask, sizeof fresh.xf_reg_mask);
++    p = st_read(p, &fresh.copy, sizeof fresh.copy);
++    fresh.copy.range_valid = false;
++    if (h.fifo_bytes <= DOL_GX_RECOMP_MAX_FIFO_BYTES) {
++        memcpy(fresh.fifo.bytes, p, h.fifo_bytes);
++        fresh.fifo.size = h.fifo_bytes;
++    }
++    /* Keep this session's resolver; the saved image carried stale pointers. */
++    fresh.resolver = gx->resolver;
++    *gx = fresh;
++    /* Vertex layouts are re-derived from the restored VCD/VAT. */
++    derive_all_vertex_layouts(gx);
++    return true;
++}

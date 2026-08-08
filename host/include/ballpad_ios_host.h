@@ -75,6 +75,16 @@ const char* ballpad_ios_host_card_path(void);
 bool ballpad_ios_host_export_card(const char* dest_path);
 bool ballpad_ios_host_import_card(const char* src_path);
 
+/* A1 quick-boot savestate. Capture snapshots the running match (CPU state +
+ * guest RAM + ARAM + runtime device state) to Documents/QuickBoot.bss so a
+ * cold launch can restore straight into the match. Returns true when the file
+ * was written. Restore is automatic at start() when the file exists; set
+ * BALLPAD_NO_QUICKBOOT=1 to force a full boot (e.g. to capture a fresh
+ * savestate). */
+bool ballpad_ios_host_save_quickboot(void);
+/* True when this session resumed from the quick-boot savestate. */
+bool ballpad_ios_host_quickbooted(void);
+
 #ifdef __cplusplus
 }
 #endif
