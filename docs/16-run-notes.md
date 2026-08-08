@@ -82,3 +82,18 @@ Working:
   stale present-source copy), and the exact menu-flow drift (block anchors vs the
   per-run guest timing). Screen-history snapshots (work/tmp/snap_*.rgba) are now
   saved every 400M blocks for offline review.
+
+## Final session findings (input path)
+- The game's own pad-status buffer (s_Current__9PadStatus) shows the injected
+  A presses (btn=0x0100) with err=0 during the autostart holds, and the pad
+  pointer ping-pongs between the double buffers — the guest RECEIVES the input.
+- Yet the FE menu logic never advances past the title/main-menu scene: the game
+  stays in task state 4 (front-end task), cGame stays NULL, and the EFB readback
+  freezes on the same dark frame (the rich 23-draw/150k-vert scene) from ~2.6B
+  blocks on.
+- Next suspects (next session): cGlobalPad::IsConnected() on the FE input path
+  (FE may treat the pad as disconnected and ignore input), and the FE task
+  update loop. Check cPadManager/cGlobalPad connection flags + FEInput
+  m_bInputAllowed/m_bEnableInput in guest memory.
+- All host fixes remain in place: readback mutex deadlock fix, staging guard,
+  readback throttle, DEC emulation, stderr redirect, block-paced autostart.
