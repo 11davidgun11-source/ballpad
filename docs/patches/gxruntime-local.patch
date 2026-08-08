@@ -159,7 +159,7 @@ index a13ce39..8cc4c2f 100644
  /*
   * EFB readback (GXRuntime recomp patch): arm a one-shot copy of the next
 diff --git a/graphics/aurora/lib/aurora.cpp b/graphics/aurora/lib/aurora.cpp
-index b09ef4d..64a248e 100644
+index b09ef4d..ef253f2 100644
 --- a/graphics/aurora/lib/aurora.cpp
 +++ b/graphics/aurora/lib/aurora.cpp
 @@ -255,6 +255,13 @@ void end_frame() noexcept {
@@ -176,13 +176,10 @@ index b09ef4d..64a248e 100644
    // E7 present-from-XFB: VI current → GPU Virtual-XFB, else YUYV-from-RAM
    // decode, else EFB-direct (Strikers when no RAM XFB / match fails).
    const std::uint32_t xfbAddr = vi::xfb_black() ? 0u : vi::current_xfb();
-@@ -285,25 +292,26 @@ void end_frame() noexcept {
-   gfx::end_frame([rmlBindGroup = std::move(rmlBindGroup), rmlOverlay, viewport,
-                   imguiDrawData = std::move(imguiDrawData),
-                   xfbHandle = std::move(xfbHandle)](wgpu::CommandEncoder& encoder) {
--    wgpu::Texture currentTexture;
--    wgpu::TextureView currentView;
--    auto surfaceStatus = wgpu::SurfaceGetCurrentTextureStatus::Error;
+@@ -288,21 +295,23 @@ void end_frame() noexcept {
+     wgpu::Texture currentTexture;
+     wgpu::TextureView currentView;
+     auto surfaceStatus = wgpu::SurfaceGetCurrentTextureStatus::Error;
 -    {
 -      window::SurfaceLock surfaceLock;
 -      if (window::is_presentable() && g_surface) {
@@ -194,9 +191,6 @@ index b09ef4d..64a248e 100644
 -          currentTexture = std::move(surfaceTexture.texture);
 -          currentView = currentTexture.CreateView();
 +    if (!s_efbReadbackOnly) {
-+      wgpu::Texture currentTexture;
-+      wgpu::TextureView currentView;
-+      auto surfaceStatus = wgpu::SurfaceGetCurrentTextureStatus::Error;
 +      {
 +        window::SurfaceLock surfaceLock;
 +        if (window::is_presentable() && g_surface) {
@@ -210,19 +204,50 @@ index b09ef4d..64a248e 100644
 +          }
          }
        }
--    }
+     }
  
 -    const bool canPresent = currentTexture && currentView;
--    if (canPresent) {
-+      const bool canPresent = currentTexture && currentView;
-+      if (canPresent) {
++    const bool canPresent = !s_efbReadbackOnly && currentTexture && currentView;
+     if (canPresent) {
        wgpu::BindGroup presentBindGroup;
        if (rmlBindGroup && !rmlOverlay) {
-         presentBindGroup = rmlBindGroup;
-@@ -396,31 +404,32 @@ void end_frame() noexcept {
-         Log.warn("Surface present failed");
-         webgpu::release_surface();
+@@ -370,8 +379,6 @@ void end_frame() noexcept {
+         imgui::render(pass, imguiDrawData);
+         pass.End();
        }
+-    } else {
+-      Log.info("Skipping present; window not presentable");
+     }
+     webgpu::gpu_prof::frame_end(encoder);
+     const wgpu::CommandBufferDescriptor cmdBufDescriptor{.label = "Redraw command buffer"};
+@@ -381,46 +388,48 @@ void end_frame() noexcept {
+       g_queue.Submit(1, &buffer);
+     }
+     webgpu::gpu_prof::after_submit();
+-    if (canPresent && g_surface) {
+-      ZoneScopedN("Present");
+-      wgpu::ConvertibleStatus status = wgpu::Status::Error;
+-      {
+-        window::SurfaceLock surfaceLock;
+-        if (window::is_presentable()) {
+-          status = g_surface.Present();
++    if (!s_efbReadbackOnly) {
++      if (canPresent && g_surface) {
++        ZoneScopedN("Present");
++        wgpu::ConvertibleStatus status = wgpu::Status::Error;
++        {
++          window::SurfaceLock surfaceLock;
++          if (window::is_presentable()) {
++            status = g_surface.Present();
++          }
+         }
+-      }
+-      if (status) {
+-        gfx::after_present();
+-      } else {
+-        Log.warn("Surface present failed");
+-        webgpu::release_surface();
+-      }
 -    } else if (g_surface) {
 -      switch (surfaceStatus) {
 -      case wgpu::SurfaceGetCurrentTextureStatus::Timeout:
@@ -243,6 +268,14 @@ index b09ef4d..64a248e 100644
 -        break;
 -      default:
 -        if (!window::is_presentable()) {
+-          webgpu::release_surface();
++        if (status) {
++          gfx::after_present();
+         } else {
+-          Log.error("Failed to get surface texture: {}", magic_enum::enum_name(surfaceStatus));
++          Log.warn("Surface present failed");
++          webgpu::release_surface();
++        }
 +      } else if (g_surface) {
 +        switch (surfaceStatus) {
 +        case wgpu::SurfaceGetCurrentTextureStatus::Timeout:
@@ -255,9 +288,7 @@ index b09ef4d..64a248e 100644
 +          break;
 +        case wgpu::SurfaceGetCurrentTextureStatus::Lost:
 +          Log.warn("Surface texture is {}, releasing surface", magic_enum::enum_name(surfaceStatus));
-           webgpu::release_surface();
--        } else {
--          Log.error("Failed to get surface texture: {}", magic_enum::enum_name(surfaceStatus));
++          webgpu::release_surface();
 +          break;
 +        case wgpu::SurfaceGetCurrentTextureStatus::Error:
 +          Log.warn("Surface texture is {}, dropping surface", magic_enum::enum_name(surfaceStatus));
