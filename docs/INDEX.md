@@ -33,7 +33,15 @@ Living table of contents. Numbered for reading order.
 ## Produced by Bot 2 during execution
 | Doc | Title |
 |-----|-------|
-| `15-validation-log.md` | Filled validation scoreboard |
+| [15-validation-log.md](15-validation-log.md) | **Final scoreboard — DoD green on phone + iPad** |
 | `build/proofs/PROGRESS.md` | Live step tracker (gitignored build tree) |
+
+## Final status (2026-08-08)
+Definition of Done is **green** on both the iPhone and iPad simulators
+(M1-M14, see 15-validation-log.md). Touch controls, the ⋯ menu, resolution
+scaling, save round-trip, and layout persistence all work. In-match is ~20 fps
+(guest-CPU ceiling on the simulator; menus/boot are 60 fps). Known gaps and
+tech debt are ranked in [09-open-questions.md](09-open-questions.md)
+("Where the project is at").
 
 Companion research index: [../ref/INDEX.md](../ref/INDEX.md)
