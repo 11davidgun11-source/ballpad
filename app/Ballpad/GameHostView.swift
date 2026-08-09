@@ -26,6 +26,7 @@ struct SDLGameContainer: UIViewRepresentable {
         }
         if context.coordinator.paused != paused {
             context.coordinator.paused = paused
+            ballpad_ios_host_set_paused(paused)
             FileHandle.standardError.write(Data("[display] paused=\(paused)\n".utf8))
         }
     }
@@ -72,9 +73,10 @@ struct SDLGameContainer: UIViewRepresentable {
             ballpad_ios_host_set_efb_scale(Int32(renderScale))
             ballpad_ios_host_start(&cfg)
             timer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
-                if self?.paused != true {
-                    ballpad_ios_host_step_frame()
-                }
+                // B1: the guest runs on a dedicated worker thread; the display
+                // timer reads the latest EFB frame and pumps the SDL window
+                // attach (UI-thread work the worker must not touch).
+                ballpad_ios_host_pump_ui()
                 self?.updateFrame()
             }
         }

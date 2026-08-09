@@ -35,6 +35,13 @@ void ballpad_ios_host_step_frame(void);
 /* True while the run loop is alive. */
 bool ballpad_ios_host_running(void);
 
+/* B1: pause/resume the guest worker thread (the in-game ⋯ menu pauses the
+ * guest by stopping the worker, not by halting the display timer). */
+void ballpad_ios_host_set_paused(bool paused);
+/* B1: main-thread UI work (the SDL window attach). Call from the display
+ * timer; must not run on the guest worker thread. */
+void ballpad_ios_host_pump_ui(void);
+
 /* Set the app's UIWindowScene so SDL can attach its window. Must be called on
  * the main thread before start. Accepts (UIWindowScene*) as void*. */
 void ballpad_ios_host_set_window_scene(void* uiWindowScene);

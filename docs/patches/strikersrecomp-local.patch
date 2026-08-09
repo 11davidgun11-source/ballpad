@@ -475,7 +475,7 @@ index 041328a..5aa14e4 100644
  
  #include "gxruntime/aurora_backend.h"
 diff --git a/runtime/host/mmio.c b/runtime/host/mmio.c
-index adce0b3..4a5e7ba 100644
+index adce0b3..ef66a76 100644
 --- a/runtime/host/mmio.c
 +++ b/runtime/host/mmio.c
 @@ -31,6 +31,43 @@ static DolPe g_pe;
@@ -522,6 +522,18 @@ index adce0b3..4a5e7ba 100644
  #define DSP_BASE 0xCC005000u
  #define DSP_SIZE 0x40u
  #define AI_BASE  0xCC006C00u
+@@ -459,7 +496,11 @@ static void efb_frame_fill_cb(const uint8_t* rgba, uint32_t width,
+         return;
+     u16 w = width > 0xFFFFu ? 0xFFFFu : (u16)width;
+     u16 h = height > 0xFFFFu ? 0xFFFFu : (u16)height;
++    extern void ballpad_ios_host_frame_lock(void);
++    extern void ballpad_ios_host_frame_unlock(void);
++    ballpad_ios_host_frame_lock();
+     (void)dol_efb_access_fill_color_rgba8(&g_efb, rgba, w, h);
++    ballpad_ios_host_frame_unlock();
+ }
+ 
+ void mmio_attach_efb_readback(void) {
 diff --git a/runtime/host/mmio.h b/runtime/host/mmio.h
 index e69aac3..b6763b3 100644
 --- a/runtime/host/mmio.h

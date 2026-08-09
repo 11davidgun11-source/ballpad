@@ -30,8 +30,10 @@ extern "C" {
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <vector>
 
 extern "C" void ballpad_window_set_scene(void* scene);
@@ -92,6 +94,10 @@ namespace {
 std::atomic<bool> g_started{false};
 std::atomic<bool> g_stop{false};
 std::atomic<bool> g_starting{false};
+std::atomic<bool> g_paused{false};
+std::thread g_guest_thread;
+std::mutex g_frame_mutex;
+
 void* g_scene = nullptr;
 void* g_sdl_window = nullptr;
 
@@ -99,8 +105,12 @@ CPUState g_cpu;
 bool g_cpu_valid = false;
 bool g_aurora_up = false;
 unsigned long long g_blocks = 0;
+// B1: adaptive per-step block budget. The guest worker measures each step's
+// wall time and nudges this toward a ~16.6 ms slice, so light scenes run more
+// blocks per step (up to the fps cap) and heavy scenes degrade gracefully
+// instead of over-running a fixed 350K budget.
+unsigned long long g_frame_blocks = 350000ull;
 const char* g_stop_reason = "";
-const unsigned long long kFrameBlocks = 350000ull;
 const unsigned long long kMaxBlocks = 80000000000ull;
 int g_efb_scale = 1;
 
@@ -501,6 +511,8 @@ static void instruction_fallback(CPUState* ctx, u32 raw, u32 cia) {
   ctx->exception |= PPC_EXC_PROGRAM;
 }
 
+static void guest_loop();
+
 bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   if (g_started.load()) return true;
   if (g_aurora_up) return true;  // SwiftUI may remount the host view
@@ -650,33 +662,24 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   std::fprintf(stderr, "[ballpad-ios] booted %s entry=0x%08X blocks=%llu\n",
                quickboot ? "from quickboot" : "fresh", cpu->pc,
                (unsigned long long)g_blocks);
+  g_paused.store(false);
+  if (g_guest_thread.joinable())
+    g_guest_thread.join();
+  g_guest_thread = std::thread(guest_loop);
   return true;
 }
 
-// Steps one frame of guest work. Must be called on the main thread.
-void ballpad_ios_host_step_frame(void) {
+// Steps one frame of guest work (the block budget + presents + autostart +
+// quick-boot drive). Runs on the B1 guest worker thread; the SwiftUI display
+// timer no longer calls it.
+static void step_guest(void) {
   if (!g_started.load() || !g_cpu_valid) return;
-  // Re-entrancy guard: SDL's event pump inside aurora_backend_present drains
-  // the UIKit run loop, which can fire the SwiftUI step timer NESTED inside a
-  // present. A nested step then opens a second Aurora frame, and the outer
-  // present's begin_frame deadlocks on the frame-slot pool (free=0) — a hard
-  // freeze that manifested on the iPad simulator (slow GPU widens the window).
-  // Skip nested steps; the outer call already covers this work.
-  static bool s_in_step = false;
-  if (s_in_step)
-    return;
-  s_in_step = true;
-  // RAII reset on every exit path.
-  struct StepGuard {
-    bool* flag;
-    ~StepGuard() { *flag = false; }
-  } stepGuard{&s_in_step};
   // Perf instrumentation: wall-clock guest throughput per step_frame call
   // (BALLPAD_PERF_LOG=1). Reports every 60 calls (~1s at 60Hz).
   const auto t_step_begin = std::chrono::steady_clock::now();
   const unsigned long long blocks_step_begin = g_blocks;
   CPUState* cpu = &g_cpu;
-  unsigned long long until = g_blocks + kFrameBlocks;
+  unsigned long long until = g_blocks + g_frame_blocks;
   // Hoisted once per step: the per-block debug gate used to call getenv()
   // (an unfair-lock + linear environ scan) on every guest block, which
   // consumed ~90% of the main-thread CPU and capped the guest at ~8M blocks/s.
@@ -772,9 +775,6 @@ void ballpad_ios_host_step_frame(void) {
     }
   }
   if (g_blocks >= kMaxBlocks && !g_stop_reason[0]) g_stop_reason = "max-blocks watchdog";
-  if (g_sdl_window != nullptr) {
-    ballpad_ios_host_attach_sdl_view(g_sdl_window);
-  }
   // Debug: dump guest OS thread states during the match-load zone to find what
   // the loading threads wait on (BALLPAD_DEBUG_THREADS=1).
   if (s_debug_threads && g_blocks >= 2500000000ull &&
@@ -1178,8 +1178,45 @@ void ballpad_ios_host_step_frame(void) {
   }
 }
 
+void ballpad_ios_host_step_frame(void) { step_guest(); }
+
+void ballpad_ios_host_set_paused(bool paused) { g_paused.store(paused); }
+
+// B1: UI-thread work that must not run on the guest worker (the SDL window
+// attach touches UIKit scene/layer state). Called by the SwiftUI display timer
+// on the main thread.
+void ballpad_ios_host_pump_ui(void) {
+  if (g_sdl_window != nullptr)
+    ballpad_ios_host_attach_sdl_view(g_sdl_window);
+}
+
+void guest_loop() {
+  // Adaptive block budget: nudge g_frame_blocks toward a ~16.6 ms step slice.
+  constexpr unsigned long long kMinBlocks = 100000ull;
+  constexpr unsigned long long kMaxBlocksStep = 4000000ull;
+  while (!g_stop.load()) {
+    if (g_paused.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      continue;
+    }
+    const auto step_t0 = std::chrono::steady_clock::now();
+    step_guest();
+    const double stepMs = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - step_t0)
+                              .count();
+    if (stepMs < 13.0 && g_frame_blocks < kMaxBlocksStep)
+      g_frame_blocks += 50000ull;
+    else if (stepMs > 22.0 && g_frame_blocks > kMinBlocks)
+      g_frame_blocks -= 50000ull;
+  }
+}
+
 void ballpad_ios_host_stop(void) {
   g_stop = true;
+  if (g_guest_thread.joinable()) {
+    g_guest_thread.join();
+    g_guest_thread = std::thread();
+  }
   if (g_aurora_up) {
     dol_aurora_flush_gap_report();
     dol_aurora_shutdown();
@@ -1188,6 +1225,12 @@ void ballpad_ios_host_stop(void) {
   g_started = false;
   g_cpu_valid = false;
 }
+
+// B1: the guest worker thread fills the EFB backing while the SwiftUI display
+// timer reads it; guard the copy with a shared lock (also used by the aurora
+// readback fill hook in mmio.c).
+extern "C" void ballpad_ios_host_frame_lock(void) { g_frame_mutex.lock(); }
+extern "C" void ballpad_ios_host_frame_unlock(void) { g_frame_mutex.unlock(); }
 
 bool ballpad_ios_host_running(void) { return g_started.load(); }
 
@@ -1362,6 +1405,9 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
   const u32 fh = efb->height;
   if (fw == 0u || fh == 0u)
     return false;
+  // B1: the guest worker fills this buffer concurrently; snapshot it under the
+  // shared frame lock so a torn frame is never displayed.
+  ballpad_ios_host_frame_lock();
   // Copy ARGB -> RGBA tightly packed.
   for (u32 i = 0; i < fw * fh; ++i) {
     const u32 argb = efb->color[i];
@@ -1370,6 +1416,7 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
     rgba_out[i * 4u + 2u] = (uint8_t)(argb);
     rgba_out[i * 4u + 3u] = 0xFF;  // opaque: the EFB alpha channel is unused
   }
+  ballpad_ios_host_frame_unlock();
   *w = fw;
   *h = fh;
   return true;
