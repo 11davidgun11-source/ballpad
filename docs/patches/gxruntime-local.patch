@@ -347,18 +347,19 @@ index b09ef4d..ef253f2 100644
      }
      gfx::after_submit();
 diff --git a/graphics/aurora/lib/gfx/common.cpp b/graphics/aurora/lib/gfx/common.cpp
-index a64dd2d..cb57b69 100644
+index a64dd2d..cb9d4c9 100644
 --- a/graphics/aurora/lib/gfx/common.cpp
 +++ b/graphics/aurora/lib/gfx/common.cpp
-@@ -24,6 +24,7 @@
+@@ -24,6 +24,8 @@
  
  #include <atomic>
  #include <chrono>
 +#include <cstdio>
++#include <cstdlib>
  #include <deque>
  #include <mutex>
  #include <optional>
-@@ -434,6 +435,8 @@ static FramePacket& current_frame_packet() {
+@@ -434,6 +436,8 @@ static FramePacket& current_frame_packet() {
  
  static RenderPassList& current_render_passes() { return current_frame_packet().renderPasses; }
  
@@ -367,7 +368,7 @@ index a64dd2d..cb57b69 100644
  static StagingHighWater current_high_water(const FramePacket& frame) noexcept {
    return {
        .verts = static_cast<uint32_t>(frame.verts.size()),
-@@ -658,7 +661,8 @@ static void push_draw_command(ShaderDrawCommand data) {
+@@ -658,7 +662,8 @@ static void push_draw_command(ShaderDrawCommand data) {
  }
  
  Vec2<uint32_t> get_render_target_size() noexcept {
@@ -377,7 +378,7 @@ index a64dd2d..cb57b69 100644
      const auto& size = current_render_passes()[g_currentRenderPass].targetSize;
      return {size.width, size.height};
    }
-@@ -693,7 +697,13 @@ PipelineRef pipeline_ref(const clear::PipelineConfig& config) {
+@@ -693,7 +698,13 @@ PipelineRef pipeline_ref(const clear::PipelineConfig& config) {
  void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
                     Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat,
                     const EfbCopyFilterParams* filter) {
@@ -392,7 +393,7 @@ index a64dd2d..cb57b69 100644
    auto& prevPass = current_render_passes()[g_currentRenderPass];
    // GPNF §7: if plane capture armed for this copy, tag the pass for pre-resolve
    // EFB color + depth snapshot at encode time.
-@@ -1179,6 +1189,7 @@ void shutdown() {
+@@ -1179,6 +1190,7 @@ void shutdown() {
  static bool wait_for_staging_buffer(size_t slot) {
    ZoneScopedN("Wait for buffer map");
    map_staging_buffer(slot);
@@ -400,7 +401,7 @@ index a64dd2d..cb57b69 100644
    while (true) {
      const auto mappingState = s_mappingStates[slot].load(std::memory_order_acquire);
      if (mappingState == BufferMapState::Mapped) {
-@@ -1187,6 +1198,13 @@ static bool wait_for_staging_buffer(size_t slot) {
+@@ -1187,6 +1199,13 @@ static bool wait_for_staging_buffer(size_t slot) {
      if (mappingState == BufferMapState::Unmapped) {
        return false;
      }
@@ -414,7 +415,7 @@ index a64dd2d..cb57b69 100644
      wait_for_gpu_progress(std::chrono::milliseconds{1});
    }
  }
-@@ -1194,6 +1212,7 @@ static bool wait_for_staging_buffer(size_t slot) {
+@@ -1194,6 +1213,7 @@ static bool wait_for_staging_buffer(size_t slot) {
  static size_t acquire_frame_slot() {
    ZoneScopedN("Acquire frame slot");
    const auto waitStart = PresentClock::now();
@@ -422,12 +423,16 @@ index a64dd2d..cb57b69 100644
    while (true) {
      if (const auto slot = g_frameSlots.try_acquire()) {
        const auto waitDuration = PresentClock::now() - waitStart;
-@@ -1201,6 +1220,33 @@ static size_t acquire_frame_slot() {
+@@ -1201,6 +1221,37 @@ static size_t acquire_frame_slot() {
        TracyPlot("aurora: frameSlotWaitMs", waitMs);
        return *slot;
      }
 +    // Periodic state dump (diagnostics for the iPad slot-stall investigation).
-+    if (PresentClock::now() - s_lastStateDump > std::chrono::seconds{2}) {
++    // B4: env-gated (BALLPAD_SLOT_DUMP=1) so shipped runs stay quiet.
++    static const bool s_slotDump =
++        std::getenv("BALLPAD_SLOT_DUMP") != nullptr;
++    if (s_slotDump &&
++        PresentClock::now() - s_lastStateDump > std::chrono::seconds{2}) {
 +      s_lastStateDump = PresentClock::now();
 +      std::fprintf(stderr,
 +                   "[aurora] state free=%zu pending=%zu deque=%zu idle=%d "
@@ -456,7 +461,7 @@ index a64dd2d..cb57b69 100644
      wait_for_gpu_progress(std::chrono::microseconds{100});
    }
  }
-@@ -1223,6 +1269,9 @@ bool begin_frame() {
+@@ -1223,6 +1274,9 @@ bool begin_frame() {
    ZoneScoped;
    // pace_frame_start();
    const size_t frameSlot = acquire_frame_slot();
@@ -466,7 +471,7 @@ index a64dd2d..cb57b69 100644
    const auto stagingSlot = acquire_mapped_staging_buffer();
    if (!stagingSlot) {
      g_frameSlots.release(frameSlot);
-@@ -1756,8 +1805,16 @@ static void render_pass(const wgpu::RenderPassEncoder& pass, FramePacket& frame,
+@@ -1756,8 +1810,16 @@ static void render_pass(const wgpu::RenderPassEncoder& pass, FramePacket& frame,
      switch (cmd.type) {
      case CommandType::SetViewport: {
        const auto& vp = cmd.data.setViewport;
@@ -891,10 +896,18 @@ index cd65d98..20c4940 100644
  const TextureWithSampler& present_source() noexcept;
  wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source);
 diff --git a/graphics/aurora/lib/window.cpp b/graphics/aurora/lib/window.cpp
-index 74864c3..6a49729 100644
+index 74864c3..b81a663 100644
 --- a/graphics/aurora/lib/window.cpp
 +++ b/graphics/aurora/lib/window.cpp
-@@ -39,6 +39,10 @@ namespace {
+@@ -20,6 +20,7 @@
+ #include <SDL3/SDL_stdinc.h>
+ #include <SDL3/SDL_pixels.h>
+ #include <tracy/Tracy.hpp>
++#include <cstdlib>
+ 
+ #if defined(SDL_PLATFORM_ANDROID)
+ #include <jni.h>
+@@ -39,6 +40,10 @@ namespace {
  Module Log("aurora::window");
  
  SDL_Window* g_window;
@@ -905,7 +918,7 @@ index 74864c3..6a49729 100644
  SDL_Renderer* g_renderer;
  float g_frameBufferScale = 0.f;
  bool g_frameBufferAspectFit = false;
-@@ -262,6 +266,15 @@ const AuroraEvent* poll_events() {
+@@ -262,6 +267,15 @@ const AuroraEvent* poll_events() {
  
  bool create_window(AuroraBackend backend) {
    SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -921,7 +934,7 @@ index 74864c3..6a49729 100644
  #if TARGET_OS_IOS || TARGET_OS_TV
    flags |= SDL_WINDOW_FULLSCREEN;
  #else
-@@ -291,6 +304,9 @@ bool create_window(AuroraBackend backend) {
+@@ -291,6 +305,9 @@ bool create_window(AuroraBackend backend) {
    }
  
    const auto props = SDL_CreateProperties();
@@ -931,7 +944,7 @@ index 74864c3..6a49729 100644
    TRY(SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, g_config.appName), "Failed to set {}: {}",
        SDL_PROP_WINDOW_CREATE_TITLE_STRING, SDL_GetError());
    TRY(SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, posX), "Failed to set {}: {}",
-@@ -460,6 +476,14 @@ bool is_presentable() noexcept {
+@@ -460,6 +477,14 @@ bool is_presentable() noexcept {
  
  void set_surface_ready(bool ready) noexcept { g_surfaceReady.store(ready, std::memory_order_release); }
  
@@ -946,7 +959,7 @@ index 74864c3..6a49729 100644
  SurfaceLock::SurfaceLock() noexcept {
  #if defined(SDL_PLATFORM_ANDROID)
    Android_LockActivityMutex();
-@@ -566,3 +590,36 @@ extern "C" JNIEXPORT void JNICALL Java_org_libsdl_app_SDLSurface_auroraNativeSet
+@@ -566,3 +591,41 @@ extern "C" JNIEXPORT void JNICALL Java_org_libsdl_app_SDLSurface_auroraNativeSet
    aurora::window::set_surface_ready(ready == JNI_TRUE);
  }
  #endif
@@ -976,11 +989,16 @@ index 74864c3..6a49729 100644
 +extern "C" void ballpad_window_hide(void) { aurora::window::hide_sdl_window(); }
 +
 +extern "C" int ballpad_window_probe(void) {
-+  std::fprintf(stderr, "[ballpad-window] presentable=%d bg=%d surface_ready=%d window=%p\n",
-+               aurora::window::is_presentable() ? 1 : 0,
-+               aurora::window::g_backgrounded.load() ? 1 : 0,
-+               aurora::window::g_surfaceReady.load() ? 1 : 0,
-+               (void*)aurora::window::g_window);
++  // B4: the probe is diagnostic (window-attach investigation); keep the log
++  // env-gated so shipped runs are quiet (BALLPAD_WINDOW_PROBE=1 to re-enable).
++  if (std::getenv("BALLPAD_WINDOW_PROBE") != nullptr) {
++    std::fprintf(stderr,
++                 "[ballpad-window] presentable=%d bg=%d surface_ready=%d window=%p\n",
++                 aurora::window::is_presentable() ? 1 : 0,
++                 aurora::window::g_backgrounded.load() ? 1 : 0,
++                 aurora::window::g_surfaceReady.load() ? 1 : 0,
++                 (void*)aurora::window::g_window);
++  }
 +  return 0;
 +}
 diff --git a/graphics/aurora/lib/window.hpp b/graphics/aurora/lib/window.hpp
