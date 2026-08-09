@@ -77,8 +77,10 @@ struct OnboardingView: View {
         importing = true
         importError = nil
         let access = url.startAccessingSecurityScopedResource()
+        NSLog("[a2] import url=%@ access=%d", url.path, access ? 1 : 0)
         DispatchQueue.global(qos: .userInitiated).async {
             let ok = ballpad_ios_host_import_game(url.path)
+            NSLog("[a2] import done ok=%d", ok ? 1 : 0)
             if access {
                 url.stopAccessingSecurityScopedResource()
             }

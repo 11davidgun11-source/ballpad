@@ -178,10 +178,8 @@ struct SDLGameContainer: UIViewRepresentable {
 struct GameHostView: View {
     @StateObject private var settings = SettingsStore()
     @StateObject private var layout: LayoutStore
-    @State private var banner: String = "ballpad booting…"
     @State private var showMenu = false
     @State private var editMode = false
-    @State private var lastPad = "pad: idle"
     @State private var fps: Double = 0
 
     init() {
@@ -197,13 +195,7 @@ struct GameHostView: View {
                 .ignoresSafeArea()
             VStack {
                 HStack {
-                    Text(banner)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.white.opacity(0.85))
                     Spacer()
-                    Text(lastPad)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.green.opacity(0.9))
                     if settings.showFps {
                         Text(String(format: "%.0f fps", fps))
                             .font(.caption2.monospaced())
@@ -246,18 +238,10 @@ struct GameHostView: View {
                                 controlOpacity: settings.controlOpacity) { status in
                 var s = status
                 ballpad_pad_set(0, &s)
-                ballpad_runtime_frame()
-                let aOn = (s.button & UInt16(BALLPAD_BUTTON_A)) != 0
-                lastPad = "A:\(aOn ? 1 : 0) stick:\(s.stickX),\(s.stickY)"
             }
         }
         .statusBarHidden(true)
         .onAppear {
-            var cfg = BallpadRuntimeConfig(iso_path: nil, dol_path: nil, enable_runtime: 0)
-            _ = ballpad_runtime_init(&cfg)
-            if let cstr = ballpad_runtime_banner() {
-                banner = String(cString: cstr)
-            }
             Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
                 fps = ballpad_ios_host_fps()
             }
@@ -342,11 +326,6 @@ struct GameHostView: View {
                 s.triggerRight = 220
                 s.button = UInt16(BALLPAD_BUTTON_A) | UInt16(BALLPAD_BUTTON_B)
                 ballpad_pad_set(0, &s)
-                var out = BallPadStatus()
-                ballpad_pad_get(0, &out)
-                let ok = out.button == s.button && out.stickX == 100 &&
-                    out.stickY == -80 && out.triggerLeft == 255
-                log("multitouch stick=\(out.stickX),\(out.stickY) sub=\(out.substickX),\(out.substickY) L=\(out.triggerLeft) R=\(out.triggerRight) btn=0x\(String(out.button, radix: 16)) ok=\(ok)")
             }
         case "controls":
             // M5: sweep every GC control through the pad buffer, logging each.
