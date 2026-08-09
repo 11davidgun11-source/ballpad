@@ -206,6 +206,65 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   per-vertex decode loop (+ preserving the cross-draw N/B/T fallback from the
   cached last vertex).
 
+## 2026-08-08 — C1/C2: AttributeGraph cycle from GameController init (Bot 4)
+- Symptom: after adding GCController support, every launch produced
+  `AttributeGraph: cycle detected through attribute <N>` and the SwiftUI
+  window detached (container {{0,0},{0,0}}, windowNil=1) — the screen rendered
+  black even though the guest kept presenting frames (diag mean 87).
+- Root cause (bisected): touching the GameController framework — even just
+  `GCController.controllers()` / NotificationCenter observers for
+  GCControllerDidConnect — during SwiftUI view init on the iOS 26 simulator
+  triggers the same AttributeGraph cycle family as the touch-overlay
+  conditional-view bug. A third @StateObject with an inert init is fine; the
+  GC calls are the trigger.
+- Fix: defer ALL GameController setup 1.5 s after view init
+  (`DispatchQueue.main.asyncAfter`), after the window/layout settles. 0 cycles;
+  the overlay + game render normally.
+- Related: the iOS 26 simulator exposes a virtual MFi gamepad by default
+  (`GCController.controllers()` = 1, vendor "Gamepad", category MFi), so a
+  naive "hide overlay when a controller is connected" hides the touch overlay
+  on every simulator run and breaks touch testing. bellpad's overlay ignores
+  controllers for VISIBILITY on the simulator (`#if !TARGET_OS_SIMULATOR`)
+  while still merging input; Ballpad does the same.
+
+## 2026-08-08 — A3 iPad: the touch-match driver must be block-anchored (Bot 4)
+- Symptom: the phone-calibrated wall-clock TouchMatchTests failed on the iPad —
+  the guest reached 24.7B blocks in 8.7 min (~47M blocks/s avg vs the phone's
+  ~20M), so the presses landed on the wrong screens and cGame never left
+  state 1 (match clock 0/60000). The failure assert also probed the FPS label,
+  which is off by default on a fresh container.
+- Fix: the test now polls a test-only accessibility label
+  (BALLPAD_TEST_HOOKS=1; host exposes ballpad_ios_host_guest_blocks() +
+  ballpad_ios_host_game_state()) and presses the real overlay at the
+  autostart's proven guest-time anchors (1.28B/1.43B/1.49B/1.56B/2.18B/2.48B/
+  2.58B/2.88B, then D_LEFT+A x3 at 3.0B..6.6B), asserting cGame state 4.
+  Device-independent. PASS on the iPad in 197 s.
+- Also: the document picker's on-device location label is "On My iPhone" on
+  phones but "On My iPad" on tablets — the A2 test now matches "On My".
+
+## 2026-08-08 — B4: the remaining un-gated engine logs (Bot 4)
+- `[ballpad-window] presentable=...` (ballpad_window_probe, called every
+  2.5M guest blocks) printed 3373 lines in a 30 s iPad run, and the aurora
+  slot-state dump fired every 2 s under render backpressure. Both are now
+  env-gated (BALLPAD_WINDOW_PROBE, BALLPAD_SLOT_DUMP); shipped in-match logs
+  are down to the block-progress + perf lines only.
+- Main Thread Checker note: `aurora_backend_present` (called from the B1 guest
+  worker via notify_GXCopyDisp) polls SDL events + resizes the swapchain
+  (UIKit_GetWindowSizeInPixels -> [UIWindow screen]) on the background thread.
+  It works on the simulator (warnings only) but is a latent real-device crash
+  risk; the SDL present path would need its own main-thread hop for a device
+  build. Not gate-blocking (simulators are the DoD target).
+
+## 2026-08-08 — D2: debug tooling extraction (Bot 4)
+- Moved the guest task-run counters, 1M-block progress log, load-pc sampler,
+  SDL window probe, guest OS thread-state dumps (BALLPAD_DEBUG_THREADS), and
+  the EFB fill log + pixel poke test (BALLPAD_DEBUG_EFB / BALLPAD_EFB_POKE)
+  into host/src/ballpad_debug.cpp. The host keeps one cheap per-step hook;
+  diagnostics semantics are preserved except the task-run counters now sample
+  pc at step boundaries instead of per guest block (the pad-stall
+  investigation they served is concluded). Verified: quick-boot + in-match
+  unaffected; all moved diagnostics fire with their env vars.
+
 ## 2026-08-08 — Touch interface feedback: adopt bellpad's GC control design
 
 - **Symptom:** User: "the interface is terrible. use bellpad (which I put in
