@@ -178,6 +178,8 @@ struct SDLGameContainer: UIViewRepresentable {
 struct GameHostView: View {
     @StateObject private var settings = SettingsStore()
     @StateObject private var layout: LayoutStore
+    // C2: hardware controller state (auto-hides the touch overlay on connect).
+    @StateObject private var controller = ControllerManager()
     @State private var showMenu = false
     @State private var editMode = false
     @State private var fps: Double = 0
@@ -235,7 +237,8 @@ struct GameHostView: View {
             TouchControlSurface(store: layout,
                                 editMode: editMode,
                                 controlScale: CGFloat(settings.controlScale),
-                                controlOpacity: settings.controlOpacity) { status in
+                                controlOpacity: settings.controlOpacity,
+                                controllerConnected: controller.isConnected) { status in
                 var s = status
                 ballpad_pad_set(0, &s)
             }

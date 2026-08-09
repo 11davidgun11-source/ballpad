@@ -5,6 +5,12 @@ struct TouchControlSurface: View {
     var editMode: Bool = false
     var controlScale: CGFloat = 1.0
     var controlOpacity: Double = 0.76
+    // C2: a hardware controller is connected -> hide the touch overlay. Folded
+    // into the per-control opacity value (the documented-safe pattern): this
+    // view must stay ONE unconditional structure with all differentiation as
+    // value expressions (iPadOS 26 AttributeGraph cycle otherwise detaches
+    // the hosting window).
+    var controllerConnected: Bool = false
     var onPadChanged: (BallPadStatus) -> Void
 
     @State private var buttons: Set<ControlID> = []
@@ -39,7 +45,7 @@ struct TouchControlSurface: View {
             .onChange(of: lTrigger) { _, _ in emit() }
             .onChange(of: rTrigger) { _, _ in emit() }
         }
-        .allowsHitTesting(true)
+        .allowsHitTesting(!controllerConnected)
     }
 
     // Unified control view: ONE unconditional structure for every control.
@@ -66,7 +72,7 @@ struct TouchControlSurface: View {
         let on = isActive(node.id)
         let vec = activeVec(node.id)
         let trigVal = triggerValue(node.id)
-        let hidden = editMode == false && node.hidden
+        let hidden = controllerConnected || (editMode == false && node.hidden)
         let shapeOpacity = on ? min(0.95, controlOpacity + 0.2) : controlOpacity
         let labelSize = min(rect.width, rect.height) * 0.30
         return ZStack {
