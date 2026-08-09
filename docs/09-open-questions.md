@@ -265,6 +265,22 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   investigation they served is concluded). Verified: quick-boot + in-match
   unaffected; all moved diagnostics fire with their env vars.
 
+## 2026-08-09 — First launch after simctl install can render black (rare)
+- Symptom: the very first launch after `xcrun simctl install` (freshly booted
+  sim, quick-boot savestate present) showed the touch overlay on a black
+  screen — `[ballpad] no frame yet` forever while the guest advanced normally
+  (blocks 6.82B -> 8.34B, in-match throughput). The EFB software readback
+  never filled (fill_count stayed 0).
+- Diff vs a working launch: the failing run lacked the engine's
+  `[efb-scale] set scale=2 fb=...` line — the EFB target configuration landed
+  before the SDL/aurora surface was ready, and presents were skipped until the
+  surface attached (which never re-armed the readback in that session).
+- Fallback: terminate + relaunch recovers reliably (2/2 subsequent launches
+  displayed first-frame within ~1 s, diag mean 87). Logged here as a known
+  first-launch-after-install race; not reproduced on plain relaunches. If it
+  recurs, re-arm the EFB readback on surface-ready (ballpad_window_
+  force_presentable) instead of only at start().
+
 ## 2026-08-08 — Touch interface feedback: adopt bellpad's GC control design
 
 - **Symptom:** User: "the interface is terrible. use bellpad (which I put in
