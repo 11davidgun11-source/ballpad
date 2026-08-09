@@ -107,6 +107,14 @@ bool ballpad_ios_host_quickbooted(void);
 bool ballpad_ios_host_game_files_present(void);
 bool ballpad_ios_host_import_game(const char* iso_path);
 
+/* A3 test hook: guest progress for the XCUITest touch-match driver. The guest
+ * advances a platform-independent block count (g_blocks); the test drives the
+ * real overlay at the same block anchors the autostart uses, so it works on
+ * any simulator regardless of wall-clock throughput. game_state() returns the
+ * guest cGame state (4 = in-match, -1 = no game). */
+unsigned long long ballpad_ios_host_guest_blocks(void);
+long long ballpad_ios_host_game_state(void);
+
 #ifdef __cplusplus
 }
 #endif

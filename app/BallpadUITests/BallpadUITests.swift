@@ -34,11 +34,12 @@ final class BallpadUITests: XCTestCase {
             if browse.waitForExistence(timeout: 8) {
                 browse.tap()
             }
-            let onMyIPhone = app.descendants(matching: .any)
-                .matching(NSPredicate(format: "label CONTAINS %@", "On My iPhone"))
+            // "On My iPhone" (phone) / "On My iPad" (tablet) — match both.
+            let onMyDevice = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label CONTAINS %@", "On My"))
                 .firstMatch
-            if onMyIPhone.waitForExistence(timeout: 8) {
-                onMyIPhone.tap()
+            if onMyDevice.waitForExistence(timeout: 8) {
+                onMyDevice.tap()
             }
         }
         XCTAssertTrue(isoQuery.waitForExistence(timeout: 20),
@@ -47,10 +48,9 @@ final class BallpadUITests: XCTestCase {
 
         // The import runs (1.4 GB copy + DOL extract), then the onboarding
         // switches to the game view. The host boots the guest; wait for the
-        // boot banner/FPS label to appear.
-        let hostProbe = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS %@", "ballpad"))
-            .firstMatch
+        // game view's ⋯ menu button to appear (C1 removed the old
+        // "[ballpad] runtime init" banner the test used to probe for).
+        let hostProbe = app.buttons["⋯"].firstMatch
         XCTAssertTrue(hostProbe.waitForExistence(timeout: 180),
                       "game view after import (host booted)")
         XCTAssertFalse(app.buttons["Import Game"].exists,

@@ -183,6 +183,7 @@ struct GameHostView: View {
     @State private var showMenu = false
     @State private var editMode = false
     @State private var fps: Double = 0
+    @State private var guestInfo = ""
 
     init() {
         let idiom = UIDevice.current.userInterfaceIdiom
@@ -198,6 +199,15 @@ struct GameHostView: View {
             VStack {
                 HStack {
                     Spacer()
+                    // A3 test hook (BALLPAD_TEST_HOOKS=1): the guest block
+                    // count + cGame state as an accessibility label the
+                    // XCUITest polls to drive the overlay at block anchors.
+                    if ProcessInfo.processInfo.environment["BALLPAD_TEST_HOOKS"] == "1" {
+                        Text(guestInfo)
+                            .font(.system(size: 8).monospaced())
+                            .foregroundStyle(.white.opacity(0.25))
+                            .accessibilityIdentifier("guestBlocks")
+                    }
                     if settings.showFps {
                         Text(String(format: "%.0f fps", fps))
                             .font(.caption2.monospaced())
@@ -247,6 +257,7 @@ struct GameHostView: View {
         .onAppear {
             Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
                 fps = ballpad_ios_host_fps()
+                guestInfo = "\(ballpad_ios_host_guest_blocks()) \(ballpad_ios_host_game_state())"
             }
             runUITest()
         }
