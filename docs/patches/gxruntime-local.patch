@@ -999,6 +999,18 @@ index b741e17..762bc91 100644
  void set_title(const char* title);
  void set_fullscreen(bool fullscreen);
  bool get_fullscreen();
+diff --git a/graphics/gxcore/CMakeLists.txt b/graphics/gxcore/CMakeLists.txt
+index 8d60494..f5a7cbd 100644
+--- a/graphics/gxcore/CMakeLists.txt
++++ b/graphics/gxcore/CMakeLists.txt
+@@ -29,6 +29,7 @@ target_include_directories(gxruntime_gxcore
+ target_link_libraries(gxruntime_gxcore
+     PUBLIC
+         GXRuntime::aurora_render_sink
++        xxhash
+ )
+ 
+ if(BUILD_TESTING)
 diff --git a/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp b/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp
 index 4d14391..b07c92b 100644
 --- a/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp
@@ -1036,6 +1048,263 @@ index 4d14391..b07c92b 100644
    const GapCounters& counters() const { return counters_; }
    GapCounters& counters() { return counters_; }
    const gxruntime::aurora_recomp::ConsumingAuroraRenderSink& consumer() const {
+diff --git a/graphics/gxcore/src/plan.cpp b/graphics/gxcore/src/plan.cpp
+index c3d1557..6e9b4e5 100644
+--- a/graphics/gxcore/src/plan.cpp
++++ b/graphics/gxcore/src/plan.cpp
+@@ -3,7 +3,13 @@
+ 
+ #include "gxruntime/gxcore/gxcore.hpp"
+ 
++#include <chrono>
+ #include <cstring>
++#include <mutex>
++#include <unordered_map>
++#include <vector>
++
++#include <xxhash.h>
+ #include <limits>
+ 
+ // DrawPlan construction: vertex layout/decode (Dolphin VertexLoader semantics),
+@@ -424,6 +430,36 @@ void identity_rows(float rows[3][4]) {
+   rows[2][2] = 1.f;
+ }
+ 
++// B3: vertex-decode cache. The match scene re-submits the same draw payloads
++// every frame; the decoded interleaved vertex buffers are identical. Cache
++// them keyed by (payload content, decode config, indexed-array content) so
++// repeated draws skip the per-vertex decode. Simple full-clears evict.
++struct DecodeCacheKey {
++  std::uint64_t a = 0;
++  std::uint64_t b = 0;
++  bool operator==(const DecodeCacheKey& o) const {
++    return a == o.a && b == o.b;
++  }
++};
++struct DecodeCacheKeyHash {
++  std::size_t operator()(const DecodeCacheKey& k) const {
++    return static_cast<std::size_t>(k.a ^ (k.b * 0x9E3779B97F4A7C15ull));
++  }
++};
++struct DecodeCacheEntry {
++  std::uint32_t vertex_count = 0;
++  std::vector<float> vertices;
++};
++std::mutex g_decode_cache_mutex;
++std::unordered_map<DecodeCacheKey, DecodeCacheEntry, DecodeCacheKeyHash>
++    g_decode_cache;
++constexpr std::size_t kDecodeCacheMax = 4096u;
++
++static void push_u32(std::vector<std::uint8_t>& v, std::uint32_t x) {
++  for (unsigned i = 0; i < 4u; ++i)
++    v.push_back(static_cast<std::uint8_t>(x >> (8u * i)));
++}
++
+ } // namespace
+ 
+ DrawPlan GxCoreState::build_draw_plan(const ar::ConsumedDraw& draw,
+@@ -431,6 +467,10 @@ DrawPlan GxCoreState::build_draw_plan(const ar::ConsumedDraw& draw,
+                                       CachedVertexAttrs* cached,
+                                       CachedZSlope* zslope) const {
+   DrawPlan plan;
++  // B3 diagnostic: per-draw decode cost (BALLPAD_DRAW_TIMER=1).
++  static const bool s_timer = std::getenv("BALLPAD_DRAW_TIMER") != nullptr;
++  const auto t0 = s_timer ? std::chrono::steady_clock::now()
++                          : std::chrono::steady_clock::time_point{};
+   auto skip = [&](const char* reason) {
+     plan.ok = false;
+     plan.skip_reason = reason;
+@@ -483,8 +523,79 @@ DrawPlan GxCoreState::build_draw_plan(const ar::ConsumedDraw& draw,
+     ++counters.vertex_decode_failures;
+     return skip("walk stride != frontend stride");
+   }
+-  // Shader key.
++
++  // Decode-cache key: the payload bytes (indices/direct data) + the decode
++  // config (walk entries, vtx fmt) + the indexed-array content the payload
++  // references. The key must cover every input the decode reads.
++  const std::uint64_t payload_hash =
++      XXH3_64bits(draw.vertex_payload.data(), draw.vertex_payload.size());
++  std::vector<std::uint8_t> cfg;
++  cfg.reserve(128);
++  cfg.push_back(static_cast<std::uint8_t>(draw.vtx_fmt));
++  push_u32(cfg, walk.vertex_size);
++  push_u32(cfg, walk.entry_count);
++  for (std::uint32_t ei = 0; ei < walk.entry_count; ++ei) {
++    const WalkEntry& e = walk.entries[ei];
++    cfg.push_back(static_cast<std::uint8_t>(e.kind));
++    cfg.push_back(e.attr);
++    cfg.push_back(e.vcd_type);
++    cfg.push_back(e.format);
++    cfg.push_back(e.count);
++    cfg.push_back(e.frac);
++    cfg.push_back(e.out_slot);
++    push_u32(cfg, e.element_size);
++  }
++  for (std::uint32_t ai = 0; ai < draw.array_input_count; ++ai) {
++    const ar::ConsumedArrayInput& array = draw.arrays[ai];
++    cfg.push_back(static_cast<std::uint8_t>(array.attr));
++    push_u32(cfg, array.base);
++    push_u32(cfg, array.stride);
++    push_u32(cfg, array.span_size);
++    if (array.host_data != nullptr && array.span_size != 0u)
++      push_u32(cfg, static_cast<std::uint32_t>(
++                        XXH3_64bits(array.host_data, array.span_size)));
++    else
++      push_u32(cfg, 0u);
++  }
++  const DecodeCacheKey cache_key{
++      payload_hash, XXH3_64bits(cfg.data(), cfg.size())};
++
++  // Shader key (built on the decode-miss path; needed after the decode for
++  // the pipeline config, so it lives at function scope).
+   ShaderKey& key = plan.pipeline.shader;
++  VertexShaderConstants& c = plan.constants;
++  bool decode_hit = false;
++  {
++    std::lock_guard<std::mutex> lock(g_decode_cache_mutex);
++    auto it = g_decode_cache.find(cache_key);
++    if (it != g_decode_cache.end()) {
++      plan.vertex_count = it->second.vertex_count;
++      plan.vertices = it->second.vertices;
++      decode_hit = true;
++    }
++  }
++  if (decode_hit) {
++    // Preserve the cross-draw N/B/T fallback semantics from the cached
++    // last vertex (the decode loop would have updated `cached`).
++    if (cached != nullptr && plan.vertex_count > 0u) {
++      const float* last =
++          plan.vertices.data() +
++          static_cast<std::size_t>(plan.vertex_count - 1u) * kVertexFloats;
++      if (walk.has_normal)
++        for (std::uint32_t k = 0; k < 3u; ++k)
++          cached->normal[k] = last[kVertexNormalOffset / 4u + k];
++      if (walk.has_nbt) {
++        for (std::uint32_t k = 0; k < 3u; ++k) {
++          cached->binormal[k] = last[kVertexBinormalOffset / 4u + k];
++          cached->tangent[k] = last[kVertexTangentOffset / 4u + k];
++        }
++      }
++    }
++  } else {
++    // Cache miss: run the full decode below.
++  }
++
++  // Shader key (always: the pipeline config is needed for the plan).
+   key.flat_shading =
+       static_cast<std::uint8_t>(bits(gen_mode, 1, 8) != 0u ? 1u : 0u);
+   const std::uint32_t xf_numtexgens_reg = 0x103Fu - 0x1018u;
+@@ -852,6 +963,7 @@ DrawPlan GxCoreState::build_draw_plan(const ar::ConsumedDraw& draw,
+   }
+ 
+   // Vertex decode to the fixed layout.
++  if (!decode_hit) {
+   plan.vertex_count = draw.vertex_count;
+   plan.vertices.assign(
+       static_cast<std::size_t>(draw.vertex_count) * kVertexFloats, 0.f);
+@@ -1004,8 +1116,64 @@ DrawPlan GxCoreState::build_draw_plan(const ar::ConsumedDraw& draw,
+                 sizeof texmtxidx_packed);
+   }
+ 
++  // Decode-miss only: advance the cross-draw N/B/T fallback from the decoded
++  // last vertex, and store the decoded vertices for the next submission.
++  if (cached != nullptr) {
++    for (std::uint32_t k = 0; k < 3u; ++k) {
++      c.cached_normal[k] = cached->normal[k];
++      c.cached_tangent[k] = cached->tangent[k];
++      c.cached_binormal[k] = cached->binormal[k];
++    }
++    if (plan.vertex_count > 0u) {
++      const float* last =
++          plan.vertices.data() +
++          static_cast<std::size_t>(plan.vertex_count - 1u) * kVertexFloats;
++      if (walk.has_normal)
++        for (std::uint32_t k = 0; k < 3u; ++k)
++          cached->normal[k] = last[kVertexNormalOffset / 4u + k];
++      if (walk.has_nbt) {
++        for (std::uint32_t k = 0; k < 3u; ++k) {
++          cached->binormal[k] = last[kVertexBinormalOffset / 4u + k];
++          cached->tangent[k] = last[kVertexTangentOffset / 4u + k];
++        }
++      }
++    }
++  }
++  if (s_timer) {
++    static unsigned long long s_draws = 0;
++    static auto s_t_total = std::chrono::steady_clock::duration::zero();
++    static unsigned long long s_vert_bytes = 0;
++    static unsigned long long s_array_bytes = 0;
++    ++s_draws;
++    s_t_total += std::chrono::steady_clock::now() - t0;
++    s_vert_bytes +=
++        (unsigned long long)plan.vertex_count * kVertexFloats * 4u;
++    for (std::uint32_t ai = 0; ai < draw.array_input_count; ++ai)
++      s_array_bytes += draw.arrays[ai].span_size;
++    if ((s_draws % 200ull) == 0ull) {
++      const double ms =
++          std::chrono::duration<double, std::milli>(s_t_total).count();
++      std::fprintf(stderr,
++                   "[drawtime] draws=%llu totalMs=%.1f avgUs=%.1f "
++                   "decodedMB=%llu arrayMB=%llu\n",
++                   (unsigned long long)s_draws, ms,
++                   ms * 1000.0 / (double)s_draws,
++                   (unsigned long long)(s_vert_bytes / (1024u * 1024u)),
++                   (unsigned long long)(s_array_bytes / (1024u * 1024u)));
++    }
++  }
++  {
++    std::lock_guard<std::mutex> lock(g_decode_cache_mutex);
++    if (g_decode_cache.size() >= kDecodeCacheMax)
++      g_decode_cache.clear();
++    DecodeCacheEntry entry;
++    entry.vertex_count = plan.vertex_count;
++    entry.vertices = plan.vertices;
++    g_decode_cache[cache_key] = std::move(entry);
++  }
++  }
++
+   // Uniforms.
+-  VertexShaderConstants& c = plan.constants;
+   for (std::uint32_t row = 0; row < 63u; ++row)
+     (void)load_matrix_row(draw, row, c.transformmatrices[row]);
+   const std::uint32_t pn_row = draw.current_pn_matrix * 3u;
+@@ -1471,35 +1639,6 @@ DrawPlan GxCoreState::build_draw_plan(const ar::ConsumedDraw& draw,
+                         plan.pixel_constants.zbias[1]);
+   }
+ 
+-  // Cached N/B/T fallback (Dolphin VertexLoaderManager normal_cache /
+-  // ConstantManager cached_normal). Expose the incoming cross-draw cache in the
+-  // uniform so a draw whose format omits an attribute reads the last-decoded
+-  // vertex's value instead of a zero input (normalize(0) = NaN). Then, if THIS
+-  // draw carried the attribute, advance the cache to its LAST vertex's raw
+-  // object-space value (Dolphin writes the cache on the loader's m_remaining==0
+-  // vertex). N/B/T are appended in the fixed vertex layout at these float slots.
+-  if (cached != nullptr) {
+-    for (std::uint32_t k = 0; k < 3u; ++k) {
+-      c.cached_normal[k] = cached->normal[k];
+-      c.cached_tangent[k] = cached->tangent[k];
+-      c.cached_binormal[k] = cached->binormal[k];
+-    }
+-    if (plan.vertex_count > 0u) {
+-      const float* last =
+-          plan.vertices.data() +
+-          static_cast<std::size_t>(plan.vertex_count - 1u) * kVertexFloats;
+-      if (walk.has_normal)
+-        for (std::uint32_t k = 0; k < 3u; ++k)
+-          cached->normal[k] = last[kVertexNormalOffset / 4u + k];
+-      if (walk.has_nbt) {
+-        for (std::uint32_t k = 0; k < 3u; ++k) {
+-          cached->binormal[k] = last[kVertexBinormalOffset / 4u + k];
+-          cached->tangent[k] = last[kVertexTangentOffset / 4u + k];
+-        }
+-      }
+-    }
+-  }
+-
+   // U6: CPU-side line/point expansion into triangle lists (WebGPU has no
+   // geometry shaders). Dolphin Software/Clipper ProcessLine/ProcessPoint
+   // geometry + LPSize (BP 0x22) + SU_SSIZE line/point texcoord-offset bits.
 diff --git a/graphics/gxcore/src/state.cpp b/graphics/gxcore/src/state.cpp
 index 10b1a33..ff9d09a 100644
 --- a/graphics/gxcore/src/state.cpp

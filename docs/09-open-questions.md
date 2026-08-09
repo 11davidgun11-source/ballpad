@@ -184,6 +184,28 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   recorded manual session. The overlay's assembleStatus() merge is code-
   verified; the pad-set log proves each control maps to the right bit.
 
+## 2026-08-08 — B3: vertex-decode cache; the in-match fps gap is guest-bound (Bot 4)
+- Implemented a draw-plan vertex-decode cache: plans are keyed by XXH3(payload)
+  + the decode-config (walk entries, vtx fmt, array identities) + XXH3 of the
+  indexed-array spans (~2.6 MB/frame at ~30 GB/s = negligible); repeated
+  in-match draws reuse the decoded vertex buffers (bounded 4096-entry cache,
+  full-clear eviction, mutex-guarded).
+- Measured (BALLPAD_DRAW_TIMER, phone, same quick-boot in-match scene):
+  draw-plan build 15.1 -> 8.1 us/draw (~47%; ~1.9 ms/frame saved).
+- BUT the in-match fps is guest-CPU-bound, NOT render-bound: BALLPAD_PERF_LOG
+  shows stepMs 25.0 and ~14M blocks/s in-match; 700K blocks/frame -> ~20 fps
+  ceiling with or without the cache (presents 30/1.5 s both ways). The docs'
+  "add a few fps" expectation assumed the decode was a bigger frame share; it
+  is ~4% of the 50 ms frame. Written, measured explanation (the gate's OR
+  clause): reaching 30 fps needs the guest ~50% faster, unavailable on the
+  simulator.
+- First-cut hazard: skipping the whole decode block on a cache hit skipped the
+  uniform/viewport/texgen building too -> zero constants -> a NULL bind-group
+  layout SIGSEGV in the Dawn Metal encode. Fixed by running the shader key,
+  pipeline, uniforms, viewport and texgen unconditionally and skipping only the
+  per-vertex decode loop (+ preserving the cross-draw N/B/T fallback from the
+  cached last vertex).
+
 ## 2026-08-08 — Touch interface feedback: adopt bellpad's GC control design
 
 - **Symptom:** User: "the interface is terrible. use bellpad (which I put in

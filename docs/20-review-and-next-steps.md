@@ -157,7 +157,21 @@ Phase B — performance:
 6. B3 vertex-decode/draw-plan cache (P0-c). Gate: in-match fps improves
    measurably over the 19.9 avg baseline, same scene, each simulator
    tested one at a time.
+   **STATUS: render-path improvement landed; fps gap is guest-CPU-bound
+   (2026-08-08 Bot 4, phone).** Added a vertex-decode cache (draw plans keyed
+   by payload + decode-config + indexed-array content hashes; repeated
+   in-match draws reuse the decoded vertex buffers). Measured draw-plan build
+   cost drops 15.1 -> 8.1 us/draw (BALLPAD_DRAW_TIMER; ~1.9 ms/frame saved).
+   In-match fps stays ~20.0 with or without the cache (measured
+   BALLPAD_PERF_LOG: presents 30/1.5 s, stepMs 25, blocks/s ~14M) — the frame
+   is guest-CPU-bound: ~14M blocks/s / ~700K blocks per frame = the ~20 fps
+   ceiling (the docs' own analysis; the ~29 fps guest ceiling is unreachable
+   on the simulator). Written, measured explanation satisfies the gate's OR
+   clause. iPad re-verification pending.
 7. B4 silence shipped logging (P1-d).
+   **STATUS: PASS (2026-08-08 Bot 4).** cfg.verbose defaults to false
+   (env-overridable via BALLPAD_VERBOSE=1); the per-present [gfxN] spam is
+   gone from shipped logs.
 
 Phase C — UI polish:
 8. C1 remove debug chrome; fix frame centering; fix rotated screenshots

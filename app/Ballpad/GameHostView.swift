@@ -63,7 +63,10 @@ struct SDLGameContainer: UIViewRepresentable {
             cfg.dol_path = nil
             cfg.card_path = nil
             cfg.enable_audio = false
-            cfg.verbose = true
+            // B4: ship quiet. The per-present [gfxN] log spam comes from
+            // cfg.verbose (info_logging/graphics_logging in Aurora). Keep it
+            // env-overridable for diagnostics (BALLPAD_VERBOSE=1).
+            cfg.verbose = ProcessInfo.processInfo.environment["BALLPAD_VERBOSE"] == "1"
             // M10: apply the persisted EFB supersample scale before boot so the
             // first EFB target creation uses it.
             ballpad_ios_host_set_efb_scale(Int32(renderScale))
