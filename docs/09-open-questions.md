@@ -281,6 +281,28 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   recurs, re-arm the EFB readback on surface-ready (ballpad_window_
   force_presentable) instead of only at start().
 
+## 2026-08-09 — Match end goes black: post-match screens miss the EFB readback
+- Symptom (user-visible): play a match and at full time the display goes
+  black — the touch overlay, FPS label and ⋯ menu stay visible but the game
+  area is all zeros (diag mean 179->163->137->0 while the guest keeps running).
+- Evidence (watch run with BALLPAD_DEBUG_THREADS + TEST_HOOKS): the game clock
+  stops at 300.0 and cGame moves state=4 -> state=3 exactly when diag mean hits
+  0; state stays 3 and the frame stays black (observed 4+ minutes after). The
+  game is on the post-match results/trophy flow, which renders via a path that
+  never lands in the EFB present-source the iOS host reads back.
+- This is the failure the docs predicted (docs/17: "XFB path unused; product
+  presents via EFB-direct... if text disappears on some screen, re-check the
+  Virtual-XFB/YUYV path"). In-match HUD renders (diag 87); the results screen
+  is 2D-heavy and apparently goes through the XFB/VI compositor instead of the
+  EFB.
+- Open question: does a FRESH boot (no quickboot) handle the post-match screen?
+  The quickboot restore desyncs the shadow frontend (F1 class); a fresh boot
+  re-establishes the full GX state and may present the results screen correctly.
+  Next step if this is user-important: check draw counts on the results screen
+  (BALLPAD_DRAW_TIMER / gxcore draw log); if ~0 draws, the screen is XFB-only
+  and the iOS host needs the Virtual-XFB readback enabled for it (the E7
+  YUYV->RAM encode was disabled for perf; could be re-armed selectively).
+
 ## 2026-08-08 — Touch interface feedback: adopt bellpad's GC control design
 
 - **Symptom:** User: "the interface is terrible. use bellpad (which I put in
