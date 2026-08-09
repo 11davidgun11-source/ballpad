@@ -790,11 +790,18 @@ static void step_guest(void) {
     static unsigned long long s_auto_hold_start = 0;
     const AutoStep& st = kAutoSteps[s_auto_phase < kAutoCount ? s_auto_phase : kAutoCount - 1];
     if (s_auto_phase >= kAutoCount) {
-      // Done: keep the pad neutral.
-      BallPadStatus s{};
-      ballpad_pad_get(0, &s);
-      s.button = 0; s.stickX = 0; s.stickY = 0; s.err = 0;
-      ballpad_pad_set(0, &s);
+      // Done: release the pad ONCE (the last drive step holds a button). It
+      // must not keep zeroing every step — that would clobber real user input
+      // within one guest step (~17 ms), making the game unresponsive for the
+      // rest of the session (found 2026-08-09 while demoing a fresh boot).
+      static bool s_auto_released = false;
+      if (!s_auto_released) {
+        s_auto_released = true;
+        BallPadStatus s{};
+        ballpad_pad_get(0, &s);
+        s.button = 0; s.stickX = 0; s.stickY = 0; s.err = 0;
+        ballpad_pad_set(0, &s);
+      }
     } else {
       BallPadStatus s{};
       s.err = 0;
