@@ -303,6 +303,23 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   and the iOS host needs the Virtual-XFB readback enabled for it (the E7
   YUYV->RAM encode was disabled for perf; could be re-armed selectively).
 
+## 2026-08-09 — RESOLVED (direction): the match-end black is quickboot-specific
+- Follow-up: a FRESH boot (BALLPAD_NO_QUICKBOOT=1 + autostart) through the same
+  match end renders the post-match trophy scene correctly (diag mean 44-118,
+  screenshot work/tmp/fresh-postmatch.png — dim 3D platforming scene with the
+  Mario character; "5 fps" heavy scene). The quickboot-restored session goes
+  black/frozen at the same point (diag 0 or fills stop; cGame 4->3, clock 300).
+- Conclusion: the savestate restore desyncs the shadow renderer for the
+  post-match scene transition (the F1 dark-frame class: restored frontend/
+  gxcore state is stale for the NEW scene, whose GX setup apparently does not
+  fully re-emit the pipeline state the way the match scene setup does).
+- Fix direction (if pursued): compare the frontend/gxcore state at the
+  post-match scene between fresh and restored sessions; likely the renderer
+  needs to invalidate its applied BP/TEV/pipeline state on a scene-load signal
+  (or the savestate needs to capture/clear the renderer "state is set" flags
+  so the next scene re-emits fully). Workaround for user demos: fresh boot
+  (no quickboot) plays a full match including the post-match screens.
+
 ## 2026-08-08 — Touch interface feedback: adopt bellpad's GC control design
 
 - **Symptom:** User: "the interface is terrible. use bellpad (which I put in
