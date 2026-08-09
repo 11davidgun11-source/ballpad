@@ -162,6 +162,28 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   leading $HOME so tests can use "$HOME/Documents/import.log" (the container
   UUID changes on every test reinstall).
 
+## 2026-08-08 — A3: real-touch M3 match start; overlay gesture bug fixed (Bot 4)
+- The touch overlay had a REAL product bug: each control's DragGesture was
+  attached AFTER .position(), so the gesture's hit area covered the whole
+  container — any touch anywhere fired the last control's gesture (a press on
+  "A" produced D_RIGHT=0x0002). Fixed by reordering
+  frame -> contentShape -> gesture -> position; the pad-set log now shows the
+  correct bits (A=0x0100, D-pad 0x0001/2/4/8).
+- M3 (start a match with touch only) PASSES via an XCUITest driving the real
+  overlay: A taps + D-pad presses navigate health -> memcard -> title -> main
+  menu -> captains -> LIVE MATCH (build/proofs/a3-touch-inmatch.png; log:
+  cGame state=2, gameClock advancing, diag mean 90-104). Timing is wall-clock
+  mapped from the autostart's block anchors at ~20M blocks/s; the exact
+  anchor timings (A@65/72/79/110/129/145 s etc.) were required — off-by-a-few
+  seconds strands the flow on SCENE_SHOULD_LOAD_OR_SAVE (0x35) or
+  SCENE_CHOOSE_CAPTAINS (0x08).
+- M6 (multi-touch merged in one sample) is NOT automatable with XCUITest:
+  events are main-thread serialized and no multi-touch API exists. A real
+  two-finger gesture (Simulator Option+drag) reaches the overlay (the stick's
+  gesture fired), but placing two fingers on different controls requires a
+  recorded manual session. The overlay's assembleStatus() merge is code-
+  verified; the pad-set log proves each control maps to the right bit.
+
 ## 2026-08-08 — Touch interface feedback: adopt bellpad's GC control design
 
 - **Symptom:** User: "the interface is terrible. use bellpad (which I put in

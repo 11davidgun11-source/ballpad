@@ -1,4 +1,6 @@
 #include "ballpad_pad.h"
+#include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -17,6 +19,21 @@ static void ensure_init(void) {
 void ballpad_pad_set(int port, const BallPadStatus* status) {
   ensure_init();
   if (port < 0 || port > 3 || status == NULL) return;
+  static int s_pad_log = -1;
+  if (s_pad_log < 0)
+    s_pad_log = getenv("BALLPAD_PAD_LOG") != NULL ? 1 : 0;
+  if (s_pad_log) {
+    static BallPadStatus s_last;
+    static bool s_last_valid = false;
+    if (!s_last_valid || memcmp(&s_last, status, sizeof s_last) != 0) {
+      s_last = *status;
+      s_last_valid = true;
+      fprintf(stderr, "[pad-set] btn=0x%04X stick=%d,%d c=%d,%d L=%u R=%u err=%d\n",
+              status->button, status->stickX, status->stickY,
+              status->substickX, status->substickY,
+              status->triggerLeft, status->triggerRight, status->err);
+    }
+  }
   g_pads[port] = *status;
 }
 

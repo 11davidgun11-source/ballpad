@@ -131,11 +131,16 @@ struct TouchControlSurface: View {
                 .opacity(editMode ? 1 : (isStick ? 0.85 : 1))
         }
         .frame(width: rect.width, height: rect.height)
-        .position(x: rect.midX, y: rect.midY)
-        .opacity(hidden ? 0 : 1)
         .contentShape(Circle())
         .gesture(DragGesture(minimumDistance: 0)
             .onChanged { value in
+                if ProcessInfo.processInfo.environment["BALLPAD_TOUCH_LOG"] != nil {
+                    NSLog("[touch] %@ loc=%.0f,%.0f rect=%.0f,%.0f %.0fx%.0f start=%.0f,%.0f",
+                          node.id.rawValue,
+                          value.location.x, value.location.y,
+                          rect.minX, rect.minY, rect.width, rect.height,
+                          value.startLocation.x, value.startLocation.y)
+                }
                 if editMode {
                     store.move(id: node.id,
                                to: CGPoint(x: rect.midX + value.translation.width,
@@ -169,6 +174,11 @@ struct TouchControlSurface: View {
                 }
             }
         )
+        // Position AFTER the frame + gesture so the drag hit area stays
+        // bounded to the control (a touch anywhere on the container used to
+        // fire every control's gesture — A3 finding, docs/09 2026-08-08).
+        .position(x: rect.midX, y: rect.midY)
+        .opacity(hidden ? 0 : 1)
     }
 
     private func isActive(_ id: ControlID) -> Bool {

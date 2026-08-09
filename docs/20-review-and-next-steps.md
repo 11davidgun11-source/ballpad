@@ -132,6 +132,20 @@ Phase A — usage fundamentals (do these first):
 3. A3 real-touch verification (3-a). Gate: M3/M6 re-proven through the
    actual overlay (XCUITest or a recorded manual session), not buffer
    injection.
+   **STATUS: M3 PASS (phone, 2026-08-08 Bot 4); M6 partial.** M3: an
+   XCUITest (app/BallpadUITests/TouchMatchTests) drives the REAL touch
+   overlay — A taps + D-pad presses navigate health -> memcard -> title ->
+   main menu -> captains -> LIVE MATCH (proof build/proofs/a3-touch-inmatch.png:
+   LUIGI 0-0 DAISY, clock running; log cGame state=2, gameClock advancing,
+   diag mean 90-104). Fixes landed: the overlay's gestures were bounded to the
+   whole container (any touch fired the last control's gesture — a real
+   product bug); reordering frame->contentShape->gesture->position fixed
+   touch targeting (pad-set log: A=0x0100, D-pad=0x0001/2/4/8). M6
+   (multi-touch merge in one sample) cannot be driven by XCUITest (no
+   multi-touch; events are main-thread serialized) — a real two-finger
+   gesture (Simulator Option+drag) reached the overlay (stick gesture fired),
+   but stick+button-in-one-sample needs a recorded manual session
+   (documented fallback; docs/09).
 
 Phase B — performance:
 4. B1 guest loop off the main thread + adaptive block budget (P1-a, P1-b).
