@@ -64,6 +64,13 @@ void ballpad_ios_host_application_will_resign_active(void);
 bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* width_out,
                                  uint32_t* height_out);
 
+/* B2: zero-copy frame handoff. Returns a pointer to the host's RGBA8 staging
+ * buffer for the latest frame (double-buffered: the next call returns the
+ * other buffer, so a CGImage can reference it without copying). The returned
+ * pointer stays valid until the NEXT call; it is NOT owned by the caller. */
+const uint8_t* ballpad_ios_host_frame_ptr(uint32_t* width_out,
+                                          uint32_t* height_out);
+
 /* Current EFB frame size; false when no frame has been presented yet. */
 bool ballpad_ios_host_frame_size(uint32_t* width_out, uint32_t* height_out);
 /* Monotonic frame version (EFB fill count); unchanged when no new frame. */

@@ -110,12 +110,13 @@ struct SDLGameContainer: UIViewRepresentable {
                 return
             }
             lastFrameVersion = version
-            let count = Int(w * h * 4)
-            var buf = [UInt8](repeating: 0, count: count)
-            guard ballpad_ios_host_take_frame(&buf, &w, &h) else {
-                if frameDiag == 0 { NSLog("[ballpad] take_frame failed") }
+            // B2: zero-copy — reference the host's double-buffered RGBA
+            // staging directly (no per-frame array alloc or Data copy).
+            guard let framePtr = ballpad_ios_host_frame_ptr(&w, &h) else {
+                if frameDiag == 0 { NSLog("[ballpad] no frame data") }
                 return
             }
+            let count = Int(w * h * 4)
             if let container = container, let imageView = imageView {
                 container.bringSubviewToFront(imageView)
             }
@@ -126,12 +127,14 @@ struct SDLGameContainer: UIViewRepresentable {
                 let n = Int(w * h)
                 var sum: UInt64 = 0
                 for i in stride(from: 0, to: min(n, 640*528) * 4, by: 4) {
-                    sum += UInt64(buf[i]) + UInt64(buf[i+1]) + UInt64(buf[i+2])
+                    sum += UInt64(framePtr[i]) + UInt64(framePtr[i+1]) + UInt64(framePtr[i+2])
                 }
                 let mean = Double(sum) / (3.0 * Double(min(n, 640*528)))
                 FileHandle.standardError.write(Data("[display] diag mean=\(Int(mean)) imageSet=\(imageView?.image != nil) size=\(w)x\(h)\n".utf8))
             }
-            guard let provider = CGDataProvider(data: Data(buf) as CFData) else {
+            let provider = CGDataProvider(dataInfo: nil, data: framePtr,
+                                          size: count) { _, _, _ in }
+            guard let provider else {
                 if frameDiag == 0 { NSLog("[ballpad] CGDataProvider failed %ux%u", w, h) }
                 return
             }

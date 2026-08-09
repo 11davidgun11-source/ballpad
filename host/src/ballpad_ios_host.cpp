@@ -1422,4 +1422,40 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
   return true;
 }
 
+// B2: double-buffered RGBA staging so the SwiftUI display can hand the buffer
+// straight to a CGDataProvider (no per-frame array alloc or Data copy).
+namespace {
+std::vector<uint8_t> g_display_buffers[2];
+int g_display_buffer_index = 0;
+} // namespace
+
+const uint8_t* ballpad_ios_host_frame_ptr(uint32_t* width_out,
+                                          uint32_t* height_out) {
+  if (!g_started.load() || width_out == nullptr || height_out == nullptr)
+    return nullptr;
+  DolEfbAccess* efb = mmio_efb();
+  if (efb == nullptr || efb->color == nullptr || efb->fill_count == 0u ||
+      efb->width == 0u || efb->height == 0u)
+    return nullptr;
+  const u32 fw = efb->width;
+  const u32 fh = efb->height;
+  std::vector<uint8_t>& dst = g_display_buffers[g_display_buffer_index];
+  const size_t bytes = (size_t)fw * fh * 4u;
+  if (dst.size() != bytes)
+    dst.resize(bytes);
+  ballpad_ios_host_frame_lock();
+  for (u32 i = 0; i < fw * fh; ++i) {
+    const u32 argb = efb->color[i];
+    dst[i * 4u + 0u] = (uint8_t)(argb >> 16);
+    dst[i * 4u + 1u] = (uint8_t)(argb >> 8);
+    dst[i * 4u + 2u] = (uint8_t)(argb);
+    dst[i * 4u + 3u] = 0xFF;
+  }
+  ballpad_ios_host_frame_unlock();
+  g_display_buffer_index ^= 1;
+  *width_out = fw;
+  *height_out = fh;
+  return dst.data();
+}
+
 /* marker file_scope attach decl */
