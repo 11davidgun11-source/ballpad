@@ -33,6 +33,7 @@ build/proofs/
 .DS_Store
 
 # Optional heavy research re-clones
+ref/
 ref/Provenance-full/
 ref/retroarch-touch-ref/
 ref/dolphin-upstream/

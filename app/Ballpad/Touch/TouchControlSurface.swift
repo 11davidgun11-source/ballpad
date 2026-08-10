@@ -4,13 +4,14 @@ struct TouchControlSurface: View {
     @ObservedObject var store: LayoutStore
     var editMode: Bool = false
     var controlScale: CGFloat = 1.0
-    var controlOpacity: Double = 0.76
+    var controlOpacity: Double = 0.82
     // C2: a hardware controller is connected -> hide the touch overlay. Folded
     // into the per-control opacity value (the documented-safe pattern): this
     // view must stay ONE unconditional structure with all differentiation as
     // value expressions (iPadOS 26 AttributeGraph cycle otherwise detaches
     // the hosting window).
     var controllerConnected: Bool = false
+    @Binding var selectedControl: ControlID?
     var onPadChanged: (BallPadStatus) -> Void
 
     @State private var buttons: Set<ControlID> = []
@@ -18,6 +19,8 @@ struct TouchControlSurface: View {
     @State private var cStickVec: CGSize = .zero
     @State private var lTrigger: CGFloat = 0
     @State private var rTrigger: CGFloat = 0
+    @State private var stickMaxRadius: CGFloat = 1
+    @State private var cStickMaxRadius: CGFloat = 1
 
     var body: some View {
         GeometryReader { geo in
@@ -44,6 +47,12 @@ struct TouchControlSurface: View {
             .onChange(of: cStickVec) { _, _ in emit() }
             .onChange(of: lTrigger) { _, _ in emit() }
             .onChange(of: rTrigger) { _, _ in emit() }
+            .onAppear {
+                DispatchQueue.main.async { store.updateCanvas(geo.size) }
+            }
+            .onChange(of: geo.size) { _, newSize in
+                DispatchQueue.main.async { store.updateCanvas(newSize) }
+            }
         }
         .allowsHitTesting(!controllerConnected)
     }
@@ -52,7 +61,7 @@ struct TouchControlSurface: View {
     // iPadOS 26 triggers an AttributeGraph layout cycle (detaching the hosting
     // window) for any conditional view structure inside this overlay, so all
     // differentiation (colors, sizes, shapes, gestures, active state) is done
-    // with value expressions — never if/else view branching. Each bellpad
+    // with value expressions — never if/else view branching. Each Sunpad
     // shape (stick well+thumb, shoulder plate, Z plate, START pill, face
     // circle, D-pad key) is always in the ZStack and gated by .opacity().
     private func controlView(node: ControlNode, size: CGSize) -> some View {
@@ -65,79 +74,60 @@ struct TouchControlSurface: View {
         )
         let isStick = node.id == .stick || node.id == .cStick
         let isTrigger = node.id == .l || node.id == .r
-        let isStart = node.id == .start
-        let isZ = node.id == .z
-        let isFace = !isStick && !isTrigger && !isStart && !isZ
         let fill = ControlSkin.fill(node.id)
         let on = isActive(node.id)
         let vec = activeVec(node.id)
-        let trigVal = triggerValue(node.id)
         let hidden = controllerConnected || (editMode == false && node.hidden)
-        let shapeOpacity = on ? min(0.95, controlOpacity + 0.2) : controlOpacity
-        let labelSize = min(rect.width, rect.height) * 0.30
+        let inputRadius = node.id == .cStick ? cStickMaxRadius : stickMaxRadius
+        let visualTravel = max(0, min(rect.width, rect.height) * 0.29 - 3)
+        let displayVec = isStick
+            ? CGSize(width: vec.width / max(inputRadius, 1) * visualTravel,
+                     height: vec.height / max(inputRadius, 1) * visualTravel)
+            : .zero
+        let stickBase = node.id == .cStick ? ControlSkin.cameraBase : ControlSkin.moveBase
+        let stickThumb = node.id == .cStick ? ControlSkin.cameraThumb : ControlSkin.moveThumb
+        let corner = min(rect.width, rect.height) * 0.5
         return ZStack {
-            // Stick well (dark) + white border.
+            // Sunpad stick wells: movement is charcoal; C-stick is yellow.
             Circle()
-                .fill(Color(white: 0.08).opacity(shapeOpacity))
+                .fill(stickBase)
                 .opacity(isStick ? 1 : 0)
             Circle()
-                .strokeBorder(.white.opacity(0.46), lineWidth: 2)
+                .strokeBorder(.white.opacity(0.68), lineWidth: 2)
                 .opacity(isStick ? 1 : 0)
-            // Stick thumb.
             Circle()
-                .fill(fill.opacity(on ? ControlSkin.activeOpacity : ControlSkin.idleOpacity))
+                .fill(stickThumb)
                 .frame(width: rect.width * 0.42, height: rect.height * 0.42)
-                .overlay(Circle().strokeBorder(.white.opacity(0.7), lineWidth: 1.5))
-                .shadow(color: .black.opacity(0.4), radius: 3)
-                .offset(isStick ? vec : .zero)
+                .offset(displayVec)
                 .opacity(isStick ? 1 : 0)
-            // Shoulder trigger plate + analog fill.
-            RoundedRectangle(cornerRadius: rect.height * 0.25)
-                .fill(fill.opacity(shapeOpacity))
-                .overlay(RoundedRectangle(cornerRadius: rect.height * 0.25)
-                    .strokeBorder(.white.opacity(0.42), lineWidth: 1.5))
+            // Sunpad gives every UIButton maximum-radius rounding: squares
+            // become circles while shoulders and START become full pills.
+            RoundedRectangle(cornerRadius: corner)
+                .fill(fill)
+                .overlay(RoundedRectangle(cornerRadius: corner)
+                    .strokeBorder(.white.opacity(0.68), lineWidth: 2))
                 .frame(width: rect.width, height: rect.height)
-                .opacity(isTrigger ? 1 : 0)
-            RoundedRectangle(cornerRadius: rect.height * 0.25)
-                .fill(.white.opacity(0.35))
-                .frame(width: rect.width, height: max(rect.height * trigVal, 0))
-                .frame(height: rect.height, alignment: .bottom)
-                .opacity(isTrigger ? 1 : 0)
-            // Z plate.
-            RoundedRectangle(cornerRadius: 8)
-                .fill(fill.opacity(shapeOpacity))
-                .overlay(RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(.white.opacity(0.42), lineWidth: 1.5))
-                .frame(width: rect.width, height: rect.height)
-                .opacity(isZ ? 1 : 0)
-            // START pill.
-            Capsule()
-                .fill(fill.opacity(shapeOpacity))
-                .overlay(Capsule().strokeBorder(.white.opacity(0.42), lineWidth: 1.5))
-                .frame(width: rect.width, height: rect.height)
-                .opacity(isStart ? 1 : 0)
-            // Face / D-pad circles.
-            Circle()
-                .fill(fill.opacity(shapeOpacity))
-                .overlay(Circle().strokeBorder(.white.opacity(0.38), lineWidth: 1.5))
-                .shadow(color: .black.opacity(0.35), radius: 2, y: 2)
-                .frame(width: rect.width, height: rect.height)
-                .scaleEffect(on && isFace ? 0.92 : 1.0)
-                .opacity(isFace ? 1 : 0)
+                .scaleEffect(on && !isStick ? 0.92 : 1.0)
+                .opacity(isStick ? 0 : 1)
             // Layout-editor chrome: yellow dashed outline + drag-to-move,
             // always in the tree but only visible in edit mode.
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(.yellow.opacity(0.9), style: StrokeStyle(lineWidth: 2, dash: [6]))
+                .strokeBorder(selectedControl == node.id ? .cyan : .yellow.opacity(0.9),
+                              style: StrokeStyle(lineWidth: selectedControl == node.id ? 4 : 3,
+                                                 dash: [6]))
                 .frame(width: rect.width, height: rect.height)
                 .opacity(editMode ? 1 : 0)
             // Label.
             Text(node.label)
-                .font(.system(size: labelSize, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .opacity(editMode ? 1 : (isStick ? 0.85 : 1))
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(node.id == .x || node.id == .y ? .black : .white)
+                .opacity(isStick ? 0 : 1)
         }
         .frame(width: rect.width, height: rect.height)
-        .contentShape(Circle())
+        // Match UIButton's full rectangular hit target. The visible maximum
+        // corner radius still makes square controls circular and shoulders
+        // pill-shaped, but taps near a pill's ends must not be discarded.
+        .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0)
             .onChanged { value in
                 if ProcessInfo.processInfo.environment["BALLPAD_TOUCH_LOG"] != nil {
@@ -148,22 +138,29 @@ struct TouchControlSurface: View {
                           value.startLocation.x, value.startLocation.y)
                 }
                 if editMode {
+                    selectedControl = node.id
                     store.move(id: node.id,
                                to: CGPoint(x: rect.midX + value.translation.width,
                                            y: rect.midY + value.translation.height),
                                in: size)
                 } else if isStick {
-                    let maxR = min(rect.width, rect.height) * 0.36
-                    var dx = value.translation.width
-                    var dy = value.translation.height
+                    let maxR = min(rect.width, rect.height) * 0.5
+                    var dx = value.location.x - rect.width / 2
+                    var dy = value.location.y - rect.height / 2
                     let mag = sqrt(dx*dx + dy*dy)
                     if mag > maxR { dx *= maxR/mag; dy *= maxR/mag }
-                    if node.id == .cStick { cStickVec = CGSize(width: dx, height: dy) }
-                    else { stickVec = CGSize(width: dx, height: dy) }
+                    if node.id == .cStick {
+                        cStickMaxRadius = maxR
+                        cStickVec = CGSize(width: dx, height: dy)
+                    } else {
+                        stickMaxRadius = maxR
+                        stickVec = CGSize(width: dx, height: dy)
+                    }
                 } else if isTrigger {
-                    let rel = (rect.minY - value.location.y) / max(rect.height, 1)
-                    let v = min(max(rel, 0), 1)
-                    if node.id == .l { lTrigger = v } else { rTrigger = v }
+                    // Sunpad-style shoulders: a tap is a complete GameCube
+                    // trigger press. Strikers actions must not require an
+                    // upward swipe or a precise hit near the top edge.
+                    if node.id == .l { lTrigger = 1 } else { rTrigger = 1 }
                 } else {
                     buttons.insert(node.id)
                 }
@@ -184,7 +181,10 @@ struct TouchControlSurface: View {
         // bounded to the control (a touch anywhere on the container used to
         // fire every control's gesture — A3 finding, docs/09 2026-08-08).
         .position(x: rect.midX, y: rect.midY)
-        .opacity(hidden ? 0 : 1)
+        .opacity(hidden ? 0 : (editMode ? 1 : controlOpacity))
+        .accessibilityLabel(node.label.isEmpty ?
+                            (node.id == .stick ? "Move stick" : "C stick") : node.label)
+        .accessibilityIdentifier("control.\(node.id.rawValue)")
     }
 
     private func isActive(_ id: ControlID) -> Bool {
@@ -205,22 +205,14 @@ struct TouchControlSurface: View {
         }
     }
 
-    private func triggerValue(_ id: ControlID) -> CGFloat {
-        switch id {
-        case .l: return lTrigger
-        case .r: return rTrigger
-        default: return 0
-        }
-    }
-
     // Stick output: deadzone 0.12 of radius, linear curve, clamp [-127,127].
     private func emit() {
         var s = BallPadStatus()
         s.err = 0
-        s.stickX = stickAxis(stickVec.width)
-        s.stickY = stickAxis(-stickVec.height)
-        s.substickX = stickAxis(cStickVec.width)
-        s.substickY = stickAxis(-cStickVec.height)
+        s.stickX = stickAxis(stickVec.width, radius: stickMaxRadius)
+        s.stickY = stickAxis(-stickVec.height, radius: stickMaxRadius)
+        s.substickX = stickAxis(cStickVec.width, radius: cStickMaxRadius)
+        s.substickY = stickAxis(-cStickVec.height, radius: cStickMaxRadius)
         s.triggerLeft = triggerByte(lTrigger)
         s.triggerRight = triggerByte(rTrigger)
         var btn: UInt16 = 0
@@ -240,8 +232,8 @@ struct TouchControlSurface: View {
         onPadChanged(s)
     }
 
-    private func stickAxis(_ v: CGFloat) -> Int8 {
-        let norm = Swift.max(Swift.min(v / 60.0, 1), -1)
+    private func stickAxis(_ v: CGFloat, radius: CGFloat) -> Int8 {
+        let norm = Swift.max(Swift.min(v / max(radius, 1), 1), -1)
         let mag = Swift.abs(norm)
         let dz: CGFloat = 0.12
         guard mag > dz else { return 0 }

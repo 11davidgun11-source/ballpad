@@ -1,5 +1,5 @@
 diff --git a/backends/aurora/aurora_backend.cpp b/backends/aurora/aurora_backend.cpp
-index d94f811..e265c49 100644
+index d94f811..6554a2d 100644
 --- a/backends/aurora/aurora_backend.cpp
 +++ b/backends/aurora/aurora_backend.cpp
 @@ -1,5 +1,6 @@
@@ -33,7 +33,7 @@ index d94f811..e265c49 100644
  } // namespace aurora::gfx::efb_readback
  
  namespace {
-@@ -1123,6 +1127,50 @@ void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user) {
+@@ -1123,6 +1127,62 @@ void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user) {
      }
  }
  
@@ -61,8 +61,20 @@ index d94f811..e265c49 100644
 +    if (size < dol_gx_recomp_save_state_size())
 +        return false;
 +    g_shadow_frontend_failed = false;
-+    return dol_gx_recomp_restore_state(&g_shadow_frontend.state(),
-+                                       static_cast<const uint8_t*>(src));
++    if (!dol_gx_recomp_restore_state(&g_shadow_frontend.state(),
++                                     static_cast<const uint8_t*>(src)))
++        return false;
++
++    // QuickBoot restores the parser's CP array table, but the gxcore consumer
++    // owns a second copy used to resolve indexed vertex spans. A fresh process
++    // starts that table empty; leaving it empty makes character meshes fetch
++    // guest RAM[0] at stride 0 while direct/static geometry still looks fine.
++    // Restore these directly rather than synthesizing packets: packet sequence
++    // numbers belong to the live frontend, and consuming fake ones would make
++    // its next real packet look stale/out of order.
++    if (g_gx_core_enabled)
++        g_core_sink.restore_frontend_bindings(g_shadow_frontend.state());
++    return true;
 +}
 +
 +// A1 quick-boot: save/restore the gxcore sink's applied register state (the
@@ -84,7 +96,7 @@ index d94f811..e265c49 100644
  void dol_aurora_shutdown(void) {
      g_efb_frame_fill = nullptr;
      g_efb_frame_fill_user = nullptr;
-@@ -1133,6 +1181,7 @@ void dol_aurora_shutdown(void) {
+@@ -1133,6 +1193,7 @@ void dol_aurora_shutdown(void) {
          aurora_end_frame();
          g_frame_open = false;
      }
@@ -92,7 +104,7 @@ index d94f811..e265c49 100644
  #if GXRUNTIME_HAS_AURORA_RECOMP
      // C2: ensure live --gap-report sees gxcore rows even if the host forgot to
      // call dol_aurora_flush_gap_report before write_json (main does call it).
-@@ -1165,6 +1214,9 @@ bool aurora_backend_should_quit(void) {
+@@ -1165,6 +1226,9 @@ bool aurora_backend_should_quit(void) {
  void aurora_backend_present(void) {
      if (!g_initialized)
          return;
@@ -102,7 +114,7 @@ index d94f811..e265c49 100644
  #if GXRUNTIME_HAS_AURORA_RECOMP
      // gxcore accumulates the frame's draws as their spans complete; the final
      // pending draw is only planned at the frame boundary. Submit it into the
-@@ -1215,11 +1267,16 @@ void aurora_backend_present(void) {
+@@ -1215,11 +1279,16 @@ void aurora_backend_present(void) {
      if (g_frame_pacing_log &&
          (g_present_count <= 10 || (g_present_count % 60) == 0)) {
          const AuroraStats* stats = aurora_get_stats();
@@ -122,7 +134,7 @@ index d94f811..e265c49 100644
      }
      if (g_graphics_log) {
          const AuroraStats* s = aurora_get_stats();
-@@ -1449,6 +1506,18 @@ void aurora_backend_present(void) {
+@@ -1449,6 +1518,18 @@ void aurora_backend_present(void) {
                       g_present_count, present_fifo);
  }
  
@@ -141,7 +153,7 @@ index d94f811..e265c49 100644
  void aurora_backend_mark_gx_begin(void) {
      g_draw_opcode_pending = true;
  }
-@@ -1779,6 +1848,10 @@ bool aurora_backend_pad_init(void) {
+@@ -1779,6 +1860,10 @@ bool aurora_backend_pad_init(void) {
      return true;
  }
  
@@ -152,7 +164,7 @@ index d94f811..e265c49 100644
  u32 aurora_backend_pad_read(DolPadState state[4]) {
      PADStatus status[4]{};
      const u32 motor_mask = PADRead(status);
-@@ -1796,6 +1869,11 @@ u32 aurora_backend_pad_read(DolPadState state[4]) {
+@@ -1796,6 +1881,11 @@ u32 aurora_backend_pad_read(DolPadState state[4]) {
              .error = status[i].err,
          };
      }
@@ -164,7 +176,7 @@ index d94f811..e265c49 100644
      return motor_mask;
  }
  
-@@ -1921,3 +1999,7 @@ void install_platform_ops() {
+@@ -1921,3 +2011,7 @@ void install_platform_ops() {
      dol_platform_install(&ops);
  }
  } // namespace
@@ -1017,6 +1029,93 @@ index b741e17..762bc91 100644
  void set_title(const char* title);
  void set_fullscreen(bool fullscreen);
  bool get_fullscreen();
+diff --git a/graphics/frontend/include/gxruntime/aurora_recomp/render_sink.hpp b/graphics/frontend/include/gxruntime/aurora_recomp/render_sink.hpp
+index 88110c8..d8301b6 100644
+--- a/graphics/frontend/include/gxruntime/aurora_recomp/render_sink.hpp
++++ b/graphics/frontend/include/gxruntime/aurora_recomp/render_sink.hpp
+@@ -392,6 +392,21 @@ public:
+   const ConsumedTexture& bound_texture() const { return bound_texture_; }
+   bool cull_all() const { return cull_all_; }
+ 
++  // Savestate restore bypasses the packet stream: its sequence counter belongs
++  // to the live frontend, so injecting synthetic state packets here would make
++  // the next real packet look out of order.
++  void restore_array_binding(std::uint32_t index, bool base_valid,
++                             std::uint32_t base, bool stride_valid,
++                             std::uint32_t stride) {
++    if (index >= kArrayCount)
++      return;
++    arrays_[index].base_valid = base_valid;
++    arrays_[index].base = base;
++    arrays_[index].stride_valid = stride_valid;
++    arrays_[index].stride = stride;
++  }
++  void restore_cull_all(bool cull_all) { cull_all_ = cull_all; }
++
+   const char* failure_reason() const { return failure_reason_; }
+   const RenderPacket& failed_packet() const { return failed_packet_; }
+ 
+diff --git a/graphics/frontend/src/render_sink.cpp b/graphics/frontend/src/render_sink.cpp
+index 2ef5b3d..965ed3f 100644
+--- a/graphics/frontend/src/render_sink.cpp
++++ b/graphics/frontend/src/render_sink.cpp
+@@ -112,6 +112,11 @@ bool ConsumingAuroraRenderSink::submit_packet(const RenderPacket& packet) {
+       if (!draws_.empty() && packet.resource.index < kArrayCount) {
+         ConsumedDraw& draw = draws_.back();
+         const ConsumedArrayBinding& binding = arrays_[packet.resource.index];
++        // Never turn a missing CP binding into a valid-looking RAM[0], stride-0
++        // fetch. This is especially important after state restore: indexed
++        // geometry must wait for both CP_ARRAY_BASE and CP_ARRAY_STRIDE.
++        if (!binding.base_valid || !binding.stride_valid)
++          return fail("indexed-array span has no complete CP binding", packet);
+         if (draw.array_input_count < ConsumedDraw::kMaxArrays) {
+           ConsumedArrayInput& input = draw.arrays[draw.array_input_count++];
+           input.attr = packet.resource.index;
+diff --git a/graphics/frontend/tests/frontend_replay_test.cpp b/graphics/frontend/tests/frontend_replay_test.cpp
+index 6d8e0e3..520be38 100644
+--- a/graphics/frontend/tests/frontend_replay_test.cpp
++++ b/graphics/frontend/tests/frontend_replay_test.cpp
+@@ -595,6 +595,40 @@ void test_xf_projection_capture() {
+ } // namespace
+ 
+ int main() {
++  // QuickBoot restore regression: consumer-owned CP bindings are restored
++  // directly (synthetic packets would collide with the frontend sequence),
++  // and an indexed span must never silently fall back to RAM[0]/stride 0.
++  {
++    using gxruntime::aurora_recomp::ConsumingAuroraRenderSink;
++    using gxruntime::aurora_recomp::RenderPacket;
++    ConsumingAuroraRenderSink restored;
++    restored.restore_array_binding(3u, true, 0x011D27A0u, true, 12u);
++    restored.restore_cull_all(true);
++    assert(restored.array(3u).base_valid);
++    assert(restored.array(3u).base == 0x011D27A0u);
++    assert(restored.array(3u).stride_valid);
++    assert(restored.array(3u).stride == 12u);
++    assert(restored.cull_all());
++
++    ConsumingAuroraRenderSink invalid;
++    RenderPacket draw{};
++    draw.kind = RenderPacketKind::Draw;
++    draw.sequence = 1u;
++    draw.draw.vertex_count = 3u;
++    draw.draw.vertex_size = 1u;
++    assert(invalid.submit_packet(draw));
++    RenderPacket span{};
++    span.kind = RenderPacketKind::Resource;
++    span.sequence = 2u;
++    span.resource.kind = RenderResourceKind::IndexedArraySpan;
++    span.resource.index = 0u;
++    span.resource.size = 3u;
++    span.resource.count = 3u;
++    assert(!invalid.submit_packet(span));
++    assert(std::strcmp(invalid.failure_reason(),
++                       "indexed-array span has no complete CP binding") == 0);
++  }
++
+   test_c_frontend_abi_byte_fragmentation();
+   test_c_frontend_guest_array_bridge();
+   test_fragmented_fifo_display_list_frontend();
 diff --git a/graphics/gxcore/CMakeLists.txt b/graphics/gxcore/CMakeLists.txt
 index 8d60494..f5a7cbd 100644
 --- a/graphics/gxcore/CMakeLists.txt
@@ -1030,7 +1129,7 @@ index 8d60494..f5a7cbd 100644
  
  if(BUILD_TESTING)
 diff --git a/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp b/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp
-index 4d14391..b07c92b 100644
+index 4d14391..2fec300 100644
 --- a/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp
 +++ b/graphics/gxcore/include/gxruntime/gxcore/gxcore.hpp
 @@ -82,6 +82,14 @@ public:
@@ -1048,7 +1147,7 @@ index 4d14391..b07c92b 100644
  private:
    std::uint32_t bp_regs_[256]{};
    bool bp_valid_[256]{};
-@@ -130,6 +138,17 @@ public:
+@@ -130,6 +138,26 @@ public:
    // Frame boundary: plan the final pending draw of the frame.
    void flush_frame();
  
@@ -1061,6 +1160,15 @@ index 4d14391..b07c92b 100644
 +  bool restore_state(const void* src, std::uint32_t size) {
 +    return GxCoreState::restore(&live_state_, src, size) &&
 +           GxCoreState::restore(&pending_state_, src, size);
++  }
++  void restore_frontend_bindings(const DolGxRecompState& state) {
++    for (std::uint32_t i = 0; i < DOL_GX_RECOMP_CP_ARRAY_COUNT; ++i) {
++      const DolGxRecompCpArray& array = state.arrays[i];
++      consumer_.restore_array_binding(i, array.base_valid,
++                                      array.physical_base,
++                                      array.stride_valid, array.stride);
++    }
++    consumer_.restore_cull_all(state.cull_all);
 +  }
 +
    const GapCounters& counters() const { return counters_; }

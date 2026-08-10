@@ -50,7 +50,7 @@ final class BallpadUITests: XCTestCase {
         // switches to the game view. The host boots the guest; wait for the
         // game view's ⋯ menu button to appear (C1 removed the old
         // "[ballpad] runtime init" banner the test used to probe for).
-        let hostProbe = app.buttons["⋯"].firstMatch
+        let hostProbe = app.buttons["Menu"].firstMatch
         XCTAssertTrue(hostProbe.waitForExistence(timeout: 180),
                       "game view after import (host booted)")
         XCTAssertFalse(app.buttons["Import Game"].exists,

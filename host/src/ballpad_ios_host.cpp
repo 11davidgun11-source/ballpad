@@ -43,8 +43,6 @@ extern "C" void ballpad_window_force_presentable(void);
 extern "C" void ballpad_window_hide(void);
 extern "C" void ballpad_ios_host_attach_sdl_view(void*);
 extern "C" void SDL_SetMainReady(void);
-extern "C" bool aurora_begin_frame(void);
-extern "C" void aurora_end_frame(void);
 extern "C" unsigned long long aurora_present_count(void);
 extern "C" void aurora_set_efb_scale(uint32_t scale);
 extern "C" void ballpad_arm_efb_readback(void);
@@ -96,6 +94,9 @@ std::atomic<bool> g_started{false};
 std::atomic<bool> g_stop{false};
 std::atomic<bool> g_starting{false};
 std::atomic<bool> g_paused{false};
+std::atomic<bool> g_lifecycle_paused{false};
+std::atomic<unsigned long long> g_public_blocks{0};
+std::atomic<long long> g_public_game_state{-1};
 std::thread g_guest_thread;
 std::mutex g_frame_mutex;
 
@@ -124,7 +125,12 @@ bool g_quickbooted = false;
 // ---- A1 quick-boot savestate (resume a match on cold launch) ----
 namespace {
 constexpr char kQuickbootMagic[4] = {'B', 'P', 'S', 'V'};
-constexpr uint32_t kQuickbootVersion = 3;
+// Version 4 invalidates snapshots captured before the gxcore indexed-array
+// binding restore and Aurora frame-ownership fixes. Their byte layout still
+// matches v3, but their renderer state is not semantically compatible: static
+// stadium geometry survives while skinned player meshes collapse. Never
+// silently accept one of those snapshots as a valid fast boot.
+constexpr uint32_t kQuickbootVersion = 4;
 constexpr uint32_t kQuickbootHeaderSize = 64;
 
 // File layout (host byte order): header, CPU registers block, CPU scalar tail,
@@ -146,14 +152,9 @@ struct QuickbootHeader {
 };
 
 std::string quickboot_documents_dir() {
-  char docs[1024] = {0};
-  FILE* f = popen("echo $HOME/Documents", "r");
-  if (f) {
-    if (fgets(docs, sizeof(docs), f))
-      docs[strcspn(docs, "\n")] = 0;
-    pclose(f);
-  }
-  return std::string(docs);
+  const char* home = getenv("HOME");
+  return home != nullptr ? std::string(home) + "/Documents"
+                         : std::string("Documents");
 }
 
 std::string quickboot_path() {
@@ -326,6 +327,14 @@ bool ballpad_ios_host_import_game(const char* iso_path) {
   const std::string dolTmp = dolDest + ".tmp";
 
   bool ok = true;
+  struct stat imageStat;
+  const bool imageStatOK = fstat(fileno(in), &imageStat) == 0;
+  if (!imageStatOK || imageStat.st_size != 1459978240ll) {
+    std::fprintf(stderr, "[import] unsupported image size: %lld\n",
+                 (long long)(imageStatOK ? imageStat.st_size : -1));
+    fclose(in);
+    return false;
+  }
   // Copy the disc image.
   FILE* out = fopen(isoTmp.c_str(), "wb");
   if (out == nullptr) {
@@ -347,6 +356,14 @@ bool ballpad_ios_host_import_game(const char* iso_path) {
   if (fseek(in, 0, SEEK_SET) != 0 ||
       fread(discHeader, 1, sizeof discHeader, in) != sizeof discHeader) {
     std::fprintf(stderr, "[import] disc header read failed\n");
+    ok = false;
+  }
+  static const uint8_t kGameCode[6] = {'G', '4', 'Q', 'E', '0', '1'};
+  static const uint8_t kDiscMagic[4] = {0xC2, 0x33, 0x9F, 0x3D};
+  if (ok && (memcmp(discHeader, kGameCode, sizeof kGameCode) != 0 ||
+             discHeader[6] != 0 || discHeader[7] != 0 ||
+             memcmp(discHeader + 0x1Cu, kDiscMagic, sizeof kDiscMagic) != 0)) {
+    std::fprintf(stderr, "[import] unsupported disc (expected G4QE01 rev 0)\n");
     ok = false;
   }
   const uint32_t dolOffset = qb_read_be32(discHeader + 0x420u);
@@ -381,14 +398,39 @@ bool ballpad_ios_host_import_game(const char* iso_path) {
     remove(dolTmp.c_str());
     return false;
   }
-  // Atomic-ish rename (best effort).
-  if (rename(isoTmp.c_str(), isoDest.c_str()) != 0 ||
-      rename(dolTmp.c_str(), dolDest.c_str()) != 0) {
+  // Activate both files transactionally. A failed second rename must not
+  // leave a new image paired with the previous main.dol (or vice versa).
+  const std::string isoBackup = isoDest + ".previous";
+  const std::string dolBackup = dolDest + ".previous";
+  remove(isoBackup.c_str());
+  remove(dolBackup.c_str());
+  const bool hadIso = quickboot_file_exists(isoDest.c_str());
+  const bool hadDol = quickboot_file_exists(dolDest.c_str());
+  bool backedUpIso = !hadIso || rename(isoDest.c_str(), isoBackup.c_str()) == 0;
+  bool backedUpDol = !hadDol || rename(dolDest.c_str(), dolBackup.c_str()) == 0;
+  if (!backedUpIso || !backedUpDol) {
+    if (hadIso && backedUpIso) rename(isoBackup.c_str(), isoDest.c_str());
+    if (hadDol && backedUpDol) rename(dolBackup.c_str(), dolDest.c_str());
     remove(isoTmp.c_str());
     remove(dolTmp.c_str());
-    std::fprintf(stderr, "[import] rename failed\n");
+    std::fprintf(stderr, "[import] could not stage previous game data\n");
     return false;
   }
+  const bool installedDol = rename(dolTmp.c_str(), dolDest.c_str()) == 0;
+  const bool installedIso = installedDol &&
+                            rename(isoTmp.c_str(), isoDest.c_str()) == 0;
+  if (!installedDol || !installedIso) {
+    remove(isoDest.c_str());
+    remove(dolDest.c_str());
+    if (hadIso) rename(isoBackup.c_str(), isoDest.c_str());
+    if (hadDol) rename(dolBackup.c_str(), dolDest.c_str());
+    remove(isoTmp.c_str());
+    remove(dolTmp.c_str());
+    std::fprintf(stderr, "[import] activation failed; previous data restored\n");
+    return false;
+  }
+  remove(isoBackup.c_str());
+  remove(dolBackup.c_str());
   std::fprintf(stderr, "[import] game imported: iso -> %s dol -> %s "
                        "(dolSize=%u)\n",
                isoDest.c_str(), dolDest.c_str(), dolSize);
@@ -609,11 +651,11 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
     SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(g_sdl_window), &w, &h);
     std::fprintf(stderr, "[ballpad-window] size=%dx%d\n", w, h);
   }
-  // Open a frame packet and KEEP it open: guest GX writes during boot must
-  // land in a live frame (mirrors dol_aurora_initialize on desktop, which
-  // leaves g_frame_open true). Present cycles close/reopen it.
-  const bool frame_ok = aurora_begin_frame();
-  std::fprintf(stderr, "[ballpad-ios] open frame at init=%d\n", frame_ok ? 1 : 0);
+  // dol_aurora_initialize owns the complete frame lifecycle: it opens the
+  // first recording packet here and every present closes/reopens it. Opening
+  // a second packet from the host overwrites Aurora's active-frame pointer
+  // without updating backend ownership, leaking the first packet and leaving
+  // later GX draws outside a valid recording frame.
 
   CPUState* cpu = &g_cpu;
   if (!cpu_init(cpu)) { return false; }
@@ -664,6 +706,9 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
                quickboot ? "from quickboot" : "fresh", cpu->pc,
                (unsigned long long)g_blocks);
   g_paused.store(false);
+  g_lifecycle_paused.store(false);
+  g_public_blocks.store(g_blocks, std::memory_order_relaxed);
+  g_public_game_state.store(-1, std::memory_order_relaxed);
   if (g_guest_thread.joinable())
     g_guest_thread.join();
   g_guest_thread = std::thread(guest_loop);
@@ -724,7 +769,10 @@ static void step_guest(void) {
     const char* v = getenv("BALLPAD_AUTOSTART");
     return v != nullptr && v[0] != '\0' && v[0] != '0';
   }();
-  if (s_autostart) {
+  // Autostart exists only to create/develop the QuickBoot snapshot. Once a
+  // snapshot has been restored, replaying the entire menu-navigation script
+  // injects dozens of in-match A presses (tackles) into the saved game.
+  if (s_autostart && !g_quickbooted) {
     struct AutoStep { u16 button; int sx, sy; unsigned long long hold_blocks, at_blocks; };
     static AutoStep kAutoSteps[] = {
         // 0: boot wait; guest reaches the health screen on its own.
@@ -853,7 +901,9 @@ static void step_guest(void) {
   // stadium-card screen. The match scene setup re-emits the full GX state into
   // the fresh renderer (a mid-match restore skips that setup and renders
   // dark). Presses are ~100M blocks apart to match the proven autostart
-  // cadence; extras are harmless once in-match.
+  // cadence. Do not send "extra" A presses: A is tackle once the match is
+  // live, so those presses can put most characters into extreme dive poses
+  // and make a healthy render look like broken geometry.
   static bool s_qb_drive_done = false;
   if (g_quickbooted && !s_qb_drive_done) {
     static bool s_qb_drive_started = false;
@@ -866,10 +916,8 @@ static void step_guest(void) {
       std::fprintf(stderr, "[quickboot] driving match start\n");
     }
     if (g_blocks >= s_qb_drive_blocks && !s_qb_drive_done) {
-      static const u16 kQbButtons[] = {BALLPAD_BUTTON_A, BALLPAD_BUTTON_A,
-                                       BALLPAD_BUTTON_A};
-      static const unsigned long long kQbSpacing[] = {
-          20000000ull, 100000000ull, 100000000ull};
+      static const u16 kQbButtons[] = {BALLPAD_BUTTON_A};
+      static const unsigned long long kQbSpacing[] = {20000000ull};
       BallPadStatus s{};
       s.err = 0;
       if (!s_qb_holding) {
@@ -883,7 +931,7 @@ static void step_guest(void) {
       } else {
         ++s_qb_drive_step;
         s_qb_holding = false;
-        if (s_qb_drive_step >= 3) {
+        if (s_qb_drive_step >= 1) {
           s_qb_drive_done = true;
           std::fprintf(stderr, "[quickboot] match-start drive complete\n");
         }
@@ -899,6 +947,12 @@ static void step_guest(void) {
                    g_stop_reason, g_blocks, cpu->pc, (unsigned)cpu->exception);
     }
   }
+  g_public_blocks.store(g_blocks, std::memory_order_relaxed);
+  long long publicGameState = -1;
+  const u32 publicGame = mem_read32(cpu, 0x80373708u);
+  if (publicGame >= 0x80000000u)
+    publicGameState = (long long)mem_read32(cpu, publicGame + 0x24u);
+  g_public_game_state.store(publicGameState, std::memory_order_relaxed);
   static int s_perf_log = -1;
   if (s_perf_log < 0)
     s_perf_log = getenv("BALLPAD_PERF_LOG") != nullptr ? 1 : 0;
@@ -949,7 +1003,7 @@ void guest_loop() {
   constexpr unsigned long long kMinBlocks = 100000ull;
   constexpr unsigned long long kMaxBlocksStep = 4000000ull;
   while (!g_stop.load()) {
-    if (g_paused.load()) {
+    if (g_paused.load() || g_lifecycle_paused.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
       continue;
     }
@@ -978,6 +1032,7 @@ void ballpad_ios_host_stop(void) {
   }
   g_started = false;
   g_cpu_valid = false;
+  g_public_game_state.store(-1, std::memory_order_relaxed);
 }
 
 // B1: the guest worker thread fills the EFB backing while the SwiftUI display
@@ -992,17 +1047,16 @@ bool ballpad_ios_host_running(void) { return g_started.load(); }
 // touch-match driver polls this (via a test-only SwiftUI label) and presses
 // the real overlay at the autostart's block anchors, so it works on any
 // simulator regardless of wall-clock throughput.
-unsigned long long ballpad_ios_host_guest_blocks(void) { return g_blocks; }
+unsigned long long ballpad_ios_host_guest_blocks(void) {
+  return g_public_blocks.load(std::memory_order_relaxed);
+}
 
 // A3 test hook: the guest cGame state (4 = in-match). Reads the same guest
 // memory the [threads] debug dump uses (g_pGame at 0x80373708, state at +0x24).
 long long ballpad_ios_host_game_state(void) {
-  if (!g_cpu_valid || !g_started.load())
+  if (!g_started.load())
     return -1;
-  const u32 game = mem_read32(&g_cpu, 0x80373708u);
-  if (game == 0u || game < 0x80000000u)
-    return -1;
-  return (long long)mem_read32(&g_cpu, game + 0x24u);
+  return g_public_game_state.load(std::memory_order_relaxed);
 }
 
 int ballpad_ios_host_get_efb_scale(void) { return g_efb_scale; }
@@ -1094,8 +1148,12 @@ bool ballpad_ios_host_import_card(const char* src_path) {
   return true;
 }
 
-void ballpad_ios_host_application_did_become_active(void) {}
-void ballpad_ios_host_application_will_resign_active(void) {}
+void ballpad_ios_host_application_did_become_active(void) {
+  g_lifecycle_paused.store(false);
+}
+void ballpad_ios_host_application_will_resign_active(void) {
+  g_lifecycle_paused.store(true);
+}
 bool ballpad_ios_host_frame_size(uint32_t* w, uint32_t* h) {
   if (!g_started.load() || w == nullptr || h == nullptr) return false;
   DolEfbAccess* efb = mmio_efb();
@@ -1112,10 +1170,11 @@ bool ballpad_ios_host_frame_size(uint32_t* w, uint32_t* h) {
 uint64_t ballpad_ios_host_frame_version(void) {
   if (!g_started.load())
     return 0;
+  ballpad_ios_host_frame_lock();
   DolEfbAccess* efb = mmio_efb();
-  if (efb == nullptr)
-    return 0;
-  return (uint64_t)efb->fill_count;
+  const uint64_t version = efb != nullptr ? (uint64_t)efb->fill_count : 0;
+  ballpad_ios_host_frame_unlock();
+  return version;
 }
 
 bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
@@ -1150,8 +1209,9 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
   return true;
 }
 
-// B2: double-buffered RGBA staging so the SwiftUI display can hand the buffer
-// straight to a CGDataProvider (no per-frame array alloc or Data copy).
+// B2: double-buffered native ARGB staging so the SwiftUI display can hand the
+// buffer straight to a CGDataProvider. On little-endian Apple hardware the
+// bytes are BGRA; Core Graphics receives the matching byte-order descriptor.
 namespace {
 std::vector<uint8_t> g_display_buffers[2];
 int g_display_buffer_index = 0;
@@ -1161,24 +1221,20 @@ const uint8_t* ballpad_ios_host_frame_ptr(uint32_t* width_out,
                                           uint32_t* height_out) {
   if (!g_started.load() || width_out == nullptr || height_out == nullptr)
     return nullptr;
+  ballpad_ios_host_frame_lock();
   DolEfbAccess* efb = mmio_efb();
   if (efb == nullptr || efb->color == nullptr || efb->fill_count == 0u ||
-      efb->width == 0u || efb->height == 0u)
+      efb->width == 0u || efb->height == 0u) {
+    ballpad_ios_host_frame_unlock();
     return nullptr;
+  }
   const u32 fw = efb->width;
   const u32 fh = efb->height;
   std::vector<uint8_t>& dst = g_display_buffers[g_display_buffer_index];
-  const size_t bytes = (size_t)fw * fh * 4u;
+  const size_t bytes = (size_t)fw * fh * sizeof(u32);
   if (dst.size() != bytes)
     dst.resize(bytes);
-  ballpad_ios_host_frame_lock();
-  for (u32 i = 0; i < fw * fh; ++i) {
-    const u32 argb = efb->color[i];
-    dst[i * 4u + 0u] = (uint8_t)(argb >> 16);
-    dst[i * 4u + 1u] = (uint8_t)(argb >> 8);
-    dst[i * 4u + 2u] = (uint8_t)(argb);
-    dst[i * 4u + 3u] = 0xFF;
-  }
+  std::memcpy(dst.data(), efb->color, bytes);
   ballpad_ios_host_frame_unlock();
   g_display_buffer_index ^= 1;
   *width_out = fw;

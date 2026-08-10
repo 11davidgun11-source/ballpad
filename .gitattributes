@@ -1,0 +1,3 @@
+# Unified-diff context uses a single prefix space on otherwise blank lines.
+# Patch snapshots intentionally preserve those bytes for exact replay.
+docs/patches/*.patch -whitespace

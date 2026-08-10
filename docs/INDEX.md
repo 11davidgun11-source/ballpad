@@ -4,6 +4,17 @@ Living table of contents. Numbered for reading order.
 
 > **Path note:** On macOS case-insensitive volumes, `docs/` and `DOCS/` are the same directory.
 
+## Current release audit (2026-08-10)
+
+| Doc | Title |
+|-----|-------|
+| [22-graphics-handoff-2026-08-10.md](22-graphics-handoff-2026-08-10.md) | **Current handoff: graphics not fixed, evidence, runtime state, and exact next experiments** |
+| [21-sunpad-parity-audit.md](21-sunpad-parity-audit.md) | **Current Sunpad parity, controls, menu, performance, validation, and remaining release gates** |
+
+Start with the root [`README.md`](../README.md) for setup and current product
+status. Documents below 21 preserve the research and implementation history;
+where status differs, document 22 is authoritative.
+
 ## Start here (Bot 2)
 1. [BOT2_LAUNCH_PROMPT.md](BOT2_LAUNCH_PROMPT.md) — **paste this into a new chat**
 2. [BOT2_PROMPT.md](BOT2_PROMPT.md) — short pointer

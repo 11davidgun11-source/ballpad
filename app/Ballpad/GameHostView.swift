@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct SDLGameContainer: UIViewRepresentable {
     var renderScale: CGFloat = 1
@@ -32,6 +33,14 @@ struct SDLGameContainer: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.timer?.invalidate()
+        coordinator.timer = nil
+        coordinator.imageView?.image = nil
+        ballpad_ios_host_set_container_view(nil)
+        ballpad_ios_host_stop()
+    }
 
     class Coordinator {
         weak var container: UIView?
@@ -83,7 +92,7 @@ struct SDLGameContainer: UIViewRepresentable {
 
         func updateFrame() {
             #if targetEnvironment(simulator)
-            if diagCount % 300 == 0, let container = container {
+            if displayDiagnostics, diagCount % 300 == 0, let container = container {
                 let w = container.window
                 let winFrame = w?.frame ?? .zero
                 let screenBounds = w?.screen.bounds ?? .zero
@@ -97,10 +106,6 @@ struct SDLGameContainer: UIViewRepresentable {
             #endif
             var w: UInt32 = 0
             var h: UInt32 = 0
-            guard ballpad_ios_host_frame_size(&w, &h) else {
-                if frameDiag == 0 { NSLog("[ballpad] no frame yet") }
-                return
-            }
             // Perf: skip the copy + CGImage render when the guest has not
             // produced a new frame (slow scenes: the display timer runs at
             // 60 Hz regardless, and re-rendering the same image steals
@@ -123,7 +128,7 @@ struct SDLGameContainer: UIViewRepresentable {
             // Display diagnostics: every ~120 frames report the frame stats and
             // whether the image view got updated.
             diagCount += 1
-            if diagCount % 120 == 0 {
+            if displayDiagnostics, diagCount % 120 == 0 {
                 let n = Int(w * h)
                 var sum: UInt64 = 0
                 for i in stride(from: 0, to: min(n, 640*528) * 4, by: 4) {
@@ -141,7 +146,8 @@ struct SDLGameContainer: UIViewRepresentable {
             guard let cg = CGImage(width: Int(w), height: Int(h), bitsPerComponent: 8,
                                    bitsPerPixel: 32, bytesPerRow: Int(w) * 4,
                                    space: CGColorSpaceCreateDeviceRGB(),
-                                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+                                   bitmapInfo: [CGBitmapInfo.byteOrder32Little,
+                                                CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue)],
                                    provider: provider, decode: nil, shouldInterpolate: true,
                                    intent: .defaultIntent) else {
                 if frameDiag == 0 { NSLog("[ballpad] CGImage failed %ux%u", w, h) }
@@ -172,6 +178,8 @@ struct SDLGameContainer: UIViewRepresentable {
         var frameDiag = 0
         var diagCount = 0
         var lastFrameVersion: UInt64 = 0
+        let displayDiagnostics = ProcessInfo.processInfo.environment[
+            "BALLPAD_DISPLAY_DIAGNOSTICS"] == "1"
     }
 }
 
@@ -182,8 +190,17 @@ struct GameHostView: View {
     @StateObject private var controller = ControllerManager()
     @State private var showMenu = false
     @State private var editMode = false
+    @State private var selectedControl: ControlID?
     @State private var fps: Double = 0
     @State private var guestInfo = ""
+    @State private var statsTimer: Timer?
+    @State private var showGameImporter = false
+    @State private var showCardImporter = false
+    @State private var operationActive = false
+    @State private var importingGame = false
+    @State private var shareItem: ShareItem?
+    @State private var notice: Notice?
+    @State private var confirmDiagnostics = false
 
     init() {
         let idiom = UIDevice.current.userInterfaceIdiom
@@ -194,7 +211,8 @@ struct GameHostView: View {
         ZStack {
             SDLGameContainer(renderScale: CGFloat(settings.renderScale),
                              aspectMode: settings.aspectMode,
-                             paused: showMenu)
+                             paused: showMenu || showGameImporter ||
+                                showCardImporter || operationActive)
                 .ignoresSafeArea()
             VStack {
                 HStack {
@@ -213,10 +231,16 @@ struct GameHostView: View {
                             .font(.caption2.monospaced())
                             .foregroundStyle(.yellow.opacity(0.9))
                     }
-                    Button("⋯") { showMenu = true }
-                        .font(.title2.bold())
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
+                    BallpadMenu(
+                        renderScale: $settings.renderScale,
+                        aspectMode: $settings.aspectMode,
+                        showFps: $settings.showFps,
+                        onTouchSettings: { showMenu = true },
+                        onImportGame: { showGameImporter = true },
+                        onImportCard: { showCardImporter = true },
+                        onExportCard: exportCard,
+                        onShareDiagnostics: { confirmDiagnostics = true }
+                    )
                 }
                 .padding(.horizontal)
                 .padding(.top, 8)
@@ -226,16 +250,33 @@ struct GameHostView: View {
                     HStack {
                         Button("Cancel") {
                             layout.revertSnapshot()
+                            selectedControl = nil
                             editMode = false
                         }
                         .foregroundStyle(.red)
                         Spacer()
-                        Text("EDIT CONTROLS")
-                            .font(.caption.bold())
-                            .foregroundStyle(.yellow)
+                        if let selectedControl {
+                            Text(selectedControl.rawValue.uppercased())
+                                .font(.caption.bold())
+                                .foregroundStyle(.cyan)
+                            Slider(
+                                value: Binding(
+                                    get: { Double(layout.node(selectedControl).scale) },
+                                    set: { layout.setScale(id: selectedControl, CGFloat($0)) }
+                                ),
+                                in: 0.6...1.75
+                            )
+                            .frame(maxWidth: 220)
+                            .accessibilityLabel("Selected control size")
+                        } else {
+                            Text("DRAG CONTROLS • TAP ONE TO RESIZE")
+                                .font(.caption.bold())
+                                .foregroundStyle(.yellow)
+                        }
                         Spacer()
                         Button("Done") {
                             layout.commitSnapshot()
+                            selectedControl = nil
                             editMode = false
                         }
                         .foregroundStyle(.green)
@@ -244,33 +285,64 @@ struct GameHostView: View {
                 }
                 Spacer()
             }
+            .zIndex(10)
             TouchControlSurface(store: layout,
                                 editMode: editMode,
                                 controlScale: CGFloat(settings.controlScale),
                                 controlOpacity: settings.controlOpacity,
-                                controllerConnected: controller.isConnected) { status in
+                                controllerConnected: controller.isConnected &&
+                                    settings.hideControlsOnController,
+                                selectedControl: $selectedControl) { status in
                 var s = status
                 ballpad_pad_set(0, &s)
             }
+            #if !targetEnvironment(simulator)
+            ProductActionHost(
+                showGameImporter: $showGameImporter,
+                showCardImporter: $showCardImporter,
+                importingGame: importingGame,
+                shareItem: $shareItem,
+                notice: $notice,
+                confirmDiagnostics: $confirmDiagnostics,
+                onGameImport: handleGameImport,
+                onCardImport: handleCardImport,
+                onShareDiagnostics: shareDiagnostics
+            )
+            #endif
         }
         .statusBarHidden(true)
         .onAppear {
-            Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            statsTimer?.invalidate()
+            statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
                 fps = ballpad_ios_host_fps()
                 guestInfo = "\(ballpad_ios_host_guest_blocks()) \(ballpad_ios_host_game_state())"
             }
             runUITest()
         }
+        .onDisappear {
+            statsTimer?.invalidate()
+            statsTimer = nil
+            ballpad_pad_clear(0)
+        }
+        .onChange(of: controller.isConnected) { _, connected in
+            if connected && settings.hideControlsOnController {
+                ballpad_pad_clear_touch(0)
+            }
+        }
+        .onChange(of: settings.hideControlsOnController) { _, hide in
+            if hide && controller.isConnected {
+                ballpad_pad_clear_touch(0)
+            }
+        }
         .sheet(isPresented: $showMenu) {
             OverflowMenuView(
                 isPresented: $showMenu,
-                renderScale: $settings.renderScale,
-                aspectMode: $settings.aspectMode,
                 controlScale: $settings.controlScale,
                 controlOpacity: $settings.controlOpacity,
-                showFps: $settings.showFps,
+                hideControlsOnController: $settings.hideControlsOnController,
                 onEditLayout: {
                     layout.takeSnapshot()
+                    selectedControl = nil
                     editMode = true
                     showMenu = false
                 },
@@ -279,6 +351,99 @@ struct GameHostView: View {
                     layout.reset(deviceClass: idiom == .pad ? "pad" : "phone")
                 }
             )
+        }
+    }
+
+    private func handleGameImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else {
+            if case .failure(let error) = result {
+                notice = Notice(title: "Import Failed", message: error.localizedDescription)
+            }
+            return
+        }
+        importingGame = true
+        operationActive = true
+        let access = url.startAccessingSecurityScopedResource()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = ballpad_ios_host_import_game(url.path)
+            if access { url.stopAccessingSecurityScopedResource() }
+            DispatchQueue.main.async {
+                importingGame = false
+                operationActive = false
+                notice = ok
+                    ? Notice(title: "Game Imported",
+                             message: "The supported game image was replaced safely. Restart Ballpad to use the new copy.")
+                    : Notice(title: "Import Failed",
+                             message: "Choose a raw Super Mario Strikers USA G4QE01 ISO or GCM image.")
+            }
+        }
+    }
+
+    private func handleCardImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else {
+            if case .failure(let error) = result {
+                notice = Notice(title: "Import Failed", message: error.localizedDescription)
+            }
+            return
+        }
+        operationActive = true
+        let access = url.startAccessingSecurityScopedResource()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let ok = ballpad_ios_host_import_card(url.path)
+            if access { url.stopAccessingSecurityScopedResource() }
+            operationActive = false
+            notice = Notice(title: ok ? "Memory Card Imported" : "Import Failed",
+                            message: ok
+                                ? "The active memory card now uses the selected backup."
+                                : "Ballpad could not read that memory-card backup.")
+        }
+    }
+
+    private func exportCard() {
+        operationActive = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let formatter = ISO8601DateFormatter()
+            let stamp = formatter.string(from: Date())
+                .replacingOccurrences(of: ":", with: "-")
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Ballpad-CardA-\(stamp).dolcard")
+            let ok = ballpad_ios_host_export_card(url.path)
+            operationActive = false
+            if ok {
+                shareItem = ShareItem(url: url)
+            } else {
+                notice = Notice(title: "Export Failed",
+                                message: "The active memory card is not available yet.")
+            }
+        }
+    }
+
+    private func shareDiagnostics() {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let screen = UIScreen.main
+        let text = """
+        Ballpad diagnostic snapshot
+        App: \(version)
+        OS: \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)
+        Device: \(UIDevice.current.model)
+        Display: \(Int(screen.nativeBounds.width))x\(Int(screen.nativeBounds.height)) @ \(screen.nativeScale)x
+        Controller connected: \(controller.isConnected)
+        Render scale: \(settings.renderScale)x
+        Aspect mode: \(settings.aspectMode)
+        FPS: \(String(format: "%.1f", fps))
+        Guest running: \(ballpad_ios_host_running())
+        Guest blocks: \(ballpad_ios_host_guest_blocks())
+        Game state: \(ballpad_ios_host_game_state())
+        Game data present: \(ballpad_ios_host_game_files_present())
+        """
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Ballpad-Diagnostics.log")
+        do {
+            try Data(text.utf8).write(to: url, options: .atomic)
+            shareItem = ShareItem(url: url)
+        } catch {
+            notice = Notice(title: "Diagnostic Log Unavailable",
+                            message: error.localizedDescription)
         }
     }
 
@@ -305,7 +470,7 @@ struct GameHostView: View {
         case "verify":
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 if let a = self.layout.nodes.first(where: { $0.id == .a }) {
-                    let persisted = (fabs(a.normX - 0.62) < 0.01 && fabs(a.normY - 0.38) < 0.01)
+                    let persisted = (abs(a.normX - 0.62) < 0.01 && abs(a.normY - 0.38) < 0.01)
                     log("A position \(a.normX),\(a.normY) persisted=\(persisted)")
                 }
             }
@@ -406,5 +571,84 @@ struct GameHostView: View {
         default:
             break
         }
+    }
+}
+
+private struct ShareItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct Notice: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
+private struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController,
+                                context: Context) {}
+}
+
+/// Keep document pickers, alerts, and share sheets off the view that owns the
+/// SDL container. On iPadOS 26, attaching those presentation modifiers to the
+/// `UIViewRepresentable` root creates an AttributeGraph cycle and detaches the
+/// game window. Sunpad likewise keeps product actions separate from gameplay.
+private struct ProductActionHost: View {
+    @Binding var showGameImporter: Bool
+    @Binding var showCardImporter: Bool
+    let importingGame: Bool
+    @Binding var shareItem: ShareItem?
+    @Binding var notice: Notice?
+    @Binding var confirmDiagnostics: Bool
+    let onGameImport: (Result<[URL], Error>) -> Void
+    let onCardImport: (Result<[URL], Error>) -> Void
+    let onShareDiagnostics: () -> Void
+
+    var body: some View {
+        Color.clear
+            .ignoresSafeArea()
+            .allowsHitTesting(importingGame)
+            .overlay {
+                if importingGame {
+                    ZStack {
+                        Color.black.opacity(0.65).ignoresSafeArea()
+                        ProgressView("Importing game…")
+                            .padding(24)
+                            .background(.regularMaterial,
+                                        in: RoundedRectangle(cornerRadius: 16))
+                    }
+                }
+            }
+            .fileImporter(isPresented: $showGameImporter,
+                          allowedContentTypes: [.data,
+                              UTType(filenameExtension: "iso") ?? .data,
+                              UTType(filenameExtension: "gcm") ?? .data],
+                          allowsMultipleSelection: false,
+                          onCompletion: onGameImport)
+            .fileImporter(isPresented: $showCardImporter,
+                          allowedContentTypes: [.data,
+                              UTType(filenameExtension: "dolcard") ?? .data],
+                          allowsMultipleSelection: false,
+                          onCompletion: onCardImport)
+            .sheet(item: $shareItem) { item in
+                ActivityView(items: [item.url])
+            }
+            .alert(item: $notice) { notice in
+                Alert(title: Text(notice.title), message: Text(notice.message),
+                      dismissButton: .default(Text("OK")))
+            }
+            .alert("Share Diagnostic Log?", isPresented: $confirmDiagnostics) {
+                Button("Cancel", role: .cancel) {}
+                Button("Continue", action: onShareDiagnostics)
+            } message: {
+                Text("The log includes app, OS, device, display, controller, and runtime status. It does not include your game image, extracted game data, or saves.")
+            }
     }
 }

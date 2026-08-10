@@ -37,7 +37,7 @@ extern "C" void ballpad_ios_host_attach_sdl_view(void* sdlWindowPtr) {
     if (sdlView == nil) return;
     if (sdlView.superview == g_container) return;
     NSLog(@"[ballpad] attach sdlWindow=%@ containerWindow=%@ keyWindow=%@ sceneWindows=%lu",
-          win, g_container.window, UIApplication.sharedApplication.keyWindow,
+          win, g_container.window, win.windowScene.keyWindow,
           (unsigned long)win.windowScene.windows.count);
     sdlView.translatesAutoresizingMaskIntoConstraints = NO;
     [g_container insertSubview:sdlView atIndex:0];
