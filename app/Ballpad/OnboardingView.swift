@@ -50,8 +50,8 @@ struct OnboardingView: View {
                         .foregroundStyle(.red)
                         .padding(.horizontal, 40)
                 }
-                Text("Supported: GameCube .iso disc images (~1.4 GB). "
-                    + "The import runs locally on your device.")
+                Text("Supported: Super Mario Strikers USA G4QE01 revision 0 "
+                    + "raw .iso or .gcm images. Import runs locally.")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.55))
                     .multilineTextAlignment(.center)
@@ -60,7 +60,9 @@ struct OnboardingView: View {
         }
         .fileImporter(isPresented: $showImporter,
                       allowedContentTypes:
-                          [.data, UTType(filenameExtension: "iso") ?? .data],
+                          [.data,
+                           UTType(filenameExtension: "iso") ?? .data,
+                           UTType(filenameExtension: "gcm") ?? .data],
                       allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):

@@ -20,7 +20,12 @@ typedef struct BallPadStatus {
 
 /* port: 0..3. MVP uses port 0 only. */
 void ballpad_pad_set(int port, const BallPadStatus* status);
+/* Controller state is kept separate from touch so both sources can be used
+ * simultaneously. */
+void ballpad_pad_set_controller(int port, const BallPadStatus* status);
 void ballpad_pad_clear(int port);
+void ballpad_pad_clear_touch(int port);
+void ballpad_pad_clear_controller(int port);
 void ballpad_pad_get(int port, BallPadStatus* out); /* for tests */
 
 /* Aurora/Dolphin-compatible button masks */

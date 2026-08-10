@@ -23,6 +23,8 @@ void ballpad_debug_step(CPUState* cpu, unsigned long long blocks) {
   // CPU); hoist it once per process.
   static const bool s_debug_threads =
       getenv("BALLPAD_DEBUG_THREADS") != nullptr;
+  static const bool s_block_log = getenv("BALLPAD_BLOCK_LOG") != nullptr;
+  static const bool s_window_probe = getenv("BALLPAD_WINDOW_PROBE") != nullptr;
 
   // Task-run counters: which game task Runners actually execute (the pad
   // update path was suspected stuck). The entry pc is only visible before the
@@ -67,7 +69,7 @@ void ballpad_debug_step(CPUState* cpu, unsigned long long blocks) {
 
   // 1M-block progress log.
   static unsigned long long s_next_block_log = 1000000ull;
-  if (blocks >= s_next_block_log) {
+  if (s_block_log && blocks >= s_next_block_log) {
     s_next_block_log += 1000000ull;
     std::fprintf(stderr, "[ballpad-ios] blocks=%llu pc=0x%08X msr=0x%08X dec=%u\n",
                  (unsigned long long)blocks, cpu->pc, cpu->msr, cpu->spr[22]);
@@ -83,7 +85,7 @@ void ballpad_debug_step(CPUState* cpu, unsigned long long blocks) {
 
   // SDL window probe (log itself env-gated, BALLPAD_WINDOW_PROBE).
   static unsigned long long s_next_window_probe = 2500000ull;
-  if (blocks >= s_next_window_probe) {
+  if (s_window_probe && blocks >= s_next_window_probe) {
     s_next_window_probe += 2500000ull;
     ballpad_window_probe();
   }

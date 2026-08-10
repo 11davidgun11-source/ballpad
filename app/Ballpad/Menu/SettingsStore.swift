@@ -9,7 +9,7 @@ final class SettingsStore: ObservableObject {
         didSet { UserDefaults.standard.set(aspectMode, forKey: "ballpad.aspectMode") }
     }
     // Global touch-control scale (0.7-1.35) and opacity (0.25-1.0),
-    // modeled on bellpad's settings sliders.
+    // modeled on Sunpad's settings sliders.
     @Published var controlScale: Double {
         didSet { UserDefaults.standard.set(controlScale, forKey: "ballpad.controlScale") }
     }
@@ -19,14 +19,28 @@ final class SettingsStore: ObservableObject {
     @Published var showFps: Bool {
         didSet { UserDefaults.standard.set(showFps, forKey: "ballpad.showFps") }
     }
+    @Published var hideControlsOnController: Bool {
+        didSet {
+            UserDefaults.standard.set(hideControlsOnController,
+                                      forKey: "ballpad.hideControlsOnController")
+        }
+    }
     init() {
         let v = UserDefaults.standard.integer(forKey: "ballpad.renderScale")
-        renderScale = v == 0 ? 1 : v
-        aspectMode = UserDefaults.standard.string(forKey: "ballpad.aspectMode") ?? "native"
+        renderScale = (1...4).contains(v) ? v : 1
+        let savedAspect = UserDefaults.standard.string(forKey: "ballpad.aspectMode")
+        aspectMode = ["native", "wide", "stretch"].contains(savedAspect ?? "")
+            ? savedAspect! : "native"
         let cs = UserDefaults.standard.double(forKey: "ballpad.controlScale")
         controlScale = cs >= 0.7 && cs <= 1.35 ? cs : 1.0
         let co = UserDefaults.standard.double(forKey: "ballpad.controlOpacity")
-        controlOpacity = co >= 0.25 && co <= 1.0 ? co : 0.76
+        controlOpacity = co >= 0.25 && co <= 1.0 ? co : 0.82
         showFps = UserDefaults.standard.bool(forKey: "ballpad.showFps")
+        if UserDefaults.standard.object(forKey: "ballpad.hideControlsOnController") == nil {
+            hideControlsOnController = true
+        } else {
+            hideControlsOnController = UserDefaults.standard.bool(
+                forKey: "ballpad.hideControlsOnController")
+        }
     }
 }

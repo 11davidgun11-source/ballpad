@@ -62,4 +62,12 @@ class SceneDelegate: NSObject, UIWindowSceneDelegate {
             keepSwiftUIKey()
         }
     }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        ballpad_ios_host_application_did_become_active()
+    }
+
+    func sceneWillResignActive(_ scene: UIScene) {
+        ballpad_ios_host_application_will_resign_active()
+    }
 }

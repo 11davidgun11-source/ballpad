@@ -1,8 +1,8 @@
 import GameController
 import Foundation
 
-// C2: hardware GameCube-style controller support. Mirrors bellpad's iOS
-// overlay (apple/ios/BellpadGameOverlay.mm): listen for GCController connect/
+// C2: hardware GameCube-style controller support. Mirrors Sunpad's iOS
+// overlay (apple/ios/SunPadGameOverlay.mm): listen for GCController connect/
 // disconnect, merge the extended-gamepad state into ballpad_pad_set, and
 // expose `isConnected` so the touch overlay can auto-hide.
 final class ControllerManager: ObservableObject {
@@ -12,6 +12,13 @@ final class ControllerManager: ObservableObject {
     private var configured = Set<ObjectIdentifier>()
 
     init() {
+        // iOS 26 Simulator exposes a synthetic MFi controller and touching
+        // GameController during launch can still detach the SwiftUI window on
+        // iPad. Simulator input is touch/XCUITest-only; real devices retain
+        // the full controller path below.
+        #if targetEnvironment(simulator)
+        return
+        #endif
         // Defer ALL GameController interaction: touching the GC framework
         // during SwiftUI view init on the iOS 26 simulator triggers an
         // AttributeGraph layout cycle (the hosting window detaches and the
@@ -36,8 +43,8 @@ final class ControllerManager: ObservableObject {
         observers.append(center.addObserver(
             forName: .GCControllerDidDisconnect, object: nil, queue: .main
         ) { [weak self] _ in
-            // Release any buttons held when the controller dropped.
-            ballpad_pad_clear(0)
+            // Release only the controller source. Touch remains usable.
+            ballpad_pad_clear_controller(0)
             self?.configured.removeAll()
             self?.refresh()
         })
@@ -69,7 +76,7 @@ final class ControllerManager: ObservableObject {
         var connected = false
         // The iOS 26 simulator exposes a virtual MFi gamepad (always present),
         // which would auto-hide the touch overlay on every simulator run and
-        // break touch testing. bellpad's overlay does the same: input from
+        // break touch testing. Sunpad's overlay does the same: input from
         // connected controllers still merges everywhere (configure()), but
         // overlay visibility only reacts on real devices.
         #if !targetEnvironment(simulator)
@@ -107,7 +114,7 @@ final class ControllerManager: ObservableObject {
                 rt: pad.rightTrigger.value
             )
             var out = s
-            ballpad_pad_set(0, &out)
+            ballpad_pad_set_controller(0, &out)
         }
     }
 
@@ -133,7 +140,7 @@ final class ControllerManager: ObservableObject {
         if dpadLeft { btn |= UInt16(BALLPAD_BUTTON_LEFT) }
         if dpadRight { btn |= UInt16(BALLPAD_BUTTON_RIGHT) }
         // Analog triggers also assert the digital L/R bits past a threshold
-        // (bellpad uses ~30/255; the GameCube triggers have a digital click).
+        // (Sunpad uses ~30/255; the GameCube triggers have a digital click).
         if lt > 30.0 / 255.0 { btn |= UInt16(BALLPAD_TRIGGER_L) }
         if rt > 30.0 / 255.0 { btn |= UInt16(BALLPAD_TRIGGER_R) }
         s.button = btn

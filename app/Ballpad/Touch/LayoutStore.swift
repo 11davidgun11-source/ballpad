@@ -4,28 +4,54 @@ import UIKit
 final class LayoutStore: ObservableObject {
     @Published var nodes: [ControlNode]
     private let key: String
+    private let deviceClass: String
+    private var canvasSize: CGSize
+    private var hasCustomLayout: Bool
     private var snapshot: [ControlNode] = []
+    private var snapshotWasCustom = false
 
     init(deviceClass: String) {
-        self.key = "ballpad.layout.\(deviceClass)"
+        self.deviceClass = deviceClass
+        // Version the persisted coordinates whenever the reference layout
+        // changes. Old Ballpad defaults used full UIScreen coordinates while
+        // SwiftUI laid controls out in a safe-area-sized canvas, which made
+        // phones and iPads visibly diverge from Sunpad.
+        self.key = "ballpad.layout.sunpad-v5.\(deviceClass)"
+        let bounds = UIScreen.main.bounds
+        let initialSize = CGSize(width: max(bounds.width, bounds.height),
+                                 height: min(bounds.width, bounds.height))
+        self.canvasSize = initialSize
         if let data = UserDefaults.standard.data(forKey: key),
            let decoded = try? JSONDecoder().decode([ControlNode].self, from: data),
            !decoded.isEmpty {
             nodes = decoded
+            hasCustomLayout = true
         } else {
-            nodes = Self.defaults(for: deviceClass)
+            nodes = Self.defaults(for: deviceClass, in: initialSize)
+            hasCustomLayout = false
         }
     }
 
-    // bellpad-style adaptive defaults computed from the current screen size
+    // Sunpad-style adaptive defaults computed from the current screen size
     // (landscape): small screens scale controls down, iPads use fixed larger
     // sizes. Falls back to the last saved layout when present.
-    private static func defaults(for deviceClass: String) -> [ControlNode] {
-        let bounds = UIScreen.main.bounds
-        let size = CGSize(width: max(bounds.width, bounds.height),
-                          height: min(bounds.width, bounds.height))
+    private static func defaults(for deviceClass: String,
+                                 in size: CGSize) -> [ControlNode] {
         return deviceClass == "pad" ? DefaultLayouts.computedPad(in: size)
                                     : DefaultLayouts.computedPhone(in: size)
+    }
+
+    /// Rebuild untouched defaults from the exact safe-area canvas used by
+    /// SwiftUI. Sunpad performs the same calculation in `layoutSubviews`
+    /// after applying `safeAreaInsets`; using UIScreen dimensions here makes
+    /// phone controls shrink and drift when rendered inside a narrower view.
+    func updateCanvas(_ size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        let changed = abs(size.width - canvasSize.width) > 0.5 ||
+            abs(size.height - canvasSize.height) > 0.5
+        canvasSize = size
+        guard changed, !hasCustomLayout else { return }
+        nodes = Self.defaults(for: deviceClass, in: size)
     }
 
     func node(_ id: ControlID) -> ControlNode {
@@ -33,6 +59,7 @@ final class LayoutStore: ObservableObject {
     }
 
     func save() {
+        hasCustomLayout = true
         if let data = try? JSONEncoder().encode(nodes) {
             UserDefaults.standard.set(data, forKey: key)
         }
@@ -42,8 +69,10 @@ final class LayoutStore: ObservableObject {
         guard size.width > 0, size.height > 0,
               let idx = nodes.firstIndex(where: { $0.id == id }) else { return }
         var node = nodes[idx]
-        node.normX = min(max(newCenter.x / size.width, 0.03), 0.97)
-        node.normY = min(max(newCenter.y / size.height, 0.03), 0.97)
+        let halfWidth = min(node.normW * node.scale / 2, 0.5)
+        let halfHeight = min(node.normH * node.scale / 2, 0.5)
+        node.normX = min(max(newCenter.x / size.width, halfWidth), 1 - halfWidth)
+        node.normY = min(max(newCenter.y / size.height, halfHeight), 1 - halfHeight)
         nodes[idx] = node
         save()
     }
@@ -67,6 +96,7 @@ final class LayoutStore: ObservableObject {
     // Editor lifecycle (docs/05 §5): Done saves, Cancel reverts.
     func takeSnapshot() {
         snapshot = nodes
+        snapshotWasCustom = hasCustomLayout
     }
     func commitSnapshot() {
         snapshot = []
@@ -76,12 +106,18 @@ final class LayoutStore: ObservableObject {
         if !snapshot.isEmpty {
             nodes = snapshot
             snapshot = []
-            save()
+            hasCustomLayout = snapshotWasCustom
+            if hasCustomLayout, let data = try? JSONEncoder().encode(nodes) {
+                UserDefaults.standard.set(data, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
         }
     }
 
     func reset(deviceClass: String) {
-        nodes = Self.defaults(for: deviceClass)
-        save()
+        hasCustomLayout = false
+        UserDefaults.standard.removeObject(forKey: key)
+        nodes = Self.defaults(for: self.deviceClass, in: canvasSize)
     }
 }

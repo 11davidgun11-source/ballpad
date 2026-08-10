@@ -8,29 +8,25 @@ enum ControlID: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-// GameCube-fidelity skin metadata. Reference: bellpad's iOS overlay
-// (ref/bellpad; /Users/chrissotraidis/GitHub/bellpad) — A green, B red,
+// GameCube-fidelity skin metadata. Reference: Sunpad's iOS overlay
+// (ref/sunpad/apple/ios/SunPadGameOverlay.mm) — A green, B red,
 // X blue, Y yellow, C-stick yellow, shoulders/Z/START dark greys. Colors are
 // recreated shapes, never ripped textures.
 enum ControlSkin {
     static func fill(_ id: ControlID) -> Color {
         switch id {
-        case .a: return Color(red: 0.20, green: 0.72, blue: 0.43)
-        case .b: return Color(red: 0.84, green: 0.24, blue: 0.30)
-        case .x: return Color(red: 0.30, green: 0.53, blue: 0.88)
-        case .y: return Color(red: 0.88, green: 0.64, blue: 0.16)
-        case .cStick: return Color(red: 0.95, green: 0.80, blue: 0.12)
-        case .z: return Color(white: 0.46)
-        case .l, .r: return Color(white: 0.32)
-        case .start: return Color(white: 0.28)
-        case .dpadUp, .dpadDown, .dpadLeft, .dpadRight: return Color(white: 0.26)
-        default: return Color(white: 0.20) // stick well
+        case .a: return Color(red: 0.08, green: 0.56, blue: 0.29).opacity(0.92)
+        case .b: return Color(red: 0.78, green: 0.10, blue: 0.13).opacity(0.92)
+        case .x, .y: return Color(white: 0.72).opacity(0.92)
+        case .z: return Color(red: 0.38, green: 0.18, blue: 0.58).opacity(0.94)
+        case .start: return Color(white: 0.28).opacity(0.92)
+        default: return Color(white: 0.22).opacity(0.88)
         }
     }
-    // bellpad uses ~0.68-0.76 fill alpha baked into the colors and a 0.76
-    // control opacity; we approximate with a uniform 0.76 idle opacity.
-    static let idleOpacity: Double = 0.76
-    static let activeOpacity: Double = 0.92
+    static let moveBase = Color(white: 0.13).opacity(0.86)
+    static let moveThumb = Color(white: 0.58).opacity(0.94)
+    static let cameraBase = Color(red: 0.91, green: 0.66, blue: 0.08).opacity(0.90)
+    static let cameraThumb = Color(red: 1.00, green: 0.84, blue: 0.25).opacity(0.98)
 }
 
 struct ControlNode: Identifiable, Codable, Equatable {
@@ -45,8 +41,8 @@ struct ControlNode: Identifiable, Codable, Equatable {
 }
 
 enum DefaultLayouts {
-    // bellpad's adaptive layout (LayoutSubviews), converted to normalized
-    // safe-area coordinates. Sizes in points follow bellpad: the phone scales
+    // Sunpad's adaptive layout (layoutSubviews), converted to normalized
+    // safe-area coordinates. Sizes in points follow Sunpad: the phone scales
     // controls by min(1, w/800, h/380); the iPad uses fixed larger sizes.
     static func computedPhone(in size: CGSize) -> [ControlNode] {
         layout(in: size, pad: false)
@@ -68,12 +64,9 @@ enum DefaultLayouts {
         let d: CGFloat = (pad ? 48.0 : 36.0 * baseScale)
         let shoulderW: CGFloat = (pad ? 132.0 : 94.0 * baseScale)
         let shoulderH: CGFloat = small
-        let shoulderY: CGFloat = pad ? 92.0 : 68.0 * baseScale
         let startW: CGFloat = (pad ? 116.0 : 92.0 * baseScale)
         let startH: CGFloat = small
         let spacing: CGFloat = pad ? 34.0 : 18.0 * baseScale
-        let faceGap: CGFloat = pad ? 12.0 : 8.0 * baseScale
-
         func node(_ id: ControlID, _ x: CGFloat, _ y: CGFloat,
                   _ cw: CGFloat, _ ch: CGFloat, _ label: String) -> ControlNode {
             ControlNode(id: id,
@@ -84,30 +77,38 @@ enum DefaultLayouts {
                         label: label)
         }
 
-        // Move stick: bottom-left.
         let moveX = margin
         let moveY = h - stick - margin
         // Camera stick: bottom-right.
         let camX = w - margin - camera
         let camY = h - margin - camera
-        // Face cluster anchored on A (above the camera stick).
+
+        // Match SunPadGameOverlay.layoutSubviews exactly. A anchors against
+        // the safe right edge; X sits directly above it, Y above-left, and B
+        // down-left. This keeps A out of the X/Y column instead of wedging it
+        // underneath two overlapping hit targets.
         let aX = w - margin - large
-        let aY = camY - large - 18.0 * baseScale
+        let aY = h - margin - camera - large - 18.0 * baseScale
+        let aCenterX = aX + large / 2
+        let aCenterY = aY + large / 2
         let bX = aX - medium - 12.0 * baseScale
-        let bY = aY + 8.0 * baseScale
-        let xX = aX + (large - small) / 2
+        let bY = aCenterY + 8.0
+        let xX = aCenterX - small / 2
         let xY = aY - small - 10.0 * baseScale
         let yX = aX - small - 8.0 * baseScale
-        let yY = aY - small + 8.0 * baseScale
-        // Shoulder row.
+        let yY = aY - small + 8.0
+
+        // Sunpad shoulders span the top row and START is centered above the
+        // game, leaving the entire face cluster unobstructed.
+        let shoulderY = pad ? 92.0 : 68.0 * baseScale
         let lX = margin
         let rX = w - margin - shoulderW
         let zX = rX - small - 12.0 * baseScale
-        // Start: top-center.
-        let startX = w / 2 - startW / 2
+        let startX = (w - startW) / 2
+        let startY = margin
         // D-pad: compact 4-button grid right of the move stick.
         let dx = moveX + stick + spacing
-        let dy = moveY + (stick - d * 3) / 2
+        let dy = moveY + stick / 2 - d / 2
 
         return [
             node(.stick, moveX, moveY, stick, stick, ""),
@@ -119,11 +120,11 @@ enum DefaultLayouts {
             node(.l, lX, shoulderY, shoulderW, shoulderH, "L"),
             node(.r, rX, shoulderY, shoulderW, shoulderH, "R"),
             node(.z, zX, shoulderY, small, small, "Z"),
-            node(.start, startX, margin, startW, startH, "START"),
-            node(.dpadUp, dx + d, dy, d, d, "▲"),
-            node(.dpadDown, dx + d, dy + 2 * d, d, d, "▼"),
-            node(.dpadLeft, dx, dy + d, d, d, "◀"),
-            node(.dpadRight, dx + 2 * d, dy + d, d, d, "▶"),
+            node(.start, startX, startY, startW, startH, "START"),
+            node(.dpadUp, dx + d, dy - d, d, d, "▲"),
+            node(.dpadDown, dx + d, dy + d, d, d, "▼"),
+            node(.dpadLeft, dx, dy, d, d, "◀"),
+            node(.dpadRight, dx + 2 * d, dy, d, d, "▶"),
         ]
     }
 }
