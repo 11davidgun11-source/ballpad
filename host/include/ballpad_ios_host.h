@@ -49,10 +49,11 @@ void ballpad_ios_host_set_window_scene(void* uiWindowScene);
 /* After start, returns the SDL window's UIWindow (for re-parenting) as void*. */
 void* ballpad_ios_host_sdl_uikit_window(void);
 
-/* Host container UIView* (SwiftUI's SDLGameContainer). The bridge re-parents
- * SDL's Metal view into it once the window exists. Main thread only. */
+/* Host container UIView* (SwiftUI's SDLGameContainer). The bridge uses its
+ * UIWindow to keep the SwiftUI scene key while the hidden SDL window provides
+ * Metal bootstrap only; visible frames arrive through EFB readback. */
 void ballpad_ios_host_set_container_view(void* uiView);
-/* Re-parent SDL's window root view into the container. Call each frame. */
+/* Keep SDL's auxiliary window hidden after it has initialized. Call each frame. */
 void ballpad_ios_host_attach_sdl_view(void* sdlWindowPtr);
 
 /* Host lifecycle hooks called from SwiftUI on the main thread. */
@@ -64,12 +65,16 @@ void ballpad_ios_host_application_will_resign_active(void);
 bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* width_out,
                                  uint32_t* height_out);
 
-/* B2: zero-copy frame handoff. Returns a pointer to the host's RGBA8 staging
- * buffer for the latest frame (double-buffered: the next call returns the
- * other buffer, so a CGImage can reference it without copying). The returned
- * pointer stays valid until the NEXT call; it is NOT owned by the caller. */
-const uint8_t* ballpad_ios_host_frame_ptr(uint32_t* width_out,
-                                          uint32_t* height_out);
+/* B2: frame handoff for Core Graphics. Copies the latest frame into a leased
+ * native-ARGB staging buffer and returns its pointer plus an opaque lease.
+ * The caller must call release_display_frame(lease) only after Core Graphics
+ * has finished with the pointer (normally from CGDataProvider's release
+ * callback). If every staging buffer is still in use, this returns NULL: drop
+ * the frame instead of overwriting memory held by an older CGImage. */
+const uint8_t* ballpad_ios_host_take_display_frame(uint32_t* width_out,
+                                                   uint32_t* height_out,
+                                                   void** lease_out);
+void ballpad_ios_host_release_display_frame(void* lease);
 
 /* Current EFB frame size; false when no frame has been presented yet. */
 bool ballpad_ios_host_frame_size(uint32_t* width_out, uint32_t* height_out);
@@ -83,6 +88,12 @@ int  ballpad_ios_host_get_efb_scale(void);
 void ballpad_ios_host_set_efb_scale(int scale);
 /* Rolling present rate (fps) for the debug overlay. */
 double ballpad_ios_host_fps(void);
+
+/* Writes a compact, privacy-safe runtime health snapshot into `buffer` for
+ * user-shared diagnostics. It intentionally reports no filesystem paths, game
+ * data, save data, or controller identifiers. Returns false when the buffer
+ * cannot receive a complete snapshot. */
+bool ballpad_ios_host_diagnostic_snapshot(char* buffer, uint32_t buffer_size);
 
 /* M11 memory card. The active card lives at Documents/Saves/CardA.dolcard. */
 const char* ballpad_ios_host_card_path(void);

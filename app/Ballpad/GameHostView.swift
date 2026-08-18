@@ -72,7 +72,10 @@ struct SDLGameContainer: UIViewRepresentable {
             cfg.iso_path = nil
             cfg.dol_path = nil
             cfg.card_path = nil
-            cfg.enable_audio = false
+            // Fresh boot and QuickBoot restore both pass the iPad Simulator
+            // playback gate. Enable sound by default; retain an explicit
+            // opt-out for diagnostics and host-audio troubleshooting.
+            cfg.enable_audio = ProcessInfo.processInfo.environment["BALLPAD_DISABLE_AUDIO"] != "1"
             // B4: ship quiet. The per-present [gfxN] log spam comes from
             // cfg.verbose (info_logging/graphics_logging in Aurora). Keep it
             // env-overridable for diagnostics (BALLPAD_VERBOSE=1).
@@ -91,19 +94,6 @@ struct SDLGameContainer: UIViewRepresentable {
         }
 
         func updateFrame() {
-            #if targetEnvironment(simulator)
-            if displayDiagnostics, diagCount % 300 == 0, let container = container {
-                let w = container.window
-                let winFrame = w?.frame ?? .zero
-                let screenBounds = w?.screen.bounds ?? .zero
-                NSLog("[window] container=%@ windowNil=%d window=%@ screen=%@ super=%@",
-                      NSCoder.string(for: container.frame),
-                      w == nil ? 1 : 0,
-                      NSCoder.string(for: winFrame),
-                      NSCoder.string(for: screenBounds),
-                      String(describing: type(of: container.superview ?? UIView())))
-            }
-            #endif
             var w: UInt32 = 0
             var h: UInt32 = 0
             // Perf: skip the copy + CGImage render when the guest has not
@@ -115,9 +105,14 @@ struct SDLGameContainer: UIViewRepresentable {
                 return
             }
             lastFrameVersion = version
-            // B2: zero-copy — reference the host's double-buffered RGBA
-            // staging directly (no per-frame array alloc or Data copy).
-            guard let framePtr = ballpad_ios_host_frame_ptr(&w, &h) else {
+            // B2: Core Graphics can retain an image past the next display
+            // tick. Keep the host staging slot leased until its data provider
+            // releases it, rather than reusing a double buffer underneath an
+            // image that may still be on screen.
+            var frameLease: UnsafeMutableRawPointer?
+            guard let framePtr = ballpad_ios_host_take_display_frame(
+                &w, &h, &frameLease
+            ), let frameLease else {
                 if frameDiag == 0 { NSLog("[ballpad] no frame data") }
                 return
             }
@@ -128,6 +123,19 @@ struct SDLGameContainer: UIViewRepresentable {
             // Display diagnostics: every ~120 frames report the frame stats and
             // whether the image view got updated.
             diagCount += 1
+            #if targetEnvironment(simulator)
+            if displayDiagnostics, diagCount % 300 == 0, let container = container {
+                let window = container.window
+                let winFrame = window?.frame ?? .zero
+                let screenBounds = window?.screen.bounds ?? .zero
+                NSLog("[window] container=%@ windowNil=%d window=%@ screen=%@ super=%@",
+                      NSCoder.string(for: container.frame),
+                      window == nil ? 1 : 0,
+                      NSCoder.string(for: winFrame),
+                      NSCoder.string(for: screenBounds),
+                      String(describing: type(of: container.superview ?? UIView())))
+            }
+            #endif
             if displayDiagnostics, diagCount % 120 == 0 {
                 let n = Int(w * h)
                 var sum: UInt64 = 0
@@ -137,9 +145,12 @@ struct SDLGameContainer: UIViewRepresentable {
                 let mean = Double(sum) / (3.0 * Double(min(n, 640*528)))
                 FileHandle.standardError.write(Data("[display] diag mean=\(Int(mean)) imageSet=\(imageView?.image != nil) size=\(w)x\(h)\n".utf8))
             }
-            let provider = CGDataProvider(dataInfo: nil, data: framePtr,
-                                          size: count) { _, _, _ in }
+            let provider = CGDataProvider(dataInfo: frameLease, data: framePtr,
+                                          size: count) { info, _, _ in
+                ballpad_ios_host_release_display_frame(info)
+            }
             guard let provider else {
+                ballpad_ios_host_release_display_frame(frameLease)
                 if frameDiag == 0 { NSLog("[ballpad] CGDataProvider failed %ux%u", w, h) }
                 return
             }
@@ -421,6 +432,13 @@ struct GameHostView: View {
     private func shareDiagnostics() {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         let screen = UIScreen.main
+        var hostBuffer = [CChar](repeating: 0, count: 1024)
+        let hostSnapshotAvailable = ballpad_ios_host_diagnostic_snapshot(
+            &hostBuffer, UInt32(hostBuffer.count)
+        )
+        let hostSnapshot = hostSnapshotAvailable
+            ? String(cString: hostBuffer)
+            : "Host snapshot: unavailable"
         let text = """
         Ballpad diagnostic snapshot
         App: \(version)
@@ -435,6 +453,9 @@ struct GameHostView: View {
         Guest blocks: \(ballpad_ios_host_guest_blocks())
         Game state: \(ballpad_ios_host_game_state())
         Game data present: \(ballpad_ios_host_game_files_present())
+
+        Runtime health
+        \(hostSnapshot)
         """
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("Ballpad-Diagnostics.log")
@@ -567,6 +588,18 @@ struct GameHostView: View {
                 let restoredData = (try? Data(contentsOf: URL(fileURLWithPath: card))) ?? Data()
                 let restoredMatch = imported && restoredData == cardData
                 log("saves: import ok=\(imported) restored=\(restoredMatch) bytes=\(restoredData.count)")
+            }
+        case "diagnostics":
+            // Host snapshot proof: exercises the exact bounded data exposed by
+            // Share Diagnostic Log without presenting a share sheet in the
+            // Simulator gameplay graph.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+                var buffer = [CChar](repeating: 0, count: 1024)
+                let ok = ballpad_ios_host_diagnostic_snapshot(
+                    &buffer, UInt32(buffer.count)
+                )
+                let snapshot = ok ? String(cString: buffer) : "unavailable"
+                log("diagnostics ok=\(ok) \(snapshot.replacingOccurrences(of: "\n", with: " | "))")
             }
         default:
             break

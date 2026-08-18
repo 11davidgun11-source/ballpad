@@ -33,15 +33,17 @@ changing its Strikers-specific runtime architecture:
 | Per-control sizing | Global size only | Selecting a control while editing exposes Sunpad's 0.60–1.75 individual-size slider; Cancel restores the prior layout | `PadDiagnosticTests.testSunpadStyleMenuAndSettings` |
 | Shoulder input | Mixed global/local Y coordinates; ordinary taps could miss the digital threshold, especially on iPad | L/R become full analog + digital presses immediately on touch, matching Sunpad | Source review + rebuilt app |
 | Stick range | Fixed 60-point divisor capped smaller phone sticks below ±127 | Normalize against each rendered stick radius with the existing deadzone | Source review + full-range pad tests |
-| Controller coexistence | Controller events overwrote the touch buffer; disconnect cleared all input | Separate touch/controller states, OR buttons, strongest-axis sticks, max triggers, controller-only clear | `ballpad_pad_test` |
+| Controller coexistence | Controller events overwrote the touch buffer; disconnect cleared all input | Separate touch/controller states, OR buttons, strongest-axis sticks, max triggers, controller-only clear; safe Simulator overlay handoff without querying synthetic MFi | `ballpad_pad_test`; iPhone 17 Pro + iPad A16 `testSimulatedControllerHidesTouchOverlay` proves the A control transitions from interactive to non-interactive, 2026-08-18 (physical delivery remains open) |
 | Fast taps | No cross-thread edge retention | Rising-edge button latching until guest consumption | `ballpad_pad_test` + source review |
 | Input threading | Unsynchronized UI writes and guest reads | Mutex-protected input snapshots and consumption | `ballpad_pad_test` under C11 warnings-as-errors |
+| Sustained live touch | Menu navigation was proven, but continuous use of the actual analog and action affordances had not been re-run after renderer/stability work | `TouchMatchTests` drives the real stick, A/B, and L/R for six ten-second in-match cycles and asserts guest progress plus an on-field state | Fresh iPhone 17 Pro and iPad A16 Simulator XCUITest passes, 2026-08-18 |
+| Default control placement | BallPad described its layout as SunPad-derived but used a generic edge-pinned fallback for both device classes | Port SunPad's phone and large-iPad normalized anchors, phone B scale, and R/Z plate width; preserve custom user layouts | Source-level comparison completed; fresh iPhone 17 Pro and iPad A16 real-overlay sustained-match XCUITests passed after v6 layout update, 2026-08-18 |
 | Frame handoff | Per-pixel ARGB→RGBA loop on the main thread plus unconditional frame-stat scans | Locked `memcpy` into double buffers, native little-endian Core Graphics format, diagnostics opt-in | Clean build + live match render |
 | QuickBoot geometry | Restored parser state originally left gxcore's indexed-array bindings at address/stride zero; older snapshots also remained byte-compatible after renderer lifecycle semantics changed | Rehydrate every CP array binding and cull state, reject incomplete indexed bindings, and bump the snapshot compatibility version so stale renderer state falls back to a fresh boot | Frame-by-frame A/B: v3 restore produced persistent flattened players while the same build's fresh boot produced upright players in the same stadium |
 | QuickBoot input/poses | Restore restarted the 44-step autostart and sent three more A presses; in-match A is tackle, so a healthy render looked like collapsed meshes | Never replay autostart after restore; send exactly one match-start A and return to neutral | Five frames at two-second intervals show ordinary standing/running/fall/recovery animation |
 | iPad presentation | SwiftUI document/share presenters and Simulator GameController discovery could create an AttributeGraph cycle and detach the game window | Keep product presenters off the Simulator gameplay graph and skip its synthetic MFi controller discovery; physical-device controller behavior is unchanged | iPad Pro 13-inch Simulator: zero AttributeGraph warnings, live 640×528 frame, full Sunpad control overlay |
 | Runtime diagnostics | Simulator/window and pixel-mean diagnostics ran in normal builds | `BALLPAD_DISPLAY_DIAGNOSTICS=1` gate | Default launch log |
-| Lifecycle | Guest continued running while the app resigned active | Independent lifecycle pause state | Source review + app lifecycle hooks |
+| Lifecycle | Guest continued running while the app resigned active; in-app settings pause had only indirect log evidence | Independent lifecycle pause state; test the actual background/foreground and settings-sheet routes against the guest block counter | iPhone 17 Pro + iPad A16 Simulator XCUITests: guest resumes after Home/foreground and freezes/resumes across Touch Control Settings, 2026-08-18 |
 | Guest status | UI read guest CPU memory/counters concurrently | Guest-thread snapshots published through atomics | Source review |
 | Import | Any data-shaped file was attempted; wrong games were not rejected early | Exact raw size, `G4QE01`, revision 0, and GameCube magic validation | Local reference-image header/size check + build |
 | Settings | Corrupt defaults could produce invalid scale/aspect values | Validated settings on load | Build |
@@ -73,7 +75,9 @@ hardware.
 
 These are intentionally not hidden by the parity work:
 
-1. **Audio:** Ballpad currently starts the host with audio disabled.
+1. **Audio:** Ballpad now enables playback by default after fresh-boot and
+   QuickBoot queue verification on iPad Simulator. Physical-device audibility,
+   interruption, and pause/resume remain unproven.
 2. **Physical devices:** this pass validates the arm64 Simulator path, not a
    freshly signed iPhone/iPad build or minimum-iOS device.
 3. **Core reproducibility:** dependencies remain ignored local worktrees;
@@ -100,6 +104,7 @@ These are intentionally not hidden by the parity work:
   controller handoff re-run after this input change.
 - Physical iPhone and iPad: boot, import, menu, touch, controller, lifecycle,
   memory-card, 20-minute match, and thermal/frame-time capture.
-- Audio either enabled and accepted or clearly removed from the release claim.
+- Audio default-on playback, physical-device audibility, and interruption/
+  pause-resume behavior verified before a release claim.
 - Dependency bootstrap, package audit, licenses/notices, and installation docs
   completed before distributing a binary.

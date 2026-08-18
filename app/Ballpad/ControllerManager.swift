@@ -11,23 +11,49 @@ final class ControllerManager: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var configured = Set<ObjectIdentifier>()
 
+    // Keep normal gameplay logs quiet; an explicit physical-device validation
+    // run can turn this on without recording controller names or identifiers.
+    private var diagnosticsEnabled: Bool {
+        ProcessInfo.processInfo.environment["BALLPAD_CONTROLLER_LOG"] == "1"
+    }
+
+    private func diagnostic(_ message: String) {
+        if diagnosticsEnabled {
+            NSLog("[controller] %@", message)
+        }
+    }
+
     init() {
         // iOS 26 Simulator exposes a synthetic MFi controller and touching
         // GameController during launch can still detach the SwiftUI window on
-        // iPad. Simulator input is touch/XCUITest-only; real devices retain
-        // the full controller path below.
+        // iPad. Keep ordinary simulator launches touch/XCUITest-only. The
+        // explicit proof hook deliberately never calls GameController: it
+        // exercises the same published connection state and pure mapping
+        // function that a real controller path uses.
         #if targetEnvironment(simulator)
-        return
-        #endif
+        if ProcessInfo.processInfo.environment["BALLPAD_SIMULATE_CONTROLLER"] == "1" {
+            // Tests can defer the synthetic connection long enough to observe
+            // the visible → controller-hidden transition. Product simulator
+            // behavior keeps the historical 1.5 s delay.
+            let delay = Double(ProcessInfo.processInfo.environment[
+                "BALLPAD_SIMULATE_CONTROLLER_DELAY"
+            ] ?? "") ?? 1.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.isConnected = true
+                NSLog("[controller] simulate connect: overlay hidden")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay + 2.5) { [weak self] in
+                self?.selfTest()
+            }
+        }
+        #else
         // Defer ALL GameController interaction: touching the GC framework
-        // during SwiftUI view init on the iOS 26 simulator triggers an
-        // AttributeGraph layout cycle (the hosting window detaches and the
-        // screen goes black — verified 2026-08-08, docs/09). Registering the
-        // observers + enumerating controllers once the window has settled is
-        // safe.
+        // during SwiftUI view init can detach the game window. Start only
+        // after the real-device game window has settled.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.setup()
         }
+        #endif
     }
 
     private func setup() {
@@ -36,6 +62,7 @@ final class ControllerManager: ObservableObject {
             forName: .GCControllerDidConnect, object: nil, queue: .main
         ) { [weak self] note in
             if let controller = note.object as? GCController {
+                self?.diagnostic("hardware connect notification extended=\(controller.extendedGamepad != nil ? 1 : 0)")
                 self?.configure(controller)
             }
             self?.refresh()
@@ -46,24 +73,14 @@ final class ControllerManager: ObservableObject {
             // Release only the controller source. Touch remains usable.
             ballpad_pad_clear_controller(0)
             self?.configured.removeAll()
+            self?.diagnostic("hardware disconnect notification controller-state-cleared")
             self?.refresh()
         })
+        diagnostic("hardware controller monitor enabled")
         for controller in GCController.controllers() {
             configure(controller)
         }
         refresh()
-        if ProcessInfo.processInfo.environment["BALLPAD_SIMULATE_CONTROLLER"] == "1" {
-            // Simulator proof hook: no physical controllers exist on the sim,
-            // so fake a connect (hides the overlay) and then self-test the
-            // button/stick mapping (logs the merged pad state).
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                self?.isConnected = true
-                NSLog("[controller] simulate connect: overlay hidden")
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
-                self?.selfTest()
-            }
-        }
     }
 
     deinit {
@@ -73,19 +90,29 @@ final class ControllerManager: ObservableObject {
     }
 
     private func refresh() {
-        var connected = false
         // The iOS 26 simulator exposes a virtual MFi gamepad (always present),
         // which would auto-hide the touch overlay on every simulator run and
         // break touch testing. Sunpad's overlay does the same: input from
         // connected controllers still merges everywhere (configure()), but
         // overlay visibility only reacts on real devices.
         #if !targetEnvironment(simulator)
+        var connected = false
         for controller in GCController.controllers() where controller.extendedGamepad != nil {
             connected = true
             break
         }
-        #endif
         isConnected = connected
+        diagnostic("hardware overlay-hidden=\(connected ? 1 : 0)")
+        #else
+        // Do not query the simulator's synthetic MFi controller: its presence
+        // is not a user controller connection and it destabilizes the iPad UI
+        // graph. The opt-in proof hook above can still publish `true`.
+        let simulated = ProcessInfo.processInfo.environment[
+            "BALLPAD_SIMULATE_CONTROLLER"
+        ] == "1"
+        if !simulated { isConnected = false }
+        diagnostic("simulator hardware controller query skipped")
+        #endif
     }
 
     private func configure(_ controller: GCController) {
@@ -93,6 +120,7 @@ final class ControllerManager: ObservableObject {
         if configured.contains(ObjectIdentifier(controller)) { return }
         configured.insert(ObjectIdentifier(controller))
         controller.playerIndex = .index1
+        diagnostic("hardware extended gamepad configured")
         gamepad.valueChangedHandler = { pad, _ in
             let s = ControllerManager.map(
                 a: pad.buttonA.isPressed,

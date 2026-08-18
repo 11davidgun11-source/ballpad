@@ -8,6 +8,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         config.delegateClass = SceneDelegate.self
         return config
     }
+
 }
 
 class SceneDelegate: NSObject, UIWindowSceneDelegate {
@@ -70,4 +71,5 @@ class SceneDelegate: NSObject, UIWindowSceneDelegate {
     func sceneWillResignActive(_ scene: UIScene) {
         ballpad_ios_host_application_will_resign_active()
     }
+
 }

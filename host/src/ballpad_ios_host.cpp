@@ -31,6 +31,7 @@ extern "C" {
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
@@ -97,8 +98,13 @@ std::atomic<bool> g_paused{false};
 std::atomic<bool> g_lifecycle_paused{false};
 std::atomic<unsigned long long> g_public_blocks{0};
 std::atomic<long long> g_public_game_state{-1};
+std::atomic<unsigned long long> g_public_step_budget{0};
+std::atomic<unsigned long long> g_public_step_micros{0};
+std::atomic<unsigned long long> g_display_frames_copied{0};
+std::atomic<unsigned long long> g_display_frames_dropped{0};
 std::thread g_guest_thread;
 std::mutex g_frame_mutex;
+std::once_flag g_process_exit_once;
 
 void* g_scene = nullptr;
 void* g_sdl_window = nullptr;
@@ -120,17 +126,51 @@ const char* g_iso_path = nullptr;
 const char* g_dol_path = nullptr;
 const char* g_card_path = nullptr;
 bool g_quickbooted = false;
+
+void log_renderer_diagnostics(const char* phase) {
+  DolAuroraRendererDiagnostics d{};
+  if (!dol_aurora_renderer_diagnostics(&d)) {
+    std::fprintf(stderr, "[quickboot-gx] phase=%s unavailable\n", phase);
+    return;
+  }
+  std::fprintf(
+      stderr,
+      "[quickboot-gx] phase=%s presents=%llu fifo=%llu init=%u frame=%u "
+      "boundTex=%u loadedTex=%u tluts=%u arrays=%u copyTex=%u "
+      "pendingTex=%u pendingTlut=%u\n",
+      phase, (unsigned long long)d.presents,
+      (unsigned long long)d.fifo_bytes_current_frame, d.initialized,
+      d.frame_open, d.bound_textures, d.loaded_textures, d.loaded_tluts,
+      d.vertex_arrays, d.copy_textures, d.pending_textures, d.pending_tluts);
+}
+
+// UIKit does not provide a dependable termination callback, and Simulator
+// destruction can call exit() after SDL/Metal services have already started
+// disappearing.  The remaining native worker destructors are then unsafe and
+// can abort while locking their torn-down queues.  This handler is registered
+// only after the game runtime has started (so it runs before static
+// destructors) and lets the OS reclaim the dying process directly.  Normal
+// view teardown continues to use ballpad_ios_host_stop().
+void process_exit_guard() {
+  g_stop.store(true);
+  std::fflush(stderr);
+  _Exit(EXIT_SUCCESS);
+}
 } // namespace
 
 // ---- A1 quick-boot savestate (resume a match on cold launch) ----
 namespace {
 constexpr char kQuickbootMagic[4] = {'B', 'P', 'S', 'V'};
+// Version 5 adds the compact guest-addressed HLE GX binding table. It permits
+// a diagnostic restore to re-emit pointer-bearing textures/TLUTs/arrays after
+// hle_install resets them; native Aurora/WGPU state remains deliberately
+// unsaved. Earlier snapshots cannot provide this semantic binding state.
 // Version 4 invalidates snapshots captured before the gxcore indexed-array
 // binding restore and Aurora frame-ownership fixes. Their byte layout still
 // matches v3, but their renderer state is not semantically compatible: static
 // stadium geometry survives while skinned player meshes collapse. Never
 // silently accept one of those snapshots as a valid fast boot.
-constexpr uint32_t kQuickbootVersion = 4;
+constexpr uint32_t kQuickbootVersion = 5;
 constexpr uint32_t kQuickbootHeaderSize = 64;
 
 // File layout (host byte order): header, CPU registers block, CPU scalar tail,
@@ -148,7 +188,10 @@ struct QuickbootHeader {
   uint32_t mmio_size;
   uint32_t frontend_size;
   uint32_t gxcore_size;
-  uint32_t reserved[2];
+  // Added without changing the fixed header layout. Old snapshots store zero
+  // here and remain readable (but cannot restore their missing audio DMA).
+  uint32_t audio_size;
+  uint32_t hle_gx_size;
 };
 
 std::string quickboot_documents_dir() {
@@ -175,6 +218,7 @@ bool ballpad_ios_host_save_quickboot(void) {
   if (!g_started.load() || !g_cpu_valid)
     return false;
   CPUState* cpu = &g_cpu;
+  log_renderer_diagnostics("save");
   const uint32_t cpuRegsSize = (uint32_t)offsetof(CPUState, external_read);
   const uint32_t cpuTailSize =
       (uint32_t)(sizeof(CPUState) - offsetof(CPUState, ram));
@@ -182,6 +226,8 @@ bool ballpad_ios_host_save_quickboot(void) {
   const uint32_t aramSize = ARAM_SIZE;
   const uint32_t interruptSize = interrupt_save_state_size();
   const uint32_t mmioSize = mmio_save_state_size();
+  const uint32_t audioSize = audio_save_state_size();
+  const uint32_t hleGxSize = hle_gx_quickboot_state_size();
   uint32_t frontendSize = 0;
   dol_aurora_frontend_save_state(nullptr, &frontendSize);
   uint32_t gxcoreSize = 0;
@@ -199,6 +245,8 @@ bool ballpad_ios_host_save_quickboot(void) {
   h.aram_size = aramSize;
   h.interrupt_size = interruptSize;
   h.mmio_size = mmioSize;
+  h.audio_size = audioSize;
+  h.hle_gx_size = hleGxSize;
   h.frontend_size = frontendSize;
   h.gxcore_size = gxcoreSize;
 
@@ -224,6 +272,9 @@ bool ballpad_ios_host_save_quickboot(void) {
   std::vector<uint8_t> mb(mmioSize);
   mmio_save_state(mb.data());
   ok = ok && fwrite(mb.data(), 1, mmioSize, f) == mmioSize;
+  std::vector<uint8_t> ab(audioSize);
+  audio_save_state(ab.data());
+  ok = ok && fwrite(ab.data(), 1, audioSize, f) == audioSize;
   std::vector<uint8_t> fb(frontendSize);
   if (frontendSize != 0u) {
     ok = ok && dol_aurora_frontend_save_state(fb.data(), &frontendSize) &&
@@ -234,6 +285,10 @@ bool ballpad_ios_host_save_quickboot(void) {
     ok = ok && dol_aurora_gxcore_save_state(gb.data(), &gxcoreSize) &&
                fwrite(gb.data(), 1, gxcoreSize, f) == gxcoreSize;
   }
+  std::vector<uint8_t> hb(hleGxSize);
+  if (hleGxSize != 0u)
+    ok = ok && hle_gx_quickboot_save(hb.data(), hleGxSize) &&
+               fwrite(hb.data(), 1, hleGxSize, f) == hleGxSize;
   fclose(f);
   if (!ok) {
     remove(path.c_str());
@@ -244,12 +299,13 @@ bool ballpad_ios_host_save_quickboot(void) {
                         std::chrono::steady_clock::now() - t0)
                         .count();
   std::fprintf(stderr,
-               "[quickboot] saved %s (%u+%u+%u+%u+%u+%u+%u+%u bytes, "
+               "[quickboot] saved %s (%u+%u+%u+%u+%u+%u+%u+%u+%u+%u bytes, "
                "%llu blocks) "
                "in %.1f ms\n",
                path.c_str(), (unsigned)cpuRegsSize, (unsigned)cpuTailSize,
                (unsigned)ramSize, (unsigned)aramSize, (unsigned)interruptSize,
-               (unsigned)mmioSize, (unsigned)frontendSize, (unsigned)gxcoreSize,
+               (unsigned)mmioSize, (unsigned)audioSize, (unsigned)frontendSize,
+               (unsigned)gxcoreSize, (unsigned)hleGxSize,
                (unsigned long long)g_blocks, ms);
   return true;
 }
@@ -516,20 +572,41 @@ static bool quickboot_restore_runtime(void) {
   ok = ok && fread(ib.data(), 1, h.interrupt_size, f) == h.interrupt_size;
   std::vector<uint8_t> mb(h.mmio_size);
   ok = ok && fread(mb.data(), 1, h.mmio_size, f) == h.mmio_size;
+  const uint32_t expectedAudioSize = audio_save_state_size();
+  ok = ok && (h.audio_size == 0u || h.audio_size == expectedAudioSize);
+  ok = ok && h.hle_gx_size == hle_gx_quickboot_state_size();
+  std::vector<uint8_t> ab(h.audio_size);
+  if (h.audio_size != 0u)
+    ok = ok && fread(ab.data(), 1, h.audio_size, f) == h.audio_size;
   std::vector<uint8_t> fb(h.frontend_size);
   ok = ok && fread(fb.data(), 1, h.frontend_size, f) == h.frontend_size;
   std::vector<uint8_t> gb(h.gxcore_size);
   ok = ok && fread(gb.data(), 1, h.gxcore_size, f) == h.gxcore_size;
+  std::vector<uint8_t> hb(h.hle_gx_size);
+  if (h.hle_gx_size != 0u)
+    ok = ok && fread(hb.data(), 1, h.hle_gx_size, f) == h.hle_gx_size;
   fclose(f);
   if (!ok)
     return false;
   aram_restore(aram.data());
   interrupt_restore_state(ib.data());
   mmio_restore_state(mb.data());
-  if (!dol_aurora_frontend_restore_state(fb.data(), h.frontend_size))
+  if (h.audio_size != 0u && !audio_restore_state(ab.data(), h.audio_size))
     return false;
-  if (!dol_aurora_gxcore_restore_state(gb.data(), h.gxcore_size))
+  // The live Aurora product renderer carries no optional shadow-frontend or
+  // GXCore state. An empty blob is therefore a valid snapshot, not a failed
+  // QuickBoot restore; only ask the optional subsystems to restore when this
+  // image actually contains their state.
+  if (h.frontend_size != 0u &&
+      !dol_aurora_frontend_restore_state(fb.data(), h.frontend_size))
     return false;
+  if (h.gxcore_size != 0u &&
+      !dol_aurora_gxcore_restore_state(gb.data(), h.gxcore_size))
+    return false;
+  if (h.hle_gx_size != 0u &&
+      !hle_gx_quickboot_restore(&g_cpu, hb.data(), h.hle_gx_size))
+    return false;
+  log_renderer_diagnostics("restore-runtime");
   return true;
 }
 
@@ -632,8 +709,9 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   }
   g_aurora_up = true;
   g_starting.store(false);
-  // Perf: no SDL audio stream on the iOS host (enable_audio=false); skip the
-  // per-block audio DMA polling that would otherwise run with no output.
+  // Keep DMA polling out of the hot path when the host has no active audio
+  // output. GameHostView enables it only for explicit audio diagnostics until
+  // the QuickBoot and physical-device audio gates are accepted.
   audio_set_enabled(cfg->enable_audio);
   // Perf: the iOS display presents EFB-direct; the E7 XFB YUYV-to-RAM encode
   // on every display copy is never read by the guest. Disable it.
@@ -659,13 +737,20 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
 
   CPUState* cpu = &g_cpu;
   if (!cpu_init(cpu)) { return false; }
-  // A1 quick-boot: when a savestate exists, resume it instead of replaying the
-  // full boot. BALLPAD_NO_QUICKBOOT=1 forces a fresh boot (to capture a new
-  // savestate). The CPU/regs part restores before mmio_install so the install
-  // can re-wire this session's external-memory hooks; the ARAM/device blobs
-  // restore afterwards (see quickboot_restore_runtime).
+  // QuickBoot is deliberately opt-in until the live Aurora GX renderer can
+  // restore all state needed by skinned player meshes and HUD display lists.
+  // Its CPU/RAM/audio recovery is fast, but an incomplete graphics restore
+  // produces a running match with visibly wrong gameplay. Prefer a slow,
+  // correct fresh boot for normal users. BALLPAD_ENABLE_QUICKBOOT=1 enables
+  // the diagnostic path; BALLPAD_NO_QUICKBOOT=1 always wins for a fresh boot.
+  // The CPU/regs part restores before mmio_install so the install can re-wire
+  // this session's external-memory hooks; ARAM/device blobs restore afterwards.
   bool quickboot = false;
-  if (getenv("BALLPAD_NO_QUICKBOOT") == nullptr) {
+  const bool quickbootEnabled =
+      getenv("BALLPAD_ENABLE_QUICKBOOT") != nullptr &&
+      getenv("BALLPAD_ENABLE_QUICKBOOT")[0] != '0' &&
+      getenv("BALLPAD_NO_QUICKBOOT") == nullptr;
+  if (quickbootEnabled) {
     const auto t0 = std::chrono::steady_clock::now();
     quickboot = quickboot_restore_cpu(cpu);
     if (quickboot) {
@@ -678,6 +763,11 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
                    cpu->ram_size / (1024u * 1024u), ms,
                    (unsigned long long)g_blocks, cpu->pc);
     }
+  } else if (quickboot_file_exists(quickboot_path().c_str())) {
+    std::fprintf(stderr,
+                 "[quickboot] bypassed by default: live Aurora GX graphics "
+                 "state is not parity-restored; set BALLPAD_ENABLE_QUICKBOOT=1 "
+                 "only for diagnostics\n");
   }
   if (!quickboot) {
     DolLayout layout;
@@ -709,6 +799,8 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   g_lifecycle_paused.store(false);
   g_public_blocks.store(g_blocks, std::memory_order_relaxed);
   g_public_game_state.store(-1, std::memory_order_relaxed);
+  std::call_once(g_process_exit_once,
+                 [] { std::atexit(process_exit_guard); });
   if (g_guest_thread.joinable())
     g_guest_thread.join();
   g_guest_thread = std::thread(guest_loop);
@@ -888,7 +980,12 @@ static void step_guest(void) {
     // mid-GX-command, the shadow frontend rejects the truncated stream
     // (opcode 0x23), and rendering dies (draws=0).
     static bool s_quickboot_captured = false;
-    if (!s_quickboot_captured && s_auto_phase == kAutoCount - 1 &&
+    const bool quickbootCaptureEnabled =
+        getenv("BALLPAD_ENABLE_QUICKBOOT") != nullptr &&
+        getenv("BALLPAD_ENABLE_QUICKBOOT")[0] != '0';
+    if (quickbootCaptureEnabled && !s_quickboot_captured &&
+        getenv("BALLPAD_SKIP_QUICKBOOT_SAVE") == nullptr &&
+        s_auto_phase == kAutoCount - 1 &&
         !s_auto_holding &&
         (cpu->pc == 0x800051B4u || cpu->pc == 0x800051D8u)) {
       s_quickboot_captured = true;
@@ -939,6 +1036,26 @@ static void step_guest(void) {
       ballpad_pad_set(0, &s);
     }
   }
+  if (g_quickbooted) {
+    // Sample before/after the queued match-start input and again after the
+    // renderer has had time to consume normal draw traffic. These snapshots
+    // are evidence only; do not infer serializability from a nonzero count.
+    static unsigned s_qb_renderer_samples = 0;
+    static const unsigned long long kQbSampleOffsets[] = {
+        0ull, 120000000ull, 1200000000ull,
+    };
+    static unsigned long long s_qb_restore_blocks = 0;
+    if (s_qb_renderer_samples == 0u && s_qb_restore_blocks == 0u)
+      s_qb_restore_blocks = g_blocks;
+    while (s_qb_renderer_samples <
+               sizeof(kQbSampleOffsets) / sizeof(kQbSampleOffsets[0]) &&
+           g_blocks >= s_qb_restore_blocks +
+                           kQbSampleOffsets[s_qb_renderer_samples]) {
+      const char* const phases[] = {"restore-step", "post-input", "steady"};
+      log_renderer_diagnostics(phases[s_qb_renderer_samples]);
+      ++s_qb_renderer_samples;
+    }
+  }
   if (g_stop_reason[0]) {
     static bool s_reported = false;
     if (!s_reported) {
@@ -953,6 +1070,12 @@ static void step_guest(void) {
   if (publicGame >= 0x80000000u)
     publicGameState = (long long)mem_read32(cpu, publicGame + 0x24u);
   g_public_game_state.store(publicGameState, std::memory_order_relaxed);
+  g_public_step_budget.store(g_frame_blocks, std::memory_order_relaxed);
+  const auto step_elapsed = std::chrono::steady_clock::now() - t_step_begin;
+  g_public_step_micros.store(
+      (unsigned long long)std::chrono::duration_cast<std::chrono::microseconds>(
+          step_elapsed).count(),
+      std::memory_order_relaxed);
   static int s_perf_log = -1;
   if (s_perf_log < 0)
     s_perf_log = getenv("BALLPAD_PERF_LOG") != nullptr ? 1 : 0;
@@ -990,9 +1113,9 @@ void ballpad_ios_host_step_frame(void) { step_guest(); }
 
 void ballpad_ios_host_set_paused(bool paused) { g_paused.store(paused); }
 
-// B1: UI-thread work that must not run on the guest worker (the SDL window
-// attach touches UIKit scene/layer state). Called by the SwiftUI display timer
-// on the main thread.
+// B1: UI-thread work that must not run on the guest worker. Keep SDL's
+// auxiliary window hidden; SwiftUI and GameController own the iOS input path,
+// and the SwiftUI image view is the sole visible output.
 void ballpad_ios_host_pump_ui(void) {
   if (g_sdl_window != nullptr)
     ballpad_ios_host_attach_sdl_view(g_sdl_window);
@@ -1033,6 +1156,8 @@ void ballpad_ios_host_stop(void) {
   g_started = false;
   g_cpu_valid = false;
   g_public_game_state.store(-1, std::memory_order_relaxed);
+  g_public_step_budget.store(0, std::memory_order_relaxed);
+  g_public_step_micros.store(0, std::memory_order_relaxed);
 }
 
 // B1: the guest worker thread fills the EFB backing while the SwiftUI display
@@ -1073,6 +1198,53 @@ double ballpad_ios_host_fps(void) {
   s_last = cur;
   s_t0 = now;
   return fps;
+}
+
+bool ballpad_ios_host_diagnostic_snapshot(char* buffer, uint32_t buffer_size) {
+  if (buffer == nullptr || buffer_size == 0u)
+    return false;
+
+  uint64_t frameVersion = 0;
+  uint32_t frameWidth = 0;
+  uint32_t frameHeight = 0;
+  ballpad_ios_host_frame_lock();
+  DolEfbAccess* efb = mmio_efb();
+  if (efb != nullptr) {
+    frameVersion = (uint64_t)efb->fill_count;
+    frameWidth = efb->width;
+    frameHeight = efb->height;
+  }
+  ballpad_ios_host_frame_unlock();
+
+  const int written = std::snprintf(
+      buffer, buffer_size,
+      "Host running: %s\\n"
+      "Host starting: %s\\n"
+      "Guest paused: %s\\n"
+      "Lifecycle paused: %s\\n"
+      "Boot source: %s\\n"
+      "Guest step budget: %llu blocks\\n"
+      "Last guest step: %.2f ms\\n"
+      "Aurora presents: %llu\\n"
+      "EFB frame version: %llu\\n"
+      "EFB frame size: %ux%u\\n"
+      "Display frames copied: %llu\\n"
+      "Display frames dropped: %llu\\n"
+      "EFB scale: %dx\\n",
+      g_started.load() ? "yes" : "no",
+      g_starting.load() ? "yes" : "no",
+      g_paused.load() ? "yes" : "no",
+      g_lifecycle_paused.load() ? "yes" : "no",
+      g_quickbooted ? "QuickBoot" : "fresh boot",
+      g_public_step_budget.load(std::memory_order_relaxed),
+      (double)g_public_step_micros.load(std::memory_order_relaxed) / 1000.0,
+      aurora_present_count(),
+      (unsigned long long)frameVersion,
+      frameWidth, frameHeight,
+      g_display_frames_copied.load(std::memory_order_relaxed),
+      g_display_frames_dropped.load(std::memory_order_relaxed),
+      g_efb_scale);
+  return written >= 0 && (uint32_t)written < buffer_size;
 }
 
 void ballpad_ios_host_set_efb_scale(int scale) {
@@ -1150,9 +1322,13 @@ bool ballpad_ios_host_import_card(const char* src_path) {
 
 void ballpad_ios_host_application_did_become_active(void) {
   g_lifecycle_paused.store(false);
+  std::fprintf(stderr, "[lifecycle] active started=%d presents=%llu\n",
+               g_started.load() ? 1 : 0, aurora_present_count());
 }
 void ballpad_ios_host_application_will_resign_active(void) {
   g_lifecycle_paused.store(true);
+  std::fprintf(stderr, "[lifecycle] inactive started=%d presents=%llu\n",
+               g_started.load() ? 1 : 0, aurora_present_count());
 }
 bool ballpad_ios_host_frame_size(uint32_t* w, uint32_t* h) {
   if (!g_started.load() || w == nullptr || h == nullptr) return false;
@@ -1209,37 +1385,107 @@ bool ballpad_ios_host_take_frame(uint8_t* rgba_out, uint32_t* w, uint32_t* h) {
   return true;
 }
 
-// B2: double-buffered native ARGB staging so the SwiftUI display can hand the
-// buffer straight to a CGDataProvider. On little-endian Apple hardware the
-// bytes are BGRA; Core Graphics receives the matching byte-order descriptor.
+// B2: leased native-ARGB staging so SwiftUI can hand the buffer directly to a
+// CGDataProvider. The image provider can outlive the next display tick, so a
+// conventional two-buffer swap is not safe: Core Graphics could still read a
+// buffer while the host overwrites it. A small pool retains each slot until
+// the provider's release callback returns it. On little-endian Apple hardware
+// the bytes are BGRA; Core Graphics receives the matching byte-order descriptor.
 namespace {
-std::vector<uint8_t> g_display_buffers[2];
-int g_display_buffer_index = 0;
+struct DisplayFrameSlot {
+  std::vector<uint8_t> bytes;
+  bool leased = false;
+};
+constexpr size_t kDisplayFrameSlotCount = 3;
+DisplayFrameSlot g_display_slots[kDisplayFrameSlotCount];
+std::mutex g_display_slots_mutex;
 } // namespace
 
-const uint8_t* ballpad_ios_host_frame_ptr(uint32_t* width_out,
-                                          uint32_t* height_out) {
-  if (!g_started.load() || width_out == nullptr || height_out == nullptr)
+const uint8_t* ballpad_ios_host_take_display_frame(uint32_t* width_out,
+                                                   uint32_t* height_out,
+                                                   void** lease_out) {
+  if (!g_started.load() || width_out == nullptr || height_out == nullptr ||
+      lease_out == nullptr)
     return nullptr;
+
+  std::unique_lock<std::mutex> slots_lock(g_display_slots_mutex);
+  DisplayFrameSlot* slot = nullptr;
+  for (DisplayFrameSlot& candidate : g_display_slots) {
+    if (!candidate.leased) {
+      slot = &candidate;
+      slot->leased = true;
+      break;
+    }
+  }
+  if (slot == nullptr) {
+    g_display_frames_dropped.fetch_add(1, std::memory_order_relaxed);
+    return nullptr;
+  }
+
   ballpad_ios_host_frame_lock();
   DolEfbAccess* efb = mmio_efb();
   if (efb == nullptr || efb->color == nullptr || efb->fill_count == 0u ||
       efb->width == 0u || efb->height == 0u) {
     ballpad_ios_host_frame_unlock();
+    slot->leased = false;
     return nullptr;
   }
   const u32 fw = efb->width;
   const u32 fh = efb->height;
-  std::vector<uint8_t>& dst = g_display_buffers[g_display_buffer_index];
+  const unsigned long long fill = (unsigned long long)efb->fill_count;
   const size_t bytes = (size_t)fw * fh * sizeof(u32);
-  if (dst.size() != bytes)
-    dst.resize(bytes);
-  std::memcpy(dst.data(), efb->color, bytes);
+  if (slot->bytes.size() != bytes)
+    slot->bytes.resize(bytes);
+  std::memcpy(slot->bytes.data(), efb->color, bytes);
+
+  // Opt-in forensic capture of the exact native-endian BGRA buffer handed to
+  // Core Graphics. This separates a live Aurora/readback corruption from a
+  // SwiftUI/CGImage presentation fault without altering the normal frame path.
+  static const char* s_dump_dir = std::getenv("BALLPAD_EFB_DUMP_DIR");
+  static const unsigned long long s_dump_after = [] {
+    const char* value = std::getenv("BALLPAD_EFB_DUMP_AFTER_FILL");
+    return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ull;
+  }();
+  static const unsigned long long s_dump_stride = [] {
+    const char* value = std::getenv("BALLPAD_EFB_DUMP_STRIDE");
+    return value != nullptr ? std::max(1ull, std::strtoull(value, nullptr, 10)) : 1ull;
+  }();
+  static const unsigned long long s_dump_limit = [] {
+    const char* value = std::getenv("BALLPAD_EFB_DUMP_LIMIT");
+    return value != nullptr ? std::max(1ull, std::strtoull(value, nullptr, 10)) : 1ull;
+  }();
+  static unsigned long long s_dump_count = 0;
+  static unsigned long long s_next_dump_fill = s_dump_after;
+  if (s_dump_dir != nullptr && s_dump_dir[0] != '\0' && s_dump_count < s_dump_limit &&
+      fill >= s_next_dump_fill) {
+    char path[1200];
+    std::snprintf(path, sizeof(path), "%s/efb_native_bgra_%llu_%ux%u.raw", s_dump_dir, fill, fw, fh);
+    if (FILE* dump = std::fopen(path, "wb")) {
+      std::fwrite(slot->bytes.data(), 1, bytes, dump);
+      std::fclose(dump);
+      std::fprintf(stderr, "[efb-dump] fill=%llu path=%s bytes=%zu\n", fill, path, bytes);
+      ++s_dump_count;
+      s_next_dump_fill = fill + s_dump_stride;
+    }
+  }
   ballpad_ios_host_frame_unlock();
-  g_display_buffer_index ^= 1;
   *width_out = fw;
   *height_out = fh;
-  return dst.data();
+  *lease_out = slot;
+  g_display_frames_copied.fetch_add(1, std::memory_order_relaxed);
+  return slot->bytes.data();
+}
+
+void ballpad_ios_host_release_display_frame(void* lease) {
+  if (lease == nullptr)
+    return;
+  std::lock_guard<std::mutex> slots_lock(g_display_slots_mutex);
+  for (DisplayFrameSlot& slot : g_display_slots) {
+    if (&slot == lease) {
+      slot.leased = false;
+      return;
+    }
+  }
 }
 
 /* marker file_scope attach decl */

@@ -87,7 +87,7 @@ index aef8bcd..568cd52 100644
  target_link_libraries(gG4QE01_recomp PRIVATE m)
  
 diff --git a/runtime/host/audio.c b/runtime/host/audio.c
-index 046bcbf..97a82cf 100644
+index 046bcbf..f308044 100644
 --- a/runtime/host/audio.c
 +++ b/runtime/host/audio.c
 @@ -24,6 +24,14 @@ static DolAxHost g_ax_host;
@@ -105,7 +105,33 @@ index 046bcbf..97a82cf 100644
  
  void audio_init(void) {
      dol_ax_host_init(&g_ax_host);
-@@ -94,6 +102,8 @@ void audio_mmio_write(u32 address, u8 size, u64 value) {
+@@ -37,6 +45,25 @@ void audio_init(void) {
+     dol_ax_host_set_log(&g_ax_host, g_log);
+ }
+ 
++uint32_t audio_save_state_size(void) {
++    return (uint32_t)sizeof(g_audio_dma);
++}
++
++void audio_save_state(void* dst) {
++    if (dst != NULL)
++        memcpy(dst, &g_audio_dma, sizeof(g_audio_dma));
++}
++
++bool audio_restore_state(const void* src, uint32_t size) {
++    if (src == NULL || size != sizeof(g_audio_dma))
++        return false;
++    memcpy(&g_audio_dma, src, sizeof(g_audio_dma));
++    // The restored AI control carries the active guest rate; re-announce it
++    // so the platform stream stays synchronized after its fresh startup.
++    dol_platform_audio_set_sample_rate(dol_audio_dma_sample_rate(&g_audio_dma));
++    return true;
++}
++
+ void audio_shutdown(void) {
+     if (g_log) {
+         const DolAxHostStats* st = dol_ax_host_stats(&g_ax_host);
+@@ -94,6 +121,8 @@ void audio_mmio_write(u32 address, u8 size, u64 value) {
  }
  
  void audio_poll(CPUState* cpu) {
@@ -114,7 +140,7 @@ index 046bcbf..97a82cf 100644
      u32 physical = 0;
      if (!dol_audio_dma_poll(&g_audio_dma, &physical))
          return;
-@@ -127,8 +137,13 @@ bool audio_interrupt_pending(void) {
+@@ -127,8 +156,13 @@ bool audio_interrupt_pending(void) {
  }
  
  void audio_dsp_mail(CPUState* cpu, u32 mail) {
@@ -128,7 +154,7 @@ index 046bcbf..97a82cf 100644
          g_waiting_for_command_list = true;
          return;
      }
-@@ -136,8 +151,12 @@ void audio_dsp_mail(CPUState* cpu, u32 mail) {
+@@ -136,8 +170,12 @@ void audio_dsp_mail(CPUState* cpu, u32 mail) {
          return;
  
      g_waiting_for_command_list = false;
@@ -142,10 +168,10 @@ index 046bcbf..97a82cf 100644
  
  void audio_skip_dsp_init(CPUState* cpu) {
 diff --git a/runtime/host/audio.h b/runtime/host/audio.h
-index 9ac2302..2899108 100644
+index 9ac2302..59ddfb2 100644
 --- a/runtime/host/audio.h
 +++ b/runtime/host/audio.h
-@@ -10,6 +10,10 @@
+@@ -10,7 +10,17 @@
  // in recompiled code + HLE notify counters (STRIKERS_AUDIO_LOG).
  
  void audio_init(void);
@@ -154,10 +180,17 @@ index 9ac2302..2899108 100644
 +void audio_set_enabled(bool enabled);
 +bool audio_enabled(void);
  void audio_shutdown(void);
++/* QuickBoot state: preserves the guest-visible AI/DSP DMA scheduler. The AX
++ * mixer is rebuilt from the guest's next command list; this POD state is what
++ * keeps already-active AID output advancing immediately after restore. */
++uint32_t audio_save_state_size(void);
++void audio_save_state(void* dst);
++bool audio_restore_state(const void* src, uint32_t size);
  void audio_set_vi_clock(u64 work_units_per_frame, u32 refresh_hz);
  
+ bool audio_mmio_contains(u32 address);
 diff --git a/runtime/host/hle.c b/runtime/host/hle.c
-index 5da95e1..433e9ba 100644
+index 5da95e1..08716e1 100644
 --- a/runtime/host/hle.c
 +++ b/runtime/host/hle.c
 @@ -29,6 +29,8 @@
@@ -184,7 +217,21 @@ index 5da95e1..433e9ba 100644
      return hash ? hash : 1u;
  }
  
-@@ -1731,8 +1733,26 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+@@ -1301,6 +1303,13 @@ static GxTextureBinding g_textures[GX_MAX_TEXTURES];
+ static GxTlutBinding g_tluts[GX_MAX_TLUTS];
+ static u32 g_array_address[32];
+ static u8 g_array_stride[32];
++
++typedef struct {
++    GxTextureBinding textures[GX_MAX_TEXTURES];
++    GxTlutBinding tluts[GX_MAX_TLUTS];
++    u32 array_address[32];
++    u8 array_stride[32];
++} HleGxQuickbootState;
+ static unsigned g_gx_begin_count;
+ static unsigned g_gx_array_count;
+ // Per-frame accounting of indexed-array uploads. Aurora uploads each distinct
+@@ -1731,8 +1740,32 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
      const bool movie_generation =
          thp_movie_plane_generation(cpu, guest_data, width, height, format,
                                     &data_bytes, &data_hash, &cache_object);
@@ -209,11 +256,17 @@ index 5da95e1..433e9ba 100644
 +        const bool paced_probe = (++s_texture_hash_pace % 8u) == 0u;
 +        if (!same_identity || paced_probe)
 +            data_hash = guest_hash(cpu, guest_data, data_bytes, &data_bytes);
++        else
++            // Keep the last verified content identity between paced probes.
++            // Using zero here manufactured a different resource version on
++            // the very next identical GXLoadTexObj, forcing needless Aurora
++            // metadata emission, texture uploads, and cache churn.
++            data_hash = cur->data_hash;
 +    }
      const u32 version =
          gx_texture_resource_version(width, height, format, tlut, flags,
                                      data_bytes, data_hash);
-@@ -1768,6 +1788,10 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+@@ -1768,6 +1801,10 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
      bool changed = !binding->valid ||
                     binding->object != cache_object ||
                     binding->version != version;
@@ -224,7 +277,7 @@ index 5da95e1..433e9ba 100644
      binding->valid = true;
      binding->object = cache_object;
      binding->guest_data = guest_data;
-@@ -1779,10 +1803,14 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+@@ -1779,10 +1816,14 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
      binding->data_bytes = data_bytes;
      binding->data_hash = data_hash;
      binding->version = version;
@@ -243,7 +296,100 @@ index 5da95e1..433e9ba 100644
      if (g_movie_log && format == 1u) {
          unsigned seq = ++g_movie_texobj_log_count;
          bool should_log = changed || seq <= 96u || (seq % 60u) == 0u;
-@@ -3208,6 +3236,9 @@ typedef struct {
+@@ -2751,6 +2792,92 @@ static void emit_gx_resource_metadata(CPUState* cpu) {
+     }
+ }
+ 
++uint32_t hle_gx_quickboot_state_size(void) {
++    return (uint32_t)sizeof(HleGxQuickbootState);
++}
++
++bool hle_gx_quickboot_save(void* dst, uint32_t size) {
++    if (dst == NULL || size != sizeof(HleGxQuickbootState))
++        return false;
++    HleGxQuickbootState state;
++    memcpy(state.textures, g_textures, sizeof state.textures);
++    memcpy(state.tluts, g_tluts, sizeof state.tluts);
++    memcpy(state.array_address, g_array_address, sizeof state.array_address);
++    memcpy(state.array_stride, g_array_stride, sizeof state.array_stride);
++    memcpy(dst, &state, sizeof state);
++    unsigned textures = 0, tluts = 0, arrays = 0;
++    for (u32 i = 0; i < GX_MAX_TEXTURES; ++i)
++        textures += state.textures[i].valid ? 1u : 0u;
++    for (u32 i = 0; i < GX_MAX_TLUTS; ++i)
++        tluts += state.tluts[i].valid ? 1u : 0u;
++    for (u32 i = 0; i < 32u; ++i)
++        arrays += state.array_address[i] != 0u ? 1u : 0u;
++    fprintf(stderr, "[quickboot-hle] saved textures=%u tluts=%u arrays=%u bytes=%u\n",
++            textures, tluts, arrays, (unsigned)sizeof state);
++    return true;
++}
++
++bool hle_gx_quickboot_restore(CPUState* cpu, const void* src, uint32_t size) {
++    if (cpu == NULL || src == NULL || size != sizeof(HleGxQuickbootState))
++        return false;
++    const HleGxQuickbootState* state = (const HleGxQuickbootState*)src;
++    memcpy(g_textures, state->textures, sizeof g_textures);
++    memcpy(g_tluts, state->tluts, sizeof g_tluts);
++    memcpy(g_array_address, state->array_address, sizeof g_array_address);
++    memcpy(g_array_stride, state->array_stride, sizeof g_array_stride);
++
++    // hle_install intentionally starts a new session with no emitted resource
++    // identity. Reissue every guest-addressed resource into the new Aurora
++    // process; native pointers are resolved only after restored RAM is live.
++    for (u32 i = 0; i < GX_MAX_TEXTURES; ++i)
++        if (g_textures[i].valid)
++            g_textures[i].emitted_version = 0u;
++    for (u32 i = 0; i < GX_MAX_TLUTS; ++i)
++        if (g_tluts[i].valid)
++            g_tluts[i].emitted_version = 0u;
++    unsigned textures = 0, tluts = 0, arrays = 0;
++    for (u32 attr = 0; attr < 32u; ++attr) {
++        if (g_array_address[attr] == 0u)
++            continue;
++        u32 available = 0;
++        void* data = graphics_guest_pointer(cpu, g_array_address[attr],
++                                            &available);
++        if (data == NULL || available == 0u)
++            continue;
++        dol_platform_set_array_guest(attr, g_array_address[attr], data,
++                                     available, g_array_stride[attr]);
++        ++arrays;
++    }
++    for (u32 i = 0; i < GX_MAX_TEXTURES; ++i)
++        textures += g_textures[i].valid ? 1u : 0u;
++    for (u32 i = 0; i < GX_MAX_TLUTS; ++i)
++        tluts += g_tluts[i].valid ? 1u : 0u;
++    emit_gx_resource_metadata(cpu);
++    const char* force_dirty = getenv("BALLPAD_QUICKBOOT_FORCE_GX_DIRTY");
++    if (force_dirty != NULL && force_dirty[0] != '\0' &&
++        force_dirty[0] != '0') {
++        const u32 gx_data =
++            mem_read32(cpu, cpu->gpr[2] + (u32)(s32)GX_DATA_SDA_OFFSET);
++        if (gx_data >= GC_RAM_BASE) {
++            // Let the next normal GXBegin call the game's own dirty-state
++            // helper. This re-emits scalar GX registers/matrices in correct
++            // guest ordering; it is intentionally an opt-in QuickBoot probe.
++            mem_write32(cpu, gx_data + GX_DIRTY_STATE_OFFSET, 0x1Fu);
++            fprintf(stderr,
++                    "[quickboot-hle] forced guest GX dirty state @0x%08X\n",
++                    gx_data + GX_DIRTY_STATE_OFFSET);
++        } else {
++            fprintf(stderr,
++                    "[quickboot-hle] cannot force GX dirty; gx_data=0x%08X\n",
++                    gx_data);
++        }
++    }
++    fprintf(stderr,
++            "[quickboot-hle] restored textures=%u tluts=%u arrays=%u bytes=%u\n",
++            textures, tluts, arrays, (unsigned)sizeof *state);
++    return true;
++}
++
+ static void notify_GXBegin(CPUState* cpu) {
+     ++g_gx_begin_count;
+     if (ball_state_log_enabled() &&
+@@ -3208,6 +3335,9 @@ typedef struct {
  } HleAddrEntry;
  
  static const HleAddrEntry kAddrHandlers[] = {
@@ -253,6 +399,32 @@ index 5da95e1..433e9ba 100644
      // DSP boot handshake: polls a DSP mailbox bit that never changes without a
      // modeled DSP. Audio is routed through Aurora, so skip the hardware init.
      { 0x80254718u, hle_noop,                     "__OSInitAudioSystem" },
+diff --git a/runtime/host/hle.h b/runtime/host/hle.h
+index 16fa5f5..32a7b7a 100644
+--- a/runtime/host/hle.h
++++ b/runtime/host/hle.h
+@@ -2,6 +2,8 @@
+ #define STRIKERSRECOMP_HLE_H
+ 
+ #include "core/cpu.h"
++#include <stdbool.h>
++#include <stdint.h>
+ 
+ // High-level-emulation intercept point.
+ //
+@@ -27,4 +29,12 @@ void hle_card_close(void);
+ // recursively running it inside the intercepted CARD call.
+ bool hle_poll_callback(CPUState* cpu);
+ 
++// QuickBoot diagnostic state for Aurora's guest-addressed GX metadata. This
++// deliberately excludes native renderer/WGPU objects: it records only values
++// that can be resolved again against restored guest RAM and re-emitted to a
++// fresh renderer after hle_install has reset its normal per-process tables.
++uint32_t hle_gx_quickboot_state_size(void);
++bool hle_gx_quickboot_save(void* dst, uint32_t size);
++bool hle_gx_quickboot_restore(CPUState* cpu, const void* src, uint32_t size);
++
+ #endif /* STRIKERSRECOMP_HLE_H */
 diff --git a/runtime/host/interrupt.c b/runtime/host/interrupt.c
 index 6efc385..15f3722 100644
 --- a/runtime/host/interrupt.c

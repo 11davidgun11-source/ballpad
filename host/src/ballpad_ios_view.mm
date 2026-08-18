@@ -1,4 +1,8 @@
-// Objective-C++ glue: re-parent SDL's UIWindow root view into the host container.
+// Objective-C++ glue: keep SDL's auxiliary UIWindow out of the visible scene.
+// Ballpad presents the EFB readback in SwiftUI; keep SDL's root view in its
+// own hierarchy rather than introducing a second, unsupported re-parenting
+// path. The hidden SDL window still owns the Metal bootstrap path used by
+// Aurora.
 #import <UIKit/UIKit.h>
 #include "ballpad_ios_host.h"
 
@@ -17,11 +21,10 @@ extern "C" void ballpad_ios_host_attach_sdl_view(void* sdlWindowPtr) {
       NSLog(@"[ballpad] attach: window is not UIWindow (%@)", win);
       return;
     }
-    // SDL's backend keeps its own UIWindow key, which sits over the SwiftUI
-    // window that hosts the EFB image + touch overlay (the SDL window shows as
-    // opaque black and hides the game). Its view is re-parented here, so the
-    // window itself is not needed — hide it and keep the SwiftUI window key
-    // on every attach (SDL re-shows it on present).
+    // SDL's backend keeps its own UIWindow key, which can sit over the
+    // SwiftUI window that hosts the EFB image + touch overlay. Hide the
+    // auxiliary window and keep the SwiftUI window key. Do not re-parent the
+    // SDL controller's root view: it remains owned by its own UIWindow.
     win.hidden = YES;
     UIWindow* swiftWindow = g_container.window;
     if (swiftWindow == nil) {
@@ -33,21 +36,11 @@ extern "C" void ballpad_ios_host_attach_sdl_view(void* sdlWindowPtr) {
       }
     }
     [swiftWindow makeKeyWindow];
-    UIView* sdlView = win.rootViewController.view;
-    if (sdlView == nil) return;
-    if (sdlView.superview == g_container) return;
-    NSLog(@"[ballpad] attach sdlWindow=%@ containerWindow=%@ keyWindow=%@ sceneWindows=%lu",
-          win, g_container.window, win.windowScene.keyWindow,
-          (unsigned long)win.windowScene.windows.count);
-    sdlView.translatesAutoresizingMaskIntoConstraints = NO;
-    [g_container insertSubview:sdlView atIndex:0];
-    [NSLayoutConstraint activateConstraints:@[
-      [sdlView.leadingAnchor constraintEqualToAnchor:g_container.leadingAnchor],
-      [sdlView.trailingAnchor constraintEqualToAnchor:g_container.trailingAnchor],
-      [sdlView.topAnchor constraintEqualToAnchor:g_container.topAnchor],
-      [sdlView.bottomAnchor constraintEqualToAnchor:g_container.bottomAnchor],
-    ]];
-    NSLog(@"[ballpad] attached SDL view into host container");
+    static BOOL didLog = NO;
+    if (!didLog) {
+      didLog = YES;
+      NSLog(@"[ballpad] hid auxiliary SDL window; EFB readback owns visible output");
+    }
   } @catch (NSException* e) {
     NSLog(@"[ballpad] attach failed: %@", e);
   }

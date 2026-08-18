@@ -196,7 +196,8 @@ Phase C — UI polish:
    readout; the FPS overlay remains user-gated (Show FPS). The frame is
    aspect-fit centered (container fills the window; symmetric letterbox).
    Rotated screenshots: the Simulator captures a portrait framebuffer for
-   this landscape-only app; scripts/upright_proof.sh rotates proofs upright
+   this landscape-only app; inspect the game content before using an explicit
+   rotation with scripts/upright_proof.sh
    (the iPad's capture orientation varies between sessions — pass -90|+90|0).
    Proof: build/proofs/c1-cleanui.png (phone).
 9. C2 hardware controller merge + auto-hide (P2-c).

@@ -77,7 +77,8 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   skin; needs the docs/05 spec treatment (ergonomics, multi-touch, C-stick,
   shoulder analog) and the M5/M6 control checklist to pass.
 - **Settings not optimized**: renderScale 1x/2x exists in SwiftUI but is not
-  tied to the EFB pipeline; audio disabled; vsync on; no meaningful graphics
+  tied to the EFB pipeline; audio now has an explicit diagnostic opt-out;
+  vsync on; no meaningful graphics
   options. Wire resolution to the EFB target scale once perf is understood.
 - **EFB native sizing is env-gated**: `BALLPAD_EFB_NATIVE` in gpu.cpp; the iOS
   host sets it by default. A proper EFB-scale config API is cleaner.
@@ -455,9 +456,89 @@ simulator; the same AOT code should run 2-4x faster on real Apple silicon.
    stretch display modes exist).
 3. Boot-to-match ~7-8 min (block-paced autostart; a quick-boot/savestate would
    fix iteration time).
-4. iPad screenshots capture a rotated portrait framebuffer (rotate 90° for
-   viewing); the app itself is landscape.
+4. Simulator screenshots can be a portrait framebuffer containing an already
+   upright, letterboxed landscape app. Inspect game content before selecting
+   `-90`, `+90`, or `0` in `scripts/upright_proof.sh`; do not rotate based only
+   on PNG dimensions. The app itself is landscape.
 5. Hardware GCController merge (bellpad hides touch on connect) not done;
-   3+ layout slots, portrait layout, audio output are best-effort/unwired.
+   3+ layout slots and portrait layout are best-effort/unwired. Audio playback
+   is simulator-proven, but physical-device output/lifecycle remains open.
 6. ref/ trees are untracked local working trees with patches captured in
    docs/patches/ (never re-clone; reapply if lost).
+
+## 2026-08-18 — EFB host worker no longer invokes UIKit-backed SDL frame APIs
+
+- **Symptom:** Main Thread Checker reported `UIKit_GetWindowSizeInPixels` and
+  `UIWindow screen` from the B1 guest worker. The direct call was
+  `ImGui_ImplSDL3_NewFrame`, even after Aurora's higher-level size lookup was
+  avoided. Per-present `aurora_update()` also polled the hidden SDL/UIKit
+  window from that worker.
+- **Repair:** In `BALLPAD_EFB_NATIVE` mode, Aurora caches the initial
+  main-thread window layout, bypasses the SDL ImGui frame hook, and does not
+  poll the hidden SDL window after startup. The SwiftUI overlay and native
+  `GameController` bridge remain Ballpad's iOS input paths; the worker retains
+  guest/GPU work only. The display frame handoff is also lease-backed so Core
+  Graphics cannot retain a buffer that the host overwrites.
+- **Verification:** iPad (A16) Simulator `PadDiagnosticTests` passed 2/2 on
+  2026-08-18 (including controls and Sunpad-style menu/layout editing); the
+  subsequent three-minute Ballpad Main Thread Checker query returned no
+  entries. `BallpadHost` CMake build, Xcode iPad build, patch freshness, and
+  `git diff --check` passed.
+- **Remaining:** this removes the observed worker-thread UIKit calls; it does
+  not prove physical-device lifecycle, renderer parity, audio, or the
+  independent SDL startup appearance-transition warning.
+
+## 2026-08-18 — GXCore submit can run without an Aurora recording frame
+
+- **Symptom:** phone simulator crash reports at 06:37, 06:42, and the
+  user-supplied report all faulted in `aurora::gfx::push_verts` at `FAR 0xc8`.
+  Disassembly identifies that instruction as the read of `FramePacket::verts`
+  through `g_recordingFrame`; `g_recordingFrame` was null, rather than the
+  decoded vertex source being invalid.
+- **Cause:** `GxCoreSink` can emit/flush a plan while `g_frame_open` is false
+  after Aurora cannot begin a frame. This is possible around scene lifecycle
+  transitions and staging-frame acquisition gaps, while the guest continues to
+  step. The old path dereferenced the cleared frame packet.
+- **Repair:** the backend rejects plans when no Aurora frame is open, and the
+  GXCore submission boundary independently checks `is_recording_frame()` before
+  touching staging storage. Both emit bounded diagnostics and drop only the
+  frame-less draw, so the next opened frame resumes from fresh GX spans.
+- **Verification:** after rebuilding and reinstalling, the same phone process
+  reached 11,457 presents, entered inactive state, resumed at 11,460 presents,
+  remained alive for a further 20 seconds, and produced no new `.ips` report.
+  This is a targeted lifecycle smoke, not yet a long-gameplay proof.
+
+## 2026-08-18 — GXCore cutover is not visually ready for product use
+
+- **Symptom:** the GXCore default produced valid 1280×1056 EFB frames but they
+  transitioned from dark to near-white (sample mean ~249) while SwiftUI had
+  successfully installed the image. This proved the fault was upstream of the
+  iOS display handoff.
+- **A/B evidence:** starting the identical phone build with `DOL_GX_CORE=0`
+  showed the real health-and-safety screen immediately. The live Aurora GX
+  path then reached an in-match field, HUD, and players through the real touch
+  overlay. GXCore therefore remains a renderer-parity work item, not the
+  product renderer.
+- **Repair:** live Aurora GX is now the default. `DOL_GX_CORE=1` is explicit
+  experimental opt-in for parity diagnostics; `DOL_GX_CORE=0` is no longer
+  needed. The lifecycle frame guards remain in the GXCore code, so that
+  experiment cannot reintroduce the known null frame-packet crash.
+
+## 2026-08-18 — Audio stream restores through QuickBoot on iPad Simulator
+
+- **QuickBoot repair:** empty optional shadow-frontend and GXCore blobs now
+  restore as absent, while the v4 snapshot carries the 352-byte Audio DMA
+  scheduler state. This preserves the saved stream timing without changing
+  the fixed 64-byte snapshot header.
+- **Fresh-boot probe:** with `BALLPAD_NO_QUICKBOOT=1`, the iPad A16 Simulator
+  opened playback, began playing after its 40 ms prebuffer, and delivered more
+  than 700,000 guest audio pushes while preserving its bounded 250 ms queue.
+  The guest continued through the title/menu autostart anchors at about 21M
+  blocks/s with no new Ballpad crash report.
+- **QuickBoot verification:** a normal fast launch restored CPU+RAM in 8.7 ms
+  at block 6,820,350,000, emitted audio pushes immediately, reached
+  `playing=1` after prebuffering, and continued the match-start drive at
+  roughly 42–45 presents/sec without a Ballpad crash report.
+- **Disposition:** playback is enabled by default; set
+  `BALLPAD_DISABLE_AUDIO=1` for diagnostics. Physical-device audible playback,
+  interruption, and pause/resume remain acceptance gates.

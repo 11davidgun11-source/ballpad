@@ -16,7 +16,10 @@ final class LayoutStore: ObservableObject {
         // changes. Old Ballpad defaults used full UIScreen coordinates while
         // SwiftUI laid controls out in a safe-area-sized canvas, which made
         // phones and iPads visibly diverge from Sunpad.
-        self.key = "ballpad.layout.sunpad-v5.\(deviceClass)"
+        // v6 adopts the actual per-device SunPad anchor sets rather than the
+        // older generic edge-pinned approximation. Existing user edits remain
+        // in their v5 key; untouched users receive the corrected defaults.
+        self.key = "ballpad.layout.sunpad-v6.\(deviceClass)"
         let bounds = UIScreen.main.bounds
         let initialSize = CGSize(width: max(bounds.width, bounds.height),
                                  height: min(bounds.width, bounds.height))

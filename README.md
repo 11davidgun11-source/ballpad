@@ -29,20 +29,21 @@ or a generated game module.
 | Area | Current result |
 |---|---|
 | Native app | Universal arm64 iPhone/iPad development target; iPhone 17e and iPad A16 Simulator paths exercised |
-| Rendering | Metal reaches menus and playable matches; 1×–4× internal resolution and 4:3/crop/fill presentation modes |
+| Rendering | Live Aurora GX Metal reaches menus and match scenes, but moving-match visual parity is currently open: QuickBoot-resumed HUD/skinned player rendering is visibly incorrect. GXCore is experimental-only (`DOL_GX_CORE=1`). |
 | Game setup | Local Files import validates a raw `G4QE01` revision 0 image before staged activation |
 | Touch | Move stick, C-stick, D-pad, A/B/X/Y/Z, L/R, Start, editable positions, per-control sizing, global size/opacity |
 | Controllers | Thread-safe touch + GameController mixing; touch controls can hide automatically on connection |
 | Menu | Persistent Sunpad-style **•••** menu for display, controls, game reimport, memory-card transfer, FPS, and diagnostics |
 | Performance | Dedicated guest thread, adaptive work budget, unchanged-frame skipping, draw-plan cache, and memcpy frame staging |
 | Saves | Sandboxed Slot A card with native Files import and share-sheet export |
-| Audio | Disabled in the current app configuration; not a release-ready feature |
+| Audio | Enabled by default; fresh boot playback exercised on iPad A16 Simulator (physical-device audibility/lifecycle still unproven) |
+| QuickBoot | Disabled by default: its CPU/RAM restore does not yet restore all live Aurora GX gameplay state. `BALLPAD_ENABLE_QUICKBOOT=1` is diagnostic-only until moving-match parity passes. |
 | Distribution | Source/development build only; no audited IPA or physical-device compatibility claim yet |
 
-Ballpad is playable development software, not a finished commercial-quality
-release. The current acceptance evidence is Simulator-heavy. Physical-device
-performance, audio, lifecycle/save stress, post-match transitions, and oldest-
-OS compatibility still need fresh validation before a public binary release.
+Ballpad is an in-progress development build, not a finished commercial-quality
+release. Moving-match rendering, physical-device performance, audio lifecycle,
+save stress, post-match transitions, and oldest-OS compatibility still need
+fresh validation before a public binary release.
 See the [Sunpad parity audit](docs/21-sunpad-parity-audit.md) and the historical
 [acceptance ledger](docs/15-validation-log.md).
 
@@ -158,6 +159,7 @@ Raw ISO/GCM images are recognized. Compressed images are not supported.
 | [`scripts/check_ref_patches.sh`](scripts/check_ref_patches.sh) | Check local runtime changes against the tracked patch snapshots |
 | [`app/BallpadUITests/`](app/BallpadUITests/) | Import, menu, touch, and match-driving UI acceptance tests |
 | [`docs/21-sunpad-parity-audit.md`](docs/21-sunpad-parity-audit.md) | Current comparative audit, work completed, and remaining release gates |
+| [`docs/23-goal-loop-2026-08-18.md`](docs/23-goal-loop-2026-08-18.md) | Evidence-based agent loop, current baseline, and acceptance gates for the remaining stability/parity work |
 | [`docs/15-validation-log.md`](docs/15-validation-log.md) | Historical phone/iPad gate evidence |
 | [`docs/09-open-questions.md`](docs/09-open-questions.md) | Runtime investigations and known renderer constraints |
 | `ref/` | Ignored local research/dependency worktrees, including the Sunpad reference |

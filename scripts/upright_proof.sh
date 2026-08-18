@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # C1: the Simulator's simctl screenshot API captures a portrait framebuffer
 # even for this landscape-only app, so proof PNGs can come out rotated.
-# Normalize a captured proof in place. The needed rotation varies by session
-# (the simulator device orientation state changes between boots):
-#   - phone: content is rotated +90 in the portrait frame -> rotate -90
-#   - iPad:  sometimes -90, sometimes already upright (0)
+# Normalize a captured proof in place only after visually inspecting it. The
+# simulator's screenshot framebuffer and the landscape app can disagree: some
+# iPad captures are a portrait canvas containing an already-upright,
+# letterboxed landscape app. Rotating those captures corrupts the evidence.
+# Use an explicit rotation only when the *game content* is visibly sideways.
 # Usage: upright_proof.sh [-90|+90|0] FILE...
-# (default -90, the phone + most iPad captures)
+# Default 0 is intentionally non-destructive.
 set -euo pipefail
 
-ROT="-90"
+ROT="0"
 case "${1:-}" in
   -90|+90|0) ROT="$1"; shift ;;
 esac

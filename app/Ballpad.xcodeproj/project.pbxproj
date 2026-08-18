@@ -22,6 +22,7 @@
 		A7F0E1D2C3B4A59688776655 /* BallpadUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8C9D0E1F2A3B4C5D6E7F809 /* BallpadUITests.swift */; };
 		A8B9C0D1E2F3A4B5C6D7E8F9 /* TouchMatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B0C1D2E3F4A5B6C7D8E9F0 /* TouchMatchTests.swift */; };
 		B0C1D2E3F4A5B6C7D8E9F0A1 /* PadDiagnosticTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A6B7C8D9E0F1A2 /* PadDiagnosticTests.swift */; };
+		C3D4E5F6A7B8C9D0E1F2A3B4 /* LifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4D5E6F7A8B9C0D1E2F3A4B5 /* LifecycleTests.swift */; };
 /* End PBXBuildFile section */
 /* Begin PBXContainerItemProxy section */
 		C1D2E3F4A5B6C7D8E9F0A1B2 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = 81D1274F2707495FBE09FB5F /* Project object */; proxyType = 1; remoteGlobalIDString = E4A73B12B2B8413EBD818F92; remoteInfo = Ballpad; };
@@ -48,6 +49,7 @@
 		B8C9D0E1F2A3B4C5D6E7F809 /* BallpadUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BallpadUITests.swift; sourceTree = "<group>"; };
 		A9B0C1D2E3F4A5B6C7D8E9F0 /* TouchMatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchMatchTests.swift; sourceTree = "<group>"; };
 		B1C2D3E4F5A6B7C8D9E0F1A2 /* PadDiagnosticTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadDiagnosticTests.swift; sourceTree = "<group>"; };
+		C4D5E6F7A8B9C0D1E2F3A4B5 /* LifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LifecycleTests.swift; sourceTree = "<group>"; };
 		D3E4F5A6B7C8D9E0F1A2B3C4 /* BallpadUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BallpadUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BF39E2277993424CE59EBB48 /* ballpad_ios_view.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = ballpad_ios_view.mm; path = ../host/src/ballpad_ios_view.mm; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
@@ -57,7 +59,7 @@
 /* End PBXFrameworksBuildPhase section */
 /* Begin PBXGroup section */
 		CCCC42810C50426691176AAD = {isa = PBXGroup; children = (FC2D9B32AC8E4BCBB224F780 /* Ballpad */, F7A8B9C0D1E2F3A4B5C6D7E8 /* BallpadUITests */, 03A41FC51A804ACD9E6508F2 /* Products */,); sourceTree = "<group>"; };
-		F7A8B9C0D1E2F3A4B5C6D7E8 /* BallpadUITests */ = {isa = PBXGroup; children = (B8C9D0E1F2A3B4C5D6E7F809 /* BallpadUITests.swift */, A9B0C1D2E3F4A5B6C7D8E9F0 /* TouchMatchTests.swift */, B1C2D3E4F5A6B7C8D9E0F1A2 /* PadDiagnosticTests.swift */,); path = BallpadUITests; sourceTree = "<group>"; };
+		F7A8B9C0D1E2F3A4B5C6D7E8 /* BallpadUITests */ = {isa = PBXGroup; children = (B8C9D0E1F2A3B4C5D6E7F809 /* BallpadUITests.swift */, A9B0C1D2E3F4A5B6C7D8E9F0 /* TouchMatchTests.swift */, B1C2D3E4F5A6B7C8D9E0F1A2 /* PadDiagnosticTests.swift */, C4D5E6F7A8B9C0D1E2F3A4B5 /* LifecycleTests.swift */,); path = BallpadUITests; sourceTree = "<group>"; };
 		FC2D9B32AC8E4BCBB224F780 /* Ballpad */ = {isa = PBXGroup; children = (36AD4E354D964E1984E25A3E /* BallpadApp.swift */, 07FE00511A0C49289FB52626 /* AppDelegate.swift */, 9B8C7D6E5F4A3B2C1D0E9F8A /* OnboardingView.swift */, C9D1F5024FB14DE3984A5789 /* GameHostView.swift */, C2CC00000000000000000001 /* ControllerManager.swift */, A9A869C4ABCB4129BE58135F /* BridgingHeader.h */, 68804A618A6C42DD8AE7BAB6 /* Info.plist */, B7E46DDF3AF647CE9A8236AF /* Touch */, EF1D5D81A4B84B4380468DD6 /* Menu */,); path = Ballpad; sourceTree = "<group>"; };
 		B7E46DDF3AF647CE9A8236AF /* Touch */ = {isa = PBXGroup; children = (C1C22A779DE64296A158FE90 /* ControlNodes.swift */, 628FF6CEA1124D0A908E41F1 /* LayoutStore.swift */, A4B7DDB8BD9542EFAC244425 /* TouchControlSurface.swift */,); path = Touch; sourceTree = "<group>"; };
 		EF1D5D81A4B84B4380468DD6 /* Menu */ = {isa = PBXGroup; children = (51E866A6D7A64BCB997E958B /* OverflowMenuView.swift */, E52AF3E0E7484EC198EE3978 /* SettingsStore.swift */,); path = Menu; sourceTree = "<group>"; };
@@ -96,6 +98,7 @@
 			A7F0E1D2C3B4A59688776655 /* BallpadUITests.swift in Sources */,
 			A8B9C0D1E2F3A4B5C6D7E8F9 /* TouchMatchTests.swift in Sources */,
 			B0C1D2E3F4A5B6C7D8E9F0A1 /* PadDiagnosticTests.swift in Sources */,
+			C3D4E5F6A7B8C9D0E1F2A3B4 /* LifecycleTests.swift in Sources */,
 		); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 /* Begin PBXTargetDependency section */

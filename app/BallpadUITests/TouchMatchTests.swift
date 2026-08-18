@@ -57,24 +57,22 @@ final class TouchMatchTests: XCTestCase {
             }
         }
 
-        // Menu navigation anchors (mirror the host autostart table):
-        //   health 1.15B, mem check 1.3B, save prompt 1.45B, title 2.2B,
-        //   load-or-save 2.5B, main menu 2.6B, then the match drive 3.0-6.9B.
-        XCTAssertTrue(waitBlocks(1_280_000_000), "health screen reached")
+        // Menu navigation anchors exactly mirror the host autostart table.
+        // Do not compact the waits: the save-prompt selection needs to settle
+        // before its confirming A at 2.20B, or that A lands on the wrong menu.
+        XCTAssertTrue(waitBlocks(1_150_000_000), "health screen reached")
         press("A")
-        XCTAssertTrue(waitBlocks(1_430_000_000), "memory-card check reached")
+        XCTAssertTrue(waitBlocks(1_300_000_000), "memory-card check reached")
         press("A")
-        XCTAssertTrue(waitBlocks(1_490_000_000), "save prompt reached")
+        XCTAssertTrue(waitBlocks(1_450_000_000), "save prompt reached")
         press("▼")  // CONTINUE WITHOUT SAVING
-        XCTAssertTrue(waitBlocks(1_560_000_000))
+        XCTAssertTrue(waitBlocks(2_200_000_000), "title reached")
         press("A")
-        XCTAssertTrue(waitBlocks(2_180_000_000), "title reached")
-        press("A")
-        XCTAssertTrue(waitBlocks(2_480_000_000), "load-or-save prompt reached")
+        XCTAssertTrue(waitBlocks(2_500_000_000), "load-or-save prompt reached")
         press("▼")
-        XCTAssertTrue(waitBlocks(2_580_000_000))
+        XCTAssertTrue(waitBlocks(2_600_000_000))
         press("A")
-        XCTAssertTrue(waitBlocks(2_880_000_000), "main menu reached")
+        XCTAssertTrue(waitBlocks(2_900_000_000), "main menu reached")
         press("A")
 
         // Match-start drive: D_LEFT + A x3 at the autostart cadence. A D_LEFT
@@ -106,5 +104,51 @@ final class TouchMatchTests: XCTestCase {
             Thread.sleep(forTimeInterval: 2.0)
         }
         XCTAssertTrue(inMatch, "in-match (cGame state 4) after touch-only navigation")
+
+        // P0 endurance gate: do not stop at a menu-to-field transition. Drive
+        // the real movement stick, face buttons, and both shoulders for at
+        // least a minute, then require the guest to still be playing and
+        // making progress. Coordinates are used for the unlabeled stick well;
+        // the other controls are found by their stable accessibility IDs.
+        func control(_ identifier: String) -> XCUIElement {
+            app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier == %@", identifier)).firstMatch
+        }
+        let stick = control("control.stick")
+        let a = control("control.a")
+        let b = control("control.b")
+        let l = control("control.l")
+        let r = control("control.r")
+        for element in [stick, a, b, l, r] {
+            XCTAssertTrue(element.waitForExistence(timeout: 8),
+                          "in-match control \(element.identifier) visible")
+        }
+
+        let blocksBeforeExercise = blocks()
+        for cycle in 0..<6 {
+            let direction = cycle.isMultiple(of: 2)
+                ? CGVector(dx: 0.82, dy: 0.22)
+                : CGVector(dx: 0.18, dy: 0.78)
+            let stickTarget = stick.coordinate(withNormalizedOffset: direction)
+            // Begin the drag from the stick centre, then hold at its rim so
+            // the SwiftUI DragGesture emits a non-zero analog axis for two
+            // seconds before releasing.
+            stick.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: stickTarget)
+            stickTarget.press(forDuration: 2.0)
+            a.press(forDuration: 2.0)
+            b.press(forDuration: 2.0)
+            l.press(forDuration: 2.0)
+            r.press(forDuration: 2.0)
+        }
+
+        XCTAssertGreaterThan(blocks(), blocksBeforeExercise,
+                             "guest advances during sustained touch input")
+        // cGame transitions between 4 (active play) and 2 (on-field
+        // introduction/replay sequence) without leaving the live match. Both
+        // were captured in the renderer; rejecting state 2 would turn a valid
+        // sustained-play run into a false failure.
+        XCTAssertTrue([2, 4].contains(state()),
+                      "still in a live-match cGame state after sustained touch input")
     }
 }

@@ -1,15 +1,38 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 979d43e..219e0bf 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -119,6 +119,17 @@ if(GXRUNTIME_ENABLE_AURORA)
+             PRIVATE "${GXRUNTIME_AURORA_DIR}/lib")
+         target_link_libraries(dolgx_replay
+             PRIVATE GXRuntime::aurora GXRuntime::gxcore)
++        # Ballpad's Aurora backend merges its native touch/controller state
++        # through this host hook. The iOS app already links ballpad_pad.c, but
++        # the desktop replay target needs the same implementation to exercise
++        # live-Aurora pixels from a captured Ballpad trace.
++        if(DEFINED BALLPAD_HOST_DIR AND
++           EXISTS "${BALLPAD_HOST_DIR}/src/ballpad_pad.c")
++            target_sources(dolgx_replay PRIVATE
++                "${BALLPAD_HOST_DIR}/src/ballpad_pad.c")
++            target_include_directories(dolgx_replay PRIVATE
++                "${BALLPAD_HOST_DIR}/include")
++        endif()
+     else()
+         target_compile_definitions(gxruntime_aurora
+             PRIVATE GXRUNTIME_HAS_AURORA_RECOMP=0)
 diff --git a/backends/aurora/aurora_backend.cpp b/backends/aurora/aurora_backend.cpp
-index d94f811..6554a2d 100644
+index d94f811..0dd2057 100644
 --- a/backends/aurora/aurora_backend.cpp
 +++ b/backends/aurora/aurora_backend.cpp
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,7 @@
  // SPDX-License-Identifier: GPL-3.0-or-later
  #include "gxruntime/aurora_backend.h"
++#include "gfx/efb_readback.hpp"
 +#include "gfx/xfb_readback.hpp"
  #include "gxruntime/gap_report.h"
  #include "gxruntime/gx_recomp.h"
  #include "gxruntime/platform.h"
-@@ -18,6 +19,7 @@
+@@ -18,6 +20,7 @@
  #include <dolphin/gx/GXCommandList.h>
  #include <dolphin/pad.h>
  #include <dolphin/vi.h>
@@ -17,7 +40,15 @@ index d94f811..6554a2d 100644
  #include <SDL3/SDL_audio.h>
  #include <SDL3/SDL_init.h>
  #include <SDL3/SDL_scancode.h>
-@@ -46,6 +48,7 @@ namespace aurora::gfx::gxcore {
+@@ -31,6 +34,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <array>
++#include <chrono>
+ #include <cstddef>
+ #include <cstdint>
+ #include <span>
+@@ -46,6 +50,7 @@ namespace aurora::gfx::gxcore {
  bool submit_draw_plan(const gxruntime::gxcore::DrawPlan& plan);
  void copy_efb_to_texture(const gxruntime::gxcore::EfbCopyCommand& cmd);
  void reset_texture_cache();
@@ -25,7 +56,7 @@ index d94f811..6554a2d 100644
  } // namespace aurora::gfx::gxcore
  #endif
  
-@@ -55,6 +58,7 @@ void set_continuous(bool enabled) noexcept;
+@@ -55,21 +60,35 @@ void set_continuous(bool enabled) noexcept;
  bool continuous() noexcept;
  bool peek(const std::uint8_t** rgba, std::uint32_t* width,
            std::uint32_t* height) noexcept;
@@ -33,12 +64,226 @@ index d94f811..6554a2d 100644
  } // namespace aurora::gfx::efb_readback
  
  namespace {
-@@ -1123,6 +1127,62 @@ void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user) {
+ bool g_initialized = false;
+ bool g_frame_open = false;
+-bool g_should_quit = false;
++std::atomic_bool g_should_quit = false;
+ bool g_graphics_log = false;
+ bool g_force_untextured = false;
+-bool g_gx_core_enabled = true; // gxcore is the default renderer; DOL_GX_CORE=0 opts out
++// The live Aurora GX path is the product renderer. GXCore remains available
++// for explicit parity work, but its current cutover can emit a blank EFB on
++// iOS (see docs/09-open-questions.md, 2026-08-18).
++bool g_gx_core_enabled = false;
+ bool g_draw_opcode_pending = false;
+ bool g_audio_queue_log = false;
+ bool g_frame_pacing_log = false;
+ DolAuroraEfbFrameFillFn g_efb_frame_fill = nullptr;
+ void* g_efb_frame_fill_user = nullptr;
++// The readback callback is asynchronous. Keep an owned copy here so the host
++// never reads a pointer into efb_readback's vector after a subsequent GPU map
++// has replaced that vector.
++std::vector<std::uint8_t> g_efb_frame_fill_pixels;
+ unsigned long long g_present_count = 0;
++// The iOS EFB-readback host deliberately has no Aurora surface swapchain, so
++// aurora_get_fps() legitimately returns zero there. Keep a separate host
++// present cadence for the opt-in pacing log rather than presenting that zero
++// as an actual rendering rate.
++std::chrono::steady_clock::time_point g_pacing_last_time{};
++unsigned long long g_pacing_last_present = 0;
+ unsigned long long g_fifo_bytes = 0;
+ unsigned long long g_audio_push_count = 0;
+ unsigned long long g_audio_throttle_count = 0;
+@@ -127,6 +146,13 @@ unsigned long long g_core_rejected = 0;
+ void core_plan_observer(const gxruntime::gxcore::DrawPlan& plan, void*) {
+     if (!plan.ok)
+         return; // skip reasons are tallied in the sink gap counters
++    // Lifecycle and staging-pressure paths can leave the guest running with no
++    // Aurora recording packet. Do not retain renderer work across that gap:
++    // the next present begins a fresh packet and will receive fresh GX spans.
++    if (!g_frame_open) {
++        ++g_core_rejected;
++        return;
++    }
+     if (aurora::gfx::gxcore::submit_draw_plan(plan))
+         ++g_core_submitted;
+     else
+@@ -247,11 +273,22 @@ void poll_events() {
+     const AuroraEvent* event = aurora_update();
+     while (event != nullptr && event->type != AURORA_NONE) {
+         if (event->type == AURORA_EXIT)
+-            g_should_quit = true;
++            g_should_quit.store(true, std::memory_order_release);
+         ++event;
+     }
+ }
+ 
++// Ballpad's iOS product path displays Aurora's EFB readback in a native
++// SwiftUI image view. SDL/UIKit event processing must therefore run from the
++// host app's main thread, whereas guest rendering stays on its worker.
++bool ballpad_efb_readback_only() {
++    static const bool enabled = [] {
++        const char* value = std::getenv("BALLPAD_EFB_NATIVE");
++        return value != nullptr && value[0] != '\0' && value[0] != '0';
++    }();
++    return enabled;
++}
++
+ void write_aurora_command(u16 command) {
+     GXParam1u8(GX_AURORA);
+     GXParam1u16(command);
+@@ -379,6 +416,13 @@ unsigned long long g_trace_present_scope_frame = 0ull;
+ bool g_trace_frame_begun = false;
+ unsigned long long g_trace_frames_recorded = 0ull;
+ gxruntime::aurora_recomp::trace::TraceWriter g_trace_writer;
++// A short mid-game window normally contains only ranges the shadow frontend
++// resolves while recording. Textures loaded during boot therefore disappear
++// when the trace is replayed in a fresh process. This opt-in baseline records
++// MEM1 once before the first FRAME_BEGIN, making a targeted pixel capture
++// self-contained without changing normal trace size or runtime behavior.
++bool g_trace_capture_mem1_baseline = false;
++bool g_trace_mem1_baseline_written = false;
+ // (guest_addr,size) -> content FNV across the whole recording window;
+ // suppresses re-recording unchanged memory (menu scenes re-resolve the same
+ // textures every frame — per-frame dedup made 61-frame traces ~57MB, cross-
+@@ -418,6 +462,29 @@ bool trace_open_now() {
+         g_trace_armed = false;
+         return false;
+     }
++    if (g_trace_capture_mem1_baseline && !g_trace_mem1_baseline_written) {
++        const void* data = nullptr;
++        u32 available = 0;
++        if (g_guest_address_resolver != nullptr &&
++            g_guest_address_resolver(g_guest_address_resolver_user, 0x80000000u,
++                                     header.mem1_size,
++                                     DOL_GUEST_ADDRESS_VIRTUAL,
++                                     DOL_GUEST_RESOURCE_GENERIC, &data,
++                                     &available) &&
++            data != nullptr && available >= header.mem1_size) {
++            // Deliberately write directly: trace_should_record() has not
++            // emitted FRAME_BEGIN yet, and calling trace_record_mem_update()
++            // here would recurse through trace_should_record().
++            g_trace_writer.mem_update(0x80000000u, data, header.mem1_size);
++            g_trace_mem1_baseline_written = true;
++            std::fprintf(stderr, "[trace] wrote MEM1 baseline bytes=%u\n",
++                         header.mem1_size);
++        } else {
++            std::fprintf(stderr,
++                         "[trace] MEM1 baseline unavailable; continuing with "
++                         "windowed resolves only\n");
++        }
++    }
+     return true;
+ }
+ 
+@@ -904,6 +971,8 @@ bool dol_aurora_initialize(int argc, char** argv,
+     g_graphics_log = backend_config->graphics_logging;
+     g_force_untextured = backend_config->force_untextured;
+     g_frame_pacing_log = std::getenv("DOL_FRAME_PACING_LOG") != nullptr;
++    g_pacing_last_time = {};
++    g_pacing_last_present = 0;
+ #if GXRUNTIME_HAS_AURORA_RECOMP
+     g_shadow_light_log_enabled =
+         std::getenv("DOL_AURORA_RECOMP_DRAW_LIGHT_LOG") != nullptr;
+@@ -937,6 +1006,9 @@ bool dol_aurora_initialize(int argc, char** argv,
+     g_trace_present_scope_frame = 0ull;
+     g_trace_frame_begun = false;
+     g_trace_frames_recorded = 0ull;
++    g_trace_capture_mem1_baseline =
++        std::getenv("DOL_AURORA_RECOMP_TRACE_MEM1_SNAPSHOT") != nullptr;
++    g_trace_mem1_baseline_written = false;
+     g_trace_mem_dedup.clear();
+     const char* trace_out = std::getenv("DOL_AURORA_RECOMP_TRACE_OUT");
+     if (trace_out != nullptr && trace_out[0] != '\0') {
+@@ -970,13 +1042,16 @@ bool dol_aurora_initialize(int argc, char** argv,
+         std::fprintf(stderr, "[trace] recording armed path=%s frames=%llu:%llu\n",
+                      g_trace_path.c_str(), g_trace_first_frame,
+                      g_trace_last_frame);
++        if (g_trace_capture_mem1_baseline)
++            std::fprintf(stderr,
++                         "[trace] MEM1 baseline capture enabled "
++                         "(DOL_AURORA_RECOMP_TRACE_MEM1_SNAPSHOT)\n");
+     }
+-    // 63/Mfin default flip: gxcore is the renderer. Opt out only with
+-    // DOL_GX_CORE=0 (kept as an escape hatch while the live Aurora gx layer
+-    // is still present in tree).
++    // The live Aurora GX renderer is the stable product path. GXCore is an
++    // opt-in diagnostic/cutover path until it achieves visual parity on iOS.
+     {
+         const char* core_env = std::getenv("DOL_GX_CORE");
+-        g_gx_core_enabled = !(core_env != nullptr && core_env[0] == '0');
++        g_gx_core_enabled = core_env != nullptr && core_env[0] == '1';
+     }
+     g_shadow_frontend_enabled =
+         std::getenv("DOL_AURORA_RECOMP_FRONTEND_SHADOW") != nullptr ||
+@@ -988,9 +1063,13 @@ bool dol_aurora_initialize(int argc, char** argv,
+         g_core_rejected = 0;
+         aurora::gfx::gxcore::reset_texture_cache();
+         std::fprintf(stderr,
+-                     "[gx-core] renderer = gxcore (default): draws route "
++                     "[gx-core] renderer = gxcore (experimental): draws route "
+                      "through the Dolphin-ported gxcore, live Aurora gx layer "
+                      "bypassed\n");
++    } else {
++        std::fprintf(stderr,
++                     "[gfx] renderer = live Aurora GX (product default); "
++                     "set DOL_GX_CORE=1 only for GXCore parity diagnostics\n");
+     }
+     g_shadow_frontend_failed = false;
+     g_shadow_frontend.reset(nullptr);
+@@ -1056,7 +1135,7 @@ bool dol_aurora_initialize(int argc, char** argv,
+     }
+ 
+     poll_events();
+-    g_frame_open = !g_should_quit && aurora_begin_frame();
++    g_frame_open = !g_should_quit.load(std::memory_order_acquire) && aurora_begin_frame();
+     install_platform_ops();
+     return true;
+ }
+@@ -1123,6 +1202,100 @@ void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user) {
      }
  }
  
 +void dol_aurora_poke_color(uint16_t x, uint16_t y, uint32_t argb) {
 +    aurora::gfx::efb_readback::poke_color(x, y, argb);
++}
++
++bool dol_aurora_renderer_diagnostics(DolAuroraRendererDiagnostics* out) {
++    if (out == nullptr)
++        return false;
++    *out = {};
++    out->presents = g_present_count;
++    out->fifo_bytes_current_frame = g_fifo_bytes;
++    out->initialized = g_initialized ? 1u : 0u;
++    out->frame_open = g_frame_open ? 1u : 0u;
++    for (const auto& texture : aurora::gx::g_gxState.textures) {
++        if (texture)
++            ++out->bound_textures;
++    }
++    for (const auto& texture : aurora::gx::g_gxState.loadedTextures) {
++        if (texture.data != nullptr)
++            ++out->loaded_textures;
++    }
++    for (const auto& tlut : aurora::gx::g_gxState.loadedTluts) {
++        if (tlut.data != nullptr)
++            ++out->loaded_tluts;
++    }
++    for (const auto& array : aurora::gx::g_gxState.arrays) {
++        if (array.data != nullptr)
++            ++out->vertex_arrays;
++    }
++    out->copy_textures = static_cast<uint32_t>(
++        aurora::gx::g_gxState.copyTextures.size() +
++        aurora::gx::g_gxState.copyTextureCache.size());
++    for (const auto& texture : g_pending_textures) {
++        if (texture.valid)
++            ++out->pending_textures;
++    }
++    for (const auto& tlut : g_pending_tluts) {
++        if (tlut.valid)
++            ++out->pending_tluts;
++    }
++    return true;
 +}
 +
 +// A1 quick-boot: save/restore the shadow frontend's parsed GX state so a
@@ -96,7 +341,7 @@ index d94f811..6554a2d 100644
  void dol_aurora_shutdown(void) {
      g_efb_frame_fill = nullptr;
      g_efb_frame_fill_user = nullptr;
-@@ -1133,6 +1193,7 @@ void dol_aurora_shutdown(void) {
+@@ -1133,6 +1306,7 @@ void dol_aurora_shutdown(void) {
          aurora_end_frame();
          g_frame_open = false;
      }
@@ -104,7 +349,14 @@ index d94f811..6554a2d 100644
  #if GXRUNTIME_HAS_AURORA_RECOMP
      // C2: ensure live --gap-report sees gxcore rows even if the host forgot to
      // call dol_aurora_flush_gap_report before write_json (main does call it).
-@@ -1165,6 +1226,9 @@ bool aurora_backend_should_quit(void) {
+@@ -1159,12 +1333,15 @@ void dol_aurora_shutdown(void) {
+ }
+ 
+ bool aurora_backend_should_quit(void) {
+-    return g_should_quit;
++    return g_should_quit.load(std::memory_order_acquire);
+ }
+ 
  void aurora_backend_present(void) {
      if (!g_initialized)
          return;
@@ -114,27 +366,72 @@ index d94f811..6554a2d 100644
  #if GXRUNTIME_HAS_AURORA_RECOMP
      // gxcore accumulates the frame's draws as their spans complete; the final
      // pending draw is only planned at the frame boundary. Submit it into the
-@@ -1215,11 +1279,16 @@ void aurora_backend_present(void) {
+@@ -1203,23 +1380,43 @@ void aurora_backend_present(void) {
+     // Host EFB fill: push latest present-source snapshot into software backing
+     // (async map may land next present; continuous keeps the pipeline fed).
+     if (g_efb_frame_fill != nullptr) {
+-        const std::uint8_t* rgba = nullptr;
+         std::uint32_t w = 0;
+         std::uint32_t h = 0;
+-        if (aurora::gfx::efb_readback::peek(&rgba, &w, &h) && rgba != nullptr &&
+-            w > 0u && h > 0u) {
+-            g_efb_frame_fill(rgba, w, h, g_efb_frame_fill_user);
++        if (aurora::gfx::efb_readback::copy_latest(g_efb_frame_fill_pixels, &w,
++                                                   &h) &&
++            !g_efb_frame_fill_pixels.empty() && w > 0u && h > 0u) {
++            g_efb_frame_fill(g_efb_frame_fill_pixels.data(), w, h,
++                             g_efb_frame_fill_user);
+         }
+     }
+     ++g_present_count;
      if (g_frame_pacing_log &&
          (g_present_count <= 10 || (g_present_count % 60) == 0)) {
          const AuroraStats* stats = aurora_get_stats();
++        const auto t_pacing_now = std::chrono::steady_clock::now();
++        double host_present_hz = 0.0;
++        if (g_pacing_last_present != 0) {
++            const double cadence_seconds =
++                std::chrono::duration<double>(t_pacing_now - g_pacing_last_time)
++                    .count();
++            if (cadence_seconds > 0.0)
++                host_present_hz =
++                    static_cast<double>(g_present_count - g_pacing_last_present) /
++                    cadence_seconds;
++        }
++        g_pacing_last_time = t_pacing_now;
++        g_pacing_last_present = g_present_count;
 +        const double presentMs =
 +            std::chrono::duration<double, std::milli>(
 +                std::chrono::steady_clock::now() - t_present_begin)
 +                .count();
          std::fprintf(stderr,
 -                     "[frame-pacing] frame=%llu fps=%.1f draws=%u "
-+                     "[frame-pacing] frame=%llu fps=%.1f presentMs=%.2f draws=%u "
++                     "[frame-pacing] frame=%llu hostPresentHz=%.1f surfaceFps=%.1f "
++                     "presentMs=%.2f draws=%u "
                       "texture-upload=%u fifo=%llu\n",
 -                     g_present_count, aurora_get_fps(), stats->drawCallCount,
 -                     stats->lastTextureUploadSize, g_fifo_bytes);
-+                     g_present_count, aurora_get_fps(), presentMs,
++                     g_present_count, host_present_hz, aurora_get_fps(), presentMs,
 +                     stats->drawCallCount, stats->lastTextureUploadSize,
 +                     g_fifo_bytes);
      }
      if (g_graphics_log) {
          const AuroraStats* s = aurora_get_stats();
-@@ -1449,6 +1518,18 @@ void aurora_backend_present(void) {
+@@ -1431,8 +1628,11 @@ void aurora_backend_present(void) {
+     }
+     const unsigned long long present_fifo = g_fifo_bytes;
+     g_fifo_bytes = 0;
+-    poll_events();
+-    if (!g_should_quit) {
++    // The EFB-readback iOS host uses native SwiftUI/GameController input.
++    // Do not poll the hidden, UIKit-backed SDL window from the guest worker.
++    if (!ballpad_efb_readback_only())
++        poll_events();
++    if (!g_should_quit.load(std::memory_order_acquire)) {
+         g_frame_open = aurora_begin_frame();
+ #if GXRUNTIME_HAS_AURORA_RECOMP
+         g_shadow_transform_next_draw_index = 0;
+@@ -1449,6 +1649,18 @@ void aurora_backend_present(void) {
                       g_present_count, present_fifo);
  }
  
@@ -153,7 +450,7 @@ index d94f811..6554a2d 100644
  void aurora_backend_mark_gx_begin(void) {
      g_draw_opcode_pending = true;
  }
-@@ -1779,6 +1860,10 @@ bool aurora_backend_pad_init(void) {
+@@ -1779,6 +1991,10 @@ bool aurora_backend_pad_init(void) {
      return true;
  }
  
@@ -164,7 +461,7 @@ index d94f811..6554a2d 100644
  u32 aurora_backend_pad_read(DolPadState state[4]) {
      PADStatus status[4]{};
      const u32 motor_mask = PADRead(status);
-@@ -1796,6 +1881,11 @@ u32 aurora_backend_pad_read(DolPadState state[4]) {
+@@ -1796,6 +2012,11 @@ u32 aurora_backend_pad_read(DolPadState state[4]) {
              .error = status[i].err,
          };
      }
@@ -176,7 +473,7 @@ index d94f811..6554a2d 100644
      return motor_mask;
  }
  
-@@ -1921,3 +2011,7 @@ void install_platform_ops() {
+@@ -1921,3 +2142,7 @@ void install_platform_ops() {
      dol_platform_install(&ops);
  }
  } // namespace
@@ -211,10 +508,48 @@ index a13ce39..8cc4c2f 100644
  /*
   * EFB readback (GXRuntime recomp patch): arm a one-shot copy of the next
 diff --git a/graphics/aurora/lib/aurora.cpp b/graphics/aurora/lib/aurora.cpp
-index b09ef4d..ef253f2 100644
+index b09ef4d..fd1fd4d 100644
 --- a/graphics/aurora/lib/aurora.cpp
 +++ b/graphics/aurora/lib/aurora.cpp
-@@ -255,6 +255,13 @@ void end_frame() noexcept {
+@@ -175,6 +175,10 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
+   imgui::create_context();
+ #endif
+   const auto size = window::get_window_size();
++  // The EFB-readback host opens its first frame on the UIKit main thread, then
++  // runs guest rendering on a worker. Preserve that safe initial layout for
++  // later worker-side ImGui setup.
++  window::set_cached_window_size(size);
+   Log.info("Using framebuffer size {}x{} scale {}", size.fb_width, size.fb_height, size.scale);
+ #ifdef AURORA_ENABLE_GX
+   if (g_config.imGuiInitCallback != nullptr) {
+@@ -224,7 +228,11 @@ const AuroraEvent* update() noexcept {
+ bool begin_frame() noexcept {
+   ZoneScoped;
+ #ifdef AURORA_ENABLE_GX
+-  {
++  static const bool s_efbReadbackOnly = [] {
++    const char* value = getenv("BALLPAD_EFB_NATIVE");
++    return value != nullptr && value[0] != '\0' && value[0] != '0';
++  }();
++  if (!s_efbReadbackOnly) {
+     if (!window::is_presentable()) {
+       webgpu::release_surface();
+       return false;
+@@ -238,9 +246,12 @@ bool begin_frame() noexcept {
+         return false;
+       }
+     }
++  } else if (!window::is_presentable()) {
++    return false;
+   }
+ 
+-  imgui::new_frame(window::get_window_size());
++  imgui::new_frame(s_efbReadbackOnly ? window::get_cached_window_size()
++                                     : window::get_window_size());
+   if (!gfx::begin_frame()) {
+     return false;
+   }
+@@ -255,6 +266,13 @@ void end_frame() noexcept {
    gfx::finish();
    auto imguiDrawData = imgui::freeze();
  
@@ -228,7 +563,7 @@ index b09ef4d..ef253f2 100644
    // E7 present-from-XFB: VI current → GPU Virtual-XFB, else YUYV-from-RAM
    // decode, else EFB-direct (Strikers when no RAM XFB / match fails).
    const std::uint32_t xfbAddr = vi::xfb_black() ? 0u : vi::current_xfb();
-@@ -288,21 +295,23 @@ void end_frame() noexcept {
+@@ -288,21 +306,23 @@ void end_frame() noexcept {
      wgpu::Texture currentTexture;
      wgpu::TextureView currentView;
      auto surfaceStatus = wgpu::SurfaceGetCurrentTextureStatus::Error;
@@ -263,7 +598,7 @@ index b09ef4d..ef253f2 100644
      if (canPresent) {
        wgpu::BindGroup presentBindGroup;
        if (rmlBindGroup && !rmlOverlay) {
-@@ -370,8 +379,6 @@ void end_frame() noexcept {
+@@ -370,8 +390,6 @@ void end_frame() noexcept {
          imgui::render(pass, imguiDrawData);
          pass.End();
        }
@@ -272,7 +607,7 @@ index b09ef4d..ef253f2 100644
      }
      webgpu::gpu_prof::frame_end(encoder);
      const wgpu::CommandBufferDescriptor cmdBufDescriptor{.label = "Redraw command buffer"};
-@@ -381,46 +388,48 @@ void end_frame() noexcept {
+@@ -381,46 +399,48 @@ void end_frame() noexcept {
        g_queue.Submit(1, &buffer);
      }
      webgpu::gpu_prof::after_submit();
@@ -358,8 +693,27 @@ index b09ef4d..ef253f2 100644
        }
      }
      gfx::after_submit();
+diff --git a/graphics/aurora/lib/dolphin/gx/GXFrameBuffer.cpp b/graphics/aurora/lib/dolphin/gx/GXFrameBuffer.cpp
+index 459b908..6197290 100644
+--- a/graphics/aurora/lib/dolphin/gx/GXFrameBuffer.cpp
++++ b/graphics/aurora/lib/dolphin/gx/GXFrameBuffer.cpp
+@@ -57,7 +57,13 @@ void copy_tex(const void* dest, GXBool clear) noexcept {
+                            : GX_TF_RGBA8;
+       handle = gfx::new_render_texture(dstWidth, dstHeight, fmt, "Resolved Texture");
+     }
+-    it = g_gxState.copyTextureCache.emplace(key, GXState::CopyTextureRef{.handle = handle, .revision = 0}).first;
++    it = g_gxState.copyTextureCache.emplace(
++        key, GXState::CopyTextureRef{.handle = handle,
++                                     .revision = 0,
++                                     .width = dstWidth,
++                                     .height = dstHeight,
++                                     .format = texCopyFmt})
++             .first;
+   }
+   auto& handle = it->second;
+ 
 diff --git a/graphics/aurora/lib/gfx/common.cpp b/graphics/aurora/lib/gfx/common.cpp
-index a64dd2d..cb9d4c9 100644
+index a64dd2d..48eeb87 100644
 --- a/graphics/aurora/lib/gfx/common.cpp
 +++ b/graphics/aurora/lib/gfx/common.cpp
 @@ -24,6 +24,8 @@
@@ -371,16 +725,18 @@ index a64dd2d..cb9d4c9 100644
  #include <deque>
  #include <mutex>
  #include <optional>
-@@ -434,6 +436,8 @@ static FramePacket& current_frame_packet() {
+@@ -434,6 +436,10 @@ static FramePacket& current_frame_packet() {
  
  static RenderPassList& current_render_passes() { return current_frame_packet().renderPasses; }
  
-+static bool have_active_frame_packet() { return g_recordingFrame != nullptr; }
++bool is_recording_frame() noexcept { return g_recordingFrame != nullptr; }
++
++static bool have_active_frame_packet() { return is_recording_frame(); }
 +
  static StagingHighWater current_high_water(const FramePacket& frame) noexcept {
    return {
        .verts = static_cast<uint32_t>(frame.verts.size()),
-@@ -658,7 +662,8 @@ static void push_draw_command(ShaderDrawCommand data) {
+@@ -658,7 +664,8 @@ static void push_draw_command(ShaderDrawCommand data) {
  }
  
  Vec2<uint32_t> get_render_target_size() noexcept {
@@ -390,7 +746,7 @@ index a64dd2d..cb9d4c9 100644
      const auto& size = current_render_passes()[g_currentRenderPass].targetSize;
      return {size.width, size.height};
    }
-@@ -693,7 +698,13 @@ PipelineRef pipeline_ref(const clear::PipelineConfig& config) {
+@@ -693,7 +700,13 @@ PipelineRef pipeline_ref(const clear::PipelineConfig& config) {
  void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
                     Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat,
                     const EfbCopyFilterParams* filter) {
@@ -405,7 +761,7 @@ index a64dd2d..cb9d4c9 100644
    auto& prevPass = current_render_passes()[g_currentRenderPass];
    // GPNF §7: if plane capture armed for this copy, tag the pass for pre-resolve
    // EFB color + depth snapshot at encode time.
-@@ -1179,6 +1190,7 @@ void shutdown() {
+@@ -1179,6 +1192,7 @@ void shutdown() {
  static bool wait_for_staging_buffer(size_t slot) {
    ZoneScopedN("Wait for buffer map");
    map_staging_buffer(slot);
@@ -413,7 +769,7 @@ index a64dd2d..cb9d4c9 100644
    while (true) {
      const auto mappingState = s_mappingStates[slot].load(std::memory_order_acquire);
      if (mappingState == BufferMapState::Mapped) {
-@@ -1187,6 +1199,13 @@ static bool wait_for_staging_buffer(size_t slot) {
+@@ -1187,6 +1201,13 @@ static bool wait_for_staging_buffer(size_t slot) {
      if (mappingState == BufferMapState::Unmapped) {
        return false;
      }
@@ -427,7 +783,7 @@ index a64dd2d..cb9d4c9 100644
      wait_for_gpu_progress(std::chrono::milliseconds{1});
    }
  }
-@@ -1194,6 +1213,7 @@ static bool wait_for_staging_buffer(size_t slot) {
+@@ -1194,6 +1215,7 @@ static bool wait_for_staging_buffer(size_t slot) {
  static size_t acquire_frame_slot() {
    ZoneScopedN("Acquire frame slot");
    const auto waitStart = PresentClock::now();
@@ -435,7 +791,7 @@ index a64dd2d..cb9d4c9 100644
    while (true) {
      if (const auto slot = g_frameSlots.try_acquire()) {
        const auto waitDuration = PresentClock::now() - waitStart;
-@@ -1201,6 +1221,37 @@ static size_t acquire_frame_slot() {
+@@ -1201,6 +1223,37 @@ static size_t acquire_frame_slot() {
        TracyPlot("aurora: frameSlotWaitMs", waitMs);
        return *slot;
      }
@@ -473,7 +829,7 @@ index a64dd2d..cb9d4c9 100644
      wait_for_gpu_progress(std::chrono::microseconds{100});
    }
  }
-@@ -1223,6 +1274,9 @@ bool begin_frame() {
+@@ -1223,6 +1276,9 @@ bool begin_frame() {
    ZoneScoped;
    // pace_frame_start();
    const size_t frameSlot = acquire_frame_slot();
@@ -483,7 +839,7 @@ index a64dd2d..cb9d4c9 100644
    const auto stagingSlot = acquire_mapped_staging_buffer();
    if (!stagingSlot) {
      g_frameSlots.release(frameSlot);
-@@ -1756,8 +1810,16 @@ static void render_pass(const wgpu::RenderPassEncoder& pass, FramePacket& frame,
+@@ -1756,8 +1812,21 @@ static void render_pass(const wgpu::RenderPassEncoder& pass, FramePacket& frame,
      switch (cmd.type) {
      case CommandType::SetViewport: {
        const auto& vp = cmd.data.setViewport;
@@ -491,9 +847,14 @@ index a64dd2d..cb9d4c9 100644
 -      const float maxDepth = gx::UseReversedZ ? 1.f - vp.znear : vp.zfar;
 +      float minDepth = gx::UseReversedZ ? 1.f - vp.zfar : vp.znear;
 +      float maxDepth = gx::UseReversedZ ? 1.f - vp.znear : vp.zfar;
-+      // Ballpad: Dawn/Metal rejects negative-zero minDepth.
++      // Dawn/Metal requires depths in [0, 1] and rejects IEEE -0.0 even
++      // though it compares equal to 0. Clamp out-of-range values and then
++      // canonicalize either signed zero to a positive literal before the
++      // WebGPU call.
 +      if (!(minDepth >= 0.f)) minDepth = 0.f;
 +      if (!(maxDepth <= 1.f)) maxDepth = 1.f;
++      if (minDepth == 0.f) minDepth = 0.f;
++      if (maxDepth == 0.f) maxDepth = 0.f;
 +      if (minDepth > maxDepth) {
 +        const float tmp = minDepth;
 +        minDepth = maxDepth;
@@ -502,8 +863,23 @@ index a64dd2d..cb9d4c9 100644
        pass.SetViewport(vp.left, vp.top, vp.width, vp.height, minDepth, maxDepth);
      } break;
      case CommandType::SetScissor: {
+diff --git a/graphics/aurora/lib/gfx/common.hpp b/graphics/aurora/lib/gfx/common.hpp
+index 37acf2b..445cf67 100644
+--- a/graphics/aurora/lib/gfx/common.hpp
++++ b/graphics/aurora/lib/gfx/common.hpp
+@@ -317,6 +317,10 @@ struct ConvRequest;
+ void queue_palette_conv(tex_palette_conv::ConvRequest req);
+ 
+ Range push_verts(const uint8_t* data, size_t length, size_t alignment);
++// True only while the record thread owns a FramePacket. Embedded hosts can
++// receive GX work between presents, so consumers must drop that work instead
++// of dereferencing the cleared recording packet.
++bool is_recording_frame() noexcept;
+ template <typename T>
+ static Range push_verts(ArrayRef<T> data, size_t alignment) {
+   return push_verts(reinterpret_cast<const uint8_t*>(data.data()), data.size() * sizeof(T), alignment);
 diff --git a/graphics/aurora/lib/gfx/efb_readback.cpp b/graphics/aurora/lib/gfx/efb_readback.cpp
-index 7af8fca..add12a5 100644
+index 7af8fca..8fd03f3 100644
 --- a/graphics/aurora/lib/gfx/efb_readback.cpp
 +++ b/graphics/aurora/lib/gfx/efb_readback.cpp
 @@ -4,6 +4,7 @@
@@ -651,11 +1027,67 @@ index 7af8fca..add12a5 100644
    if (!cont)
      g_requested.store(false, std::memory_order_release);
    else
+@@ -208,6 +274,22 @@ bool peek(const std::uint8_t** rgba, std::uint32_t* width,
+   return true;
+ }
+ 
++bool copy_latest(std::vector<std::uint8_t>& rgba, std::uint32_t* width,
++                 std::uint32_t* height) noexcept {
++  std::lock_guard lock{g_mutex};
++  if (g_pixels.empty() || g_readyWidth == 0u || g_readyHeight == 0u) {
++    return false;
++  }
++  rgba = g_pixels;
++  if (width != nullptr) {
++    *width = g_readyWidth;
++  }
++  if (height != nullptr) {
++    *height = g_readyHeight;
++  }
++  return true;
++}
++
+ void arm_at_copy() noexcept {
+   // Prefer continuous so peeks stay fresh across multi-copy frames; still
+   // force a request so the next after_submit copies present_source.
+diff --git a/graphics/aurora/lib/gfx/efb_readback.hpp b/graphics/aurora/lib/gfx/efb_readback.hpp
+index b4f322e..2ed1122 100644
+--- a/graphics/aurora/lib/gfx/efb_readback.hpp
++++ b/graphics/aurora/lib/gfx/efb_readback.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <cstdint>
++#include <vector>
+ 
+ // GXRuntime recomp patch (0006): CPU readback of the frame's present source,
+ // for deterministic pixel replay + continuous GXPeekARGB attach.
+@@ -29,6 +30,12 @@ bool take(const std::uint8_t** rgba, std::uint32_t* width,
+ bool peek(const std::uint8_t** rgba, std::uint32_t* width,
+           std::uint32_t* height) noexcept;
+ 
++// Copy the latest completed frame while the readback mutex is held. Use this
++// for callbacks that cannot consume the pointer before another async map may
++// complete; `peek` remains suitable only for an immediate, synchronized read.
++bool copy_latest(std::vector<std::uint8_t>& rgba, std::uint32_t* width,
++                 std::uint32_t* height) noexcept;
++
+ // U-R2: arm a one-shot readback (request) for the next after_submit. Pair with
+ // pump via aurora_pump_framebuffer_readback / ProcessEvents until peek/take.
+ void arm_at_copy() noexcept;
 diff --git a/graphics/aurora/lib/gfx/gxcore_draw.cpp b/graphics/aurora/lib/gfx/gxcore_draw.cpp
-index 71136b9..bea71f5 100644
+index 71136b9..b3cd787 100644
 --- a/graphics/aurora/lib/gfx/gxcore_draw.cpp
 +++ b/graphics/aurora/lib/gfx/gxcore_draw.cpp
-@@ -235,6 +235,17 @@ absl::flat_hash_map<TextureKey, TextureHandle> g_textureCache;
+@@ -19,6 +19,7 @@
+ #include <absl/container/flat_hash_map.h>
+ 
+ #include <algorithm>
++#include <cstdint>
+ #include <cstring>
+ #include <vector>
+ 
+@@ -235,6 +236,17 @@ absl::flat_hash_map<TextureKey, TextureHandle> g_textureCache;
  absl::flat_hash_map<uint32_t, TextureKey> g_textureAddrKey;
  TextureCacheStats g_textureCacheStats;
  
@@ -673,7 +1105,7 @@ index 71136b9..bea71f5 100644
  // EFB copy-to-texture destinations (63/S16): dest guest address -> resolved EFB
  // texture. A draw binding a texture at one of these addresses samples the copied
  // EFB content instead of the (stale, never-written-by-us) guest memory there.
-@@ -592,6 +603,7 @@ void render(const DrawData& data, const wgpu::RenderPassEncoder& pass) {
+@@ -592,6 +604,7 @@ void render(const DrawData& data, const wgpu::RenderPassEncoder& pass) {
  void reset_texture_cache() {
    g_textureCache.clear();
    g_textureAddrKey.clear();
@@ -681,7 +1113,7 @@ index 71136b9..bea71f5 100644
    g_efbCopyTextures.clear();
    g_ramXfbTextures.clear();
    g_last_xfb_dest_stride = 0;
-@@ -601,6 +613,10 @@ void reset_texture_cache() {
+@@ -601,6 +614,10 @@ void reset_texture_cache() {
    g_xfb_ram_present_count = 0;
  }
  
@@ -692,7 +1124,7 @@ index 71136b9..bea71f5 100644
  const TextureCacheStats& texture_cache_stats() { return g_textureCacheStats; }
  
  // Resolve the current EFB region into a texture the guest-identity path can bind
-@@ -726,11 +742,14 @@ void copy_efb_to_texture(const gxc::EfbCopyCommand& cmd) {
+@@ -726,11 +743,14 @@ void copy_efb_to_texture(const gxc::EfbCopyCommand& cmd) {
    // E7 YUYV→RAM: when display-copy dest is programmed, also encode the EFB
    // source rect into guest MEM1 as YUYV 4:2:2 (Dolphin copy_to_ram XFB path).
    // Source pixels: latest present-source readback when available; skip if no
@@ -710,7 +1142,56 @@ index 71136b9..bea71f5 100644
        (cmd.width & 1u) == 0u) {
      if (!efb_readback::continuous()) {
        efb_readback::set_continuous(true);
-@@ -839,10 +858,21 @@ bool submit_draw_plan(const gxc::DrawPlan& plan) {
+@@ -787,6 +807,48 @@ bool submit_draw_plan(const gxc::DrawPlan& plan) {
+     return false;
+   }
+ 
++  // The embedded iOS host can keep stepping the guest while Aurora is between
++  // frames (notably when UIKit backgrounds the scene or a new frame cannot be
++  // acquired). The GX core must not write into g_recordingFrame after end_frame
++  // has cleared it; that used to dereference address 0xc8 in push_verts.
++  if (!is_recording_frame()) {
++    static unsigned int rejected_without_frame = 0;
++    if (rejected_without_frame++ < 16u) {
++      Log.warn("reject draw plan without an active Aurora frame");
++    }
++    return false;
++  }
++
++  // A malformed plan must never be allowed to turn into a memcpy from an
++  // invalid vector data pointer. This was observed on the iPhone lifecycle
++  // path as a 0x200 source address in push_verts. DrawPlan is expected to be
++  // self-contained: the decoder produces exactly kVertexFloats per vertex and
++  // 16-bit topology indices. Reject the bad draw, retain the surrounding
++  // frame, and leave a bounded diagnostic rather than terminating the app.
++  constexpr std::uint32_t kMaxPlanVertices = 65535u;
++  constexpr std::size_t kMaxPlanIndices = 1u << 20;
++  const std::size_t expected_vertex_floats =
++      static_cast<std::size_t>(plan.vertex_count) * gxc::kVertexFloats;
++  const auto vertex_address =
++      reinterpret_cast<std::uintptr_t>(plan.vertices.data());
++  const auto index_address =
++      reinterpret_cast<std::uintptr_t>(plan.indices.data());
++  const bool invalid_geometry =
++      plan.vertex_count > kMaxPlanVertices ||
++      plan.vertices.size() != expected_vertex_floats ||
++      plan.indices.size() > kMaxPlanIndices || vertex_address < 4096u ||
++      index_address < 4096u;
++  if (invalid_geometry) {
++    static unsigned int rejected = 0;
++    if (rejected++ < 16u) {
++      Log.warn("reject malformed draw plan: verts={} floats={} expected={} "
++               "indices={} vptr=0x{:x} iptr=0x{:x}",
++               plan.vertex_count, plan.vertices.size(), expected_vertex_floats,
++               plan.indices.size(), vertex_address, index_address);
++    }
++    return false;
++  }
++
+   if (plan.viewport_valid) {
+     // Raw XF viewport -> logical viewport, the raw path's own formula
+     // (gx/command_processor.cpp XF 0x1A case).
+@@ -839,10 +901,21 @@ bool submit_draw_plan(const gxc::DrawPlan& plan) {
      const uint32_t size = std::min(tsize, available);
      // Hash the actual source texels (+ TLUT for CI) so a content change under an
      // unchanged guest identity is a distinct cache entry — see TextureKey.
@@ -809,6 +1290,229 @@ index 754c2b9..e35d486 100644
    if (!req.filter.active || !req.dst || !req.srcView)
      return false;
    // Depth format destinations still use conversion pipelines; filter WGSL
+diff --git a/graphics/aurora/lib/gx/gx.cpp b/graphics/aurora/lib/gx/gx.cpp
+index 4037c72..ae9915a 100644
+--- a/graphics/aurora/lib/gx/gx.cpp
++++ b/graphics/aurora/lib/gx/gx.cpp
+@@ -20,6 +20,8 @@
+ #include <bit>
+ #include <cfloat>
+ #include <cmath>
++#include <cstdio>
++#include <cstdlib>
+ #include <mutex>
+ #include <optional>
+ #include <utility>
+@@ -66,6 +68,11 @@ struct DynamicPaletteEntry {
+ struct CachedTextureEntry {
+   gfx::TextureHandle handle;
+   u32 texDataVersion = 0;
++  const void* data = nullptr;
++  u32 width = 0;
++  u32 height = 0;
++  u32 format = 0;
++  u32 flags = 0;
+   u32 tlutObjId = 0;
+   u32 tlutDataVersion = 0;
+ };
+@@ -85,6 +92,72 @@ absl::flat_hash_map<u32, CachedTextureEntry> s_textureObjectCaches;
+ absl::flat_hash_map<u32, TlutObjectCache> s_tlutObjectCaches;
+ std::atomic_bool s_staticTextureCacheClearPending = false;
+ 
++struct TextureTraceConfig {
++  bool enabled = false;
++  u32 firstFrame = 0;
++  u32 limit = 2048;
++};
++
++TextureTraceConfig texture_trace_config() noexcept {
++  static const TextureTraceConfig config = [] {
++    TextureTraceConfig result;
++    const char* enabled = std::getenv("BALLPAD_TEXTURE_TRACE");
++    result.enabled = enabled != nullptr && enabled[0] != '\0' && enabled[0] != '0';
++    if (const char* firstFrame = std::getenv("BALLPAD_TEXTURE_TRACE_FROM_FRAME")) {
++      result.firstFrame = static_cast<u32>(std::strtoul(firstFrame, nullptr, 10));
++    }
++    if (const char* limit = std::getenv("BALLPAD_TEXTURE_TRACE_LIMIT")) {
++      result.limit = std::max<u32>(1, static_cast<u32>(std::strtoul(limit, nullptr, 10)));
++    }
++    return result;
++  }();
++  return config;
++}
++
++u64 texture_trace_sample(const void* data, u32 byteSize) noexcept {
++  if (data == nullptr || byteSize == 0) {
++    return 0;
++  }
++  constexpr u64 OffsetBasis = 1469598103934665603ull;
++  constexpr u64 Prime = 1099511628211ull;
++  const auto* bytes = static_cast<const u8*>(data);
++  const u32 sampleSize = std::min<u32>(byteSize, 256);
++  u64 hash = OffsetBasis;
++  for (u32 index = 0; index < sampleSize; ++index) {
++    hash ^= bytes[index];
++    hash *= Prime;
++  }
++  return hash;
++}
++
++void trace_texture_bind(u32 slot, const GXTexObj_& obj, const char* source) noexcept {
++  static std::mutex seenMutex;
++  static absl::flat_hash_set<u64> seen;
++  const TextureTraceConfig config = texture_trace_config();
++  const u32 frame = gfx::current_frame();
++  if (!config.enabled || frame < config.firstFrame) {
++    return;
++  }
++  const u32 byteSize = recomp::texture_byte_size(obj);
++  const u64 sample = texture_trace_sample(obj.data, byteSize);
++  u64 identity = sample ^ (static_cast<u64>(obj.image3) << 32) ^ static_cast<u64>(obj.width() << 16 | obj.height());
++  identity ^= static_cast<u64>(obj.format()) << 48;
++  identity ^= static_cast<u64>(static_cast<unsigned char>(source[0])) << 56;
++  {
++    const std::lock_guard lock(seenMutex);
++    if (seen.contains(identity) || seen.size() >= config.limit) {
++      return;
++    }
++    seen.insert(identity);
++  }
++  std::fprintf(stderr,
++               "[ballpad.texture] frame=%u slot=%u source=%s image3=%08X data=%p bytes=%u sample=%016llX "
++               "size=%ux%u format=%u mips=%u flags=%08X\n",
++               frame, slot, source, obj.image3, obj.data, byteSize,
++               static_cast<unsigned long long>(sample), obj.width(), obj.height(),
++               obj.format(), obj.mip_count(), obj.flags);
++}
++
+ void do_clear_static_texture_cache() noexcept {
+   s_textureObjectCaches.clear();
+   for (auto& [_, cache] : s_tlutObjectCaches) {
+@@ -126,6 +199,11 @@ void store_cached_texture(const GXTexObj_& obj, gfx::TextureHandle handle, u32 t
+ 
+   entry.handle = std::move(handle);
+   entry.texDataVersion = obj.texDataVersion;
++  entry.data = obj.data;
++  entry.width = obj.width();
++  entry.height = obj.height();
++  entry.format = obj.format();
++  entry.flags = obj.flags;
+   entry.tlutObjId = tlutObjId;
+   entry.tlutDataVersion = tlutDataVersion;
+ 
+@@ -167,7 +245,9 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
+   if (obj.texObjId != 0) {
+     if (const auto it = s_textureObjectCaches.find(obj.texObjId); it != s_textureObjectCaches.end()) {
+       const auto& entry = it->second;
+-      if (entry.handle && entry.texDataVersion == obj.texDataVersion && entry.tlutObjId == 0) {
++      if (entry.handle && entry.texDataVersion == obj.texDataVersion && entry.data == obj.data &&
++          entry.width == obj.width() && entry.height == obj.height() && entry.format == obj.format() &&
++          entry.flags == obj.flags && entry.tlutObjId == 0) {
+         return entry.handle;
+       }
+     }
+@@ -201,7 +281,9 @@ gfx::TextureHandle resolve_static_palette_texture(const GXTexObj_& obj, const GX
+   if (obj.texObjId != 0) {
+     if (const auto it = s_textureObjectCaches.find(obj.texObjId); it != s_textureObjectCaches.end()) {
+       const auto& entry = it->second;
+-      if (entry.handle && entry.texDataVersion == obj.texDataVersion && entry.tlutObjId == tlut.tlutObjId &&
++      if (entry.handle && entry.texDataVersion == obj.texDataVersion && entry.data == obj.data &&
++          entry.width == obj.width() && entry.height == obj.height() && entry.format == obj.format() &&
++          entry.flags == obj.flags && entry.tlutObjId == tlut.tlutObjId &&
+           entry.tlutDataVersion == tlut.tlutDataVersion) {
+         return entry.handle;
+       }
+@@ -448,14 +530,27 @@ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
+     recomp::resolve_texture_data(obj);
+     auto& textureBind = g_gxState.textures[i];
+     if (obj.texObjId != 0 && obj.texObjId == textureBind.texObj.texObjId &&
+-        obj.texDataVersion == textureBind.texObj.texDataVersion) {
++        obj.texDataVersion == textureBind.texObj.texDataVersion && obj.data == textureBind.texObj.data &&
++        obj.width() == textureBind.texObj.width() && obj.height() == textureBind.texObj.height() &&
++        obj.format() == textureBind.texObj.format() && obj.flags == textureBind.texObj.flags &&
++        obj.tlut == textureBind.texObj.tlut) {
+       // Texture bind unchanged
+       continue;
+     }
+ 
+     gfx::TextureHandle handle;
++    const char* source = "missing";
+     const auto copyIt = g_gxState.copyTextures.find(obj.data);
+-    const GXState::CopyTextureRef* copyRef = copyIt != g_gxState.copyTextures.end() ? &copyIt->second : nullptr;
++    // A copy destination can later be reused as ordinary texture storage.
++    // Requiring the full texture identity prevents an old EFB/health-screen
++    // copy from being sampled by an unrelated match asset at that address.
++    const GXState::CopyTextureRef* copyRef =
++        copyIt != g_gxState.copyTextures.end() &&
++                copyIt->second.width == obj.width() &&
++                copyIt->second.height == obj.height() &&
++                copyIt->second.format == obj.format()
++            ? &copyIt->second
++            : nullptr;
+     if (is_palette_format(obj.format())) {
+       GXTlutObj_ recompTlut{};
+       const GXTlutObj_* tlut = nullptr;
+@@ -478,16 +573,21 @@ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
+       if (tlut != nullptr) {
+         if (copyRef != nullptr) {
+           handle = resolve_dynamic_palette_texture(obj, *copyRef, *tlut);
++          source = "copy-palette";
+         } else if (obj.has_data()) {
+           handle = resolve_static_palette_texture(obj, *tlut);
++          source = "static-palette";
+         }
+       }
+     } else if (copyRef != nullptr) {
+       handle = copyRef->handle;
++      source = "copy";
+     } else if (obj.has_data()) {
+       handle = resolve_static_texture(obj);
++      source = "static";
+     }
+ 
++    trace_texture_bind(i, obj, source);
+     obj.mFormat = resolved_format_for_handle(handle);
+     textureBind = gfx::TextureBind{obj, std::move(handle)};
+   }
+diff --git a/graphics/aurora/lib/gx/gx.hpp b/graphics/aurora/lib/gx/gx.hpp
+index 5e5d458..ffab9f9 100644
+--- a/graphics/aurora/lib/gx/gx.hpp
++++ b/graphics/aurora/lib/gx/gx.hpp
+@@ -287,6 +287,11 @@ struct GXState {
+   struct CopyTextureRef {
+     gfx::TextureHandle handle;
+     u32 revision = 0;
++    // A guest address alone is not enough to identify a copied texture: games
++    // routinely reuse MEM1 ranges for unrelated static assets.
++    u32 width = 0;
++    u32 height = 0;
++    GXTexFmt format = GX_TF_I4;
+ 
+     operator bool() const noexcept { return handle.operator bool(); }
+   };
+diff --git a/graphics/aurora/lib/imgui.cpp b/graphics/aurora/lib/imgui.cpp
+index 02adbe1..50c9aad 100644
+--- a/graphics/aurora/lib/imgui.cpp
++++ b/graphics/aurora/lib/imgui.cpp
+@@ -152,7 +152,17 @@ void new_frame(const AuroraWindowSize& size) noexcept {
+     }
+     ImGui_ImplWGPU_NewFrame();
+   }
+-  ImGui_ImplSDL3_NewFrame();
++  // In Ballpad's iOS EFB-readback mode, the SDL window is a hidden Metal
++  // bootstrap surface while SwiftUI owns display/input. ImGui's SDL hook
++  // queries UIKit window dimensions internally, so do not call it from the
++  // guest worker; the host-provided size above is authoritative.
++  static const bool s_efbReadbackOnly = [] {
++    const char* value = std::getenv("BALLPAD_EFB_NATIVE");
++    return value != nullptr && value[0] != '\0' && value[0] != '0';
++  }();
++  if (!s_efbReadbackOnly) {
++    ImGui_ImplSDL3_NewFrame();
++  }
+ 
+   ImGuiIO& io = ImGui::GetIO();
+   io.DisplayFramebufferScale = framebufferScale;
 diff --git a/graphics/aurora/lib/webgpu/gpu.cpp b/graphics/aurora/lib/webgpu/gpu.cpp
 index 7aff76e..66950ed 100644
 --- a/graphics/aurora/lib/webgpu/gpu.cpp
@@ -908,7 +1612,7 @@ index cd65d98..20c4940 100644
  const TextureWithSampler& present_source() noexcept;
  wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source);
 diff --git a/graphics/aurora/lib/window.cpp b/graphics/aurora/lib/window.cpp
-index 74864c3..b81a663 100644
+index 74864c3..8ec3371 100644
 --- a/graphics/aurora/lib/window.cpp
 +++ b/graphics/aurora/lib/window.cpp
 @@ -20,6 +20,7 @@
@@ -930,7 +1634,45 @@ index 74864c3..b81a663 100644
  SDL_Renderer* g_renderer;
  float g_frameBufferScale = 0.f;
  bool g_frameBufferAspectFit = false;
-@@ -262,6 +267,15 @@ const AuroraEvent* poll_events() {
+@@ -57,6 +62,14 @@ std::atomic_bool g_surfaceReady = true;
+ bool g_lastPaused = false;
+ bool g_gotFocus = false;
+ 
++bool efb_readback_only() {
++  static const bool enabled = [] {
++    const char* value = std::getenv("BALLPAD_EFB_NATIVE");
++    return value != nullptr && value[0] != '\0' && value[0] != '0';
++  }();
++  return enabled;
++}
++
+ bool operator==(const AuroraWindowSize& lhs, const AuroraWindowSize& rhs) {
+   return lhs.width == rhs.width && lhs.height == rhs.height && lhs.fb_width == rhs.fb_width &&
+          lhs.fb_height == rhs.fb_height && lhs.native_fb_height == rhs.native_fb_height &&
+@@ -163,6 +176,12 @@ void process_event(SDL_Event& event) {
+     break;
+   }
+   case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
++    // Ballpad's EFB host never presents the SDL swapchain. Keep its fixed EFB
++    // target independent of UIKit surface changes, so this main-thread event
++    // pump does not issue GPU resize work.
++    if (efb_readback_only()) {
++      break;
++    }
+     resize_swapchain();
+     g_events.push_back(AuroraEvent{
+         .type = AURORA_DISPLAY_SCALE_CHANGED,
+@@ -171,6 +190,9 @@ void process_event(SDL_Event& event) {
+     break;
+   }
+   case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: {
++    if (efb_readback_only()) {
++      break;
++    }
+     resize_swapchain();
+     g_events.push_back(AuroraEvent{
+         .type = AURORA_WINDOW_RESIZED,
+@@ -262,6 +284,15 @@ const AuroraEvent* poll_events() {
  
  bool create_window(AuroraBackend backend) {
    SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -946,7 +1688,7 @@ index 74864c3..b81a663 100644
  #if TARGET_OS_IOS || TARGET_OS_TV
    flags |= SDL_WINDOW_FULLSCREEN;
  #else
-@@ -291,6 +305,9 @@ bool create_window(AuroraBackend backend) {
+@@ -291,6 +322,9 @@ bool create_window(AuroraBackend backend) {
    }
  
    const auto props = SDL_CreateProperties();
@@ -956,7 +1698,18 @@ index 74864c3..b81a663 100644
    TRY(SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, g_config.appName), "Failed to set {}: {}",
        SDL_PROP_WINDOW_CREATE_TITLE_STRING, SDL_GetError());
    TRY(SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, posX), "Failed to set {}: {}",
-@@ -460,6 +477,14 @@ bool is_presentable() noexcept {
+@@ -433,6 +467,10 @@ AuroraWindowSize get_window_size() {
+   };
+ }
+ 
++AuroraWindowSize get_cached_window_size() { return g_windowSize; }
++
++void set_cached_window_size(const AuroraWindowSize& size) { g_windowSize = size; }
++
+ SDL_Window* get_sdl_window() { return g_window; }
+ 
+ SDL_Renderer* get_sdl_renderer() { return g_renderer; }
+@@ -460,6 +498,14 @@ bool is_presentable() noexcept {
  
  void set_surface_ready(bool ready) noexcept { g_surfaceReady.store(ready, std::memory_order_release); }
  
@@ -971,7 +1724,7 @@ index 74864c3..b81a663 100644
  SurfaceLock::SurfaceLock() noexcept {
  #if defined(SDL_PLATFORM_ANDROID)
    Android_LockActivityMutex();
-@@ -566,3 +591,41 @@ extern "C" JNIEXPORT void JNICALL Java_org_libsdl_app_SDLSurface_auroraNativeSet
+@@ -566,3 +612,41 @@ extern "C" JNIEXPORT void JNICALL Java_org_libsdl_app_SDLSurface_auroraNativeSet
    aurora::window::set_surface_ready(ready == JNI_TRUE);
  }
  #endif
@@ -1014,10 +1767,20 @@ index 74864c3..b81a663 100644
 +  return 0;
 +}
 diff --git a/graphics/aurora/lib/window.hpp b/graphics/aurora/lib/window.hpp
-index b741e17..762bc91 100644
+index b741e17..aa033fa 100644
 --- a/graphics/aurora/lib/window.hpp
 +++ b/graphics/aurora/lib/window.hpp
-@@ -41,6 +41,11 @@ SDL_Renderer* get_sdl_renderer();
+@@ -35,12 +35,21 @@ bool create_renderer();
+ void destroy_window();
+ void show_window();
+ AuroraWindowSize get_window_size();
++// Main-thread acquired SDL/UIKit size for EFB-readback hosts. Their guest
++// worker uses this cached layout rather than touching UIKit-backed SDL APIs.
++AuroraWindowSize get_cached_window_size();
++void set_cached_window_size(const AuroraWindowSize& size);
+ const AuroraEvent* poll_events();
+ SDL_Window* get_sdl_window();
+ SDL_Renderer* get_sdl_renderer();
  bool is_paused() noexcept;
  bool is_presentable() noexcept;
  void set_surface_ready(bool ready) noexcept;
@@ -1544,7 +2307,7 @@ index 9c2f7bb..1728a11 100644
 +
  #endif
 diff --git a/include/gxruntime/aurora_backend.h b/include/gxruntime/aurora_backend.h
-index 6ef4cf4..7ca7b57 100644
+index 6ef4cf4..35161a4 100644
 --- a/include/gxruntime/aurora_backend.h
 +++ b/include/gxruntime/aurora_backend.h
 @@ -26,6 +26,9 @@ bool dol_aurora_initialize(int argc, char** argv,
@@ -1557,13 +2320,34 @@ index 6ef4cf4..7ca7b57 100644
  // Optional: after each present, push latest present-source RGBA8 into software
  // EFB (e.g. Strikers mmio_efb + dol_efb_access_fill_color_rgba8). Enables
  // continuous framebuffer readback while registered. NULL clears.
-@@ -33,6 +36,23 @@ typedef void (*DolAuroraEfbFrameFillFn)(const uint8_t* rgba, uint32_t width,
+@@ -33,6 +36,44 @@ typedef void (*DolAuroraEfbFrameFillFn)(const uint8_t* rgba, uint32_t width,
                                          uint32_t height, void* user);
  void dol_aurora_set_efb_frame_fill(DolAuroraEfbFrameFillFn fn, void* user);
  
 +// Debug: write one ARGB pixel into the present-source (resolved EFB) texture.
 +// Useful to prove the readback pipeline end-to-end (poke -> readback -> fill).
 +void dol_aurora_poke_color(uint16_t x, uint16_t y, uint32_t argb);
++
++// Read-only snapshot of the product Aurora renderer's process-local GX state.
++// This is deliberately diagnostic-only: WGPU handles and Aurora containers are
++// not portable savestate data. QuickBoot uses it to prove which live renderer
++// resources reappear after a guest-only restore without attempting to serialize
++// opaque GPU objects.
++typedef struct DolAuroraRendererDiagnostics {
++    uint64_t presents;
++    uint64_t fifo_bytes_current_frame;
++    uint32_t initialized;
++    uint32_t frame_open;
++    uint32_t bound_textures;
++    uint32_t loaded_textures;
++    uint32_t loaded_tluts;
++    uint32_t vertex_arrays;
++    uint32_t copy_textures;
++    uint32_t pending_textures;
++    uint32_t pending_tluts;
++} DolAuroraRendererDiagnostics;
++
++bool dol_aurora_renderer_diagnostics(DolAuroraRendererDiagnostics* out);
 +
 +// A1 quick-boot: serialize/restore the shadow frontend's parsed GX state.
 +// Size query: dol_aurora_frontend_save_state(NULL, &size).
