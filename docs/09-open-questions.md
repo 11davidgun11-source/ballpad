@@ -12,7 +12,7 @@
 | Q6 | SMC ranges | Wrong code if rewritten at runtime | Offline patches only; never RWX |
 | Q7 | ISO size in simulator | UX / disk | Extract FST once into app container; do not embed ISO in IPA |
 | Q8 | GPL compliance for distribution | Legal | Inventory GPL deps; simulator-first; user-built binaries may be required for distribution |
-| Q9 | Decomp not 100% linked | Cannot pure source-port yet | Recomp remains primary |
+| Q9 | Decomp source is 100% at function level and 99.24% linked at the pinned `c0bf2ed`; one configured unit remains nonmatching | Raw-address drift and timing heuristics persist if Ballpad keeps using only the SDK subset | Execute doc 28 C0–C6: verified full symbol/object contract and scene-driven runtime first; native port remains deferred |
 | Q10 | gcglue alternate stack | Confusion | Research only unless S/C both fail |
 | Q11 | Analog triggers on glass | Feel | Digital threshold mode + swipe analog |
 | Q12 | Multiplayer | Scope | Port 0 only for DoD |

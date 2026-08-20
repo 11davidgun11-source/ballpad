@@ -22,6 +22,8 @@ DOLRECOMP="$ROOT/ref/DolRecomp-aharonahdoot"
 if [ ! -d "$DOLRECOMP" ]; then
   DOLRECOMP="$ROOT/ref/DolRecomp"
 fi
+DECOMP="${BALLPAD_DECOMP:-$ROOT/work/decomp/smstrikers-decomp-c0bf2ed}"
+test -d "$DECOMP" || { echo "pinned decomp checkout missing: $DECOMP" >&2; exit 1; }
 
 "$PY" "$ROOT/ref/StrikersRecomp/tools/generate.py" \
   --iso "$ISO" \
@@ -38,14 +40,37 @@ print("fixes", fix_generated_sources(Path("$OUT")))
 PY
 
 "$PY" "$ROOT/ref/StrikersRecomp/tools/symbols.py" \
-  --decomp "$ROOT/ref/smstrikers-decomp" \
+  --decomp "$DECOMP" \
   --aurora "$ROOT/ref/GXRuntime/graphics/aurora" \
-  --out "$OUT/sdk_symbols.inc"
+  --out "$OUT/sdk_symbols.inc" \
+  --game-out "$OUT" \
+  --allowlist "$ROOT/ref/StrikersRecomp/tools/ballpad_symbols.json" \
+  --extra-allowlist "$ROOT/ref/StrikersRecomp/tools/ballpad_hle_symbols.json" \
+  --commit c0bf2ed65f6220e69a8db1f8f115c867737f315f \
+  --dol-sha1 376d699c99b6b0949abe1b4ceccefdef7828d2b5 \
+  --sdk-sha256 a2b5da87203a8ea118cab30f7fdc8070280041e80de6cdf6fbf4fca7ac1789bb
+
+"$PY" - <<PY
+import sys
+sys.path.insert(0, "$ROOT/ref/StrikersRecomp/tools")
+from symbols import verify_decomp_contract
+print(verify_decomp_contract(
+    "$DECOMP", "$OUT/main.dol",
+    "c0bf2ed65f6220e69a8db1f8f115c867737f315f",
+    "376d699c99b6b0949abe1b4ceccefdef7828d2b5",
+    "$OUT/sdk_symbols.inc",
+    "a2b5da87203a8ea118cab30f7fdc8070280041e80de6cdf6fbf4fca7ac1789bb",
+    ["Run__15FixedUpdateTaskFf", "Run__14GameRenderTaskFf"]))
+PY
 
 # Gate checks
 test -f "$OUT/generated.h"
 test -f "$OUT/main.dol"
 test -s "$OUT/sdk_symbols.inc"
+test -s "$OUT/game_symbols.inc"
+test -s "$OUT/game_addresses.h"
+test -s "$OUT/decomp_contract.inc"
+test -s "$OUT/decomp_contract.json"
 chunks=$(ls "$OUT"/chunks/*.c 2>/dev/null | wc -l | tr -d ' ')
 if [ "${chunks:-0}" -lt 150 ]; then
   echo "FAIL: chunk count $chunks < 150" >&2

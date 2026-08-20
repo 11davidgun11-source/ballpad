@@ -4,16 +4,29 @@ Living table of contents. Numbered for reading order.
 
 > **Path note:** On macOS case-insensitive volumes, `docs/` and `DOCS/` are the same directory.
 
-## Current release audit (2026-08-10)
+## Current planning authority (2026-08-19)
 
 | Doc | Title |
 |-----|-------|
-| [22-graphics-handoff-2026-08-10.md](22-graphics-handoff-2026-08-10.md) | **Current handoff: graphics not fixed, evidence, runtime state, and exact next experiments** |
-| [21-sunpad-parity-audit.md](21-sunpad-parity-audit.md) | **Current Sunpad parity, controls, menu, performance, validation, and remaining release gates** |
+| [28-decomp-integration-plan-2026-08-19.md](28-decomp-integration-plan-2026-08-19.md) | **Current decision: verified decomp build contract, source-aware runtime, and scene-driven autostart** |
+| [BOT6_DECOMP_INTEGRATION_LOOP.md](BOT6_DECOMP_INTEGRATION_LOOP.md) | **The only next-agent prompt: exact C0–C6 implementation loop** |
+| [29-decomp-runtime-crosswalk.md](29-decomp-runtime-crosswalk.md) | Pinned identity, seed source/runtime map, package scoreboard, and evidence template |
+| [27-graphics-repair-runbook-2026-08-19.md](27-graphics-repair-runbook-2026-08-19.md) | Verification reference integrated into doc 28; no longer the top-level work order |
+| [BOT5_GRAPHICS_REPAIR_LOOP.md](BOT5_GRAPHICS_REPAIR_LOOP.md) | Superseded graphics-only agent loop; retained for history |
+| [26-quickboot-graphics-investigation-2026-08-19.md](26-quickboot-graphics-investigation-2026-08-19.md) | Evidence-backed QuickBoot feasibility, root-cause ranking, and parity design |
+| [24-technical-audit-2026-08-19.md](24-technical-audit-2026-08-19.md) | Broader technical audit, reproducibility work, and release exit gates |
+| [25-next-agent-graphics-investigation-brief.md](25-next-agent-graphics-investigation-brief.md) | Completed investigation brief; retained as the assignment record, not the next action |
+| [23-goal-loop-2026-08-18.md](23-goal-loop-2026-08-18.md) | Current renderer/Simulator baseline and the evidence-based operating loop |
+| [15-validation-log.md](15-validation-log.md) | Dated validation evidence; not a release sign-off |
 
-Start with the root [`README.md`](../README.md) for setup and current product
-status. Documents below 21 preserve the research and implementation history;
-where status differs, document 22 is authoritative.
+Documents 00–22 are retained for research and history. In particular,
+[22-graphics-handoff-2026-08-10.md](22-graphics-handoff-2026-08-10.md) is a
+useful renderer handoff, but it is no longer the planning authority.
+
+Start with the root [`README.md`](../README.md) for setup and user-facing
+status, then read document 28 and the Bot 6 loop for current execution
+authority. Documents 27 and 26 supply existing graphics and QuickBoot evidence;
+document 24 remains the broader release audit.
 
 ## Start here (Bot 2)
 1. [BOT2_LAUNCH_PROMPT.md](BOT2_LAUNCH_PROMPT.md) — **paste this into a new chat**
@@ -53,12 +66,11 @@ where status differs, document 22 is authoritative.
 | [20-review-and-next-steps.md](20-review-and-next-steps.md) | **Independent review: ranked issues, original-agent mistakes, phase plan (start here)** |
 | [BOT4_LAUNCH_PROMPT.md](BOT4_LAUNCH_PROMPT.md) | **Next agent goal loop: performance, UI, usability — paste into a new chat** |
 
-## Final status (2026-08-08)
-Definition of Done is **green** on both the iPhone and iPad simulators
-(M1-M14, see 15-validation-log.md). Touch controls, the ⋯ menu, resolution
-scaling, save round-trip, and layout persistence all work. In-match is ~20 fps
-(guest-CPU ceiling on the simulator; menus/boot are 60 fps). Known gaps and
-tech debt are ranked in [09-open-questions.md](09-open-questions.md)
-("Where the project is at").
+## Historical status note
+
+The 2026-08-08 Definition-of-Done record is retained in
+[15-validation-log.md](15-validation-log.md), but later renderer and
+physical-device findings qualify it. Do not treat the historical Simulator
+green status as release readiness; use the current dashboard in document 24.
 
 Companion research index: [../ref/INDEX.md](../ref/INDEX.md)

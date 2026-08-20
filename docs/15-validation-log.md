@@ -636,3 +636,106 @@ M12: one simulator booted (simctl list count 1).
   parity claim derives from this probe. Next work should determine which
   missing scalar GX/copy-cache state is required, then prove the repair on
   fresh iPhone and iPad snapshots plus a moving-Dolphin comparison.
+
+## 2026-08-20 — Bot 6 decomp scene gate evidence
+
+- The pinned decomp-driven scene FSM reached the same source-named 26-event
+  prefix through `HUDOverlay::SceneCreated` on three fresh phone attempts.
+  The HLE trace remained opt-in and the host released pad automation at the
+  match-zero marker.
+- One fresh phone run completed the versioned neutral 600-fixed-update anchor:
+  `ballpad-scene-move-v1:neutral-600-fixed-updates`, SHA-256
+  `1c446471cbd11091671af575f8317d60af0e7f7f6dfe5a41e4f71f186c836a46`.
+- The next two fresh phone runs reached relative frames 1, 60, and 300 but
+  stopped before frame 600. The supplied crash report identifies
+  `Namespace METAL, Code 102` and loss of the `SimMetalHost` XPC service;
+  the crashing thread is entirely in Apple's simulator Metal driver.
+- C5 is BLOCKED at its three-attempt boundary. The required iPad runs and C6
+  adjacent suite are not claimed or started.
+
+## 2026-08-20 — Bot 6 final C5/C6 verification
+
+- The fixed wall-clock wrapper was replaced for evidence collection with a
+  marker-driven wait. Two fresh iPhone 17 Pro Simulator runs and two fresh
+  iPad A16 Simulator runs all reached HUD/match-zero, released automation,
+  completed relative frame 600, and continued to relative frame 900.
+- All four final traces share the same normalized 26-event scene prefix and
+  the same segment identity:
+  `ballpad-scene-move-v1:neutral-600-fixed-updates`, SHA-256
+  `1c446471cbd11091671af575f8317d60af0e7f7f6dfe5a41e4f71f186c836a46`.
+- C6 adjacent checks passed: all generator/lookup/negative suites twice;
+  native thread-safe touch/controller merge; real touch smoke and simulated
+  controller handoff on phone and iPad; fresh Aurora render screenshots on
+  both form factors; local Markdown-link verification; `git diff --check`;
+  and `scripts/check_ref_patches.sh` after refreshing the intentional
+  StrikersRecomp snapshot.
+
+## 2026-08-20 — Current repair-loop re-audit
+
+- Re-read the pinned objective and reran the source-driven moving-match touch
+  test four times with `BALLPAD_NO_QUICKBOOT=1` and
+  `BALLPAD_AUTOSTART=1`, one simulator at a time: phone passes took 97.385 s
+  and 96.157 s; iPad passes took 98.852 s and 108.660 s. All four XCTest
+  invocations passed.
+- The current phone and iPad scene logs show automation release at
+  `match-zero rel_frame=0`, completion of the versioned
+  `ballpad-scene-move-v1:neutral-600-fixed-updates` segment at relative frame
+  600, and continued neutral advancement at relative frame 900. The segment
+  SHA-256 remains
+  `1c446471cbd11091671af575f8317d60af0e7f7f6dfe5a41e4f71f186c836a46`.
+- The C1–C5 generator, negative-contract, raw-address, scene, pacing, audio,
+  texture-cache, display-aspect, and reference-touch suites were rerun twice;
+  every invocation passed. The fixed generated DOL and SDK hashes still match
+  the pinned contract, and `scripts/check_ref_patches.sh` remains OK.
+
+## 2026-08-20 — Replay/render regression loop
+
+- Added an opt-in `[replay]` trace at the real `GXCopyDisp` frame boundary. It
+  records the pinned task manager current/previous state and `g_bRenderWorld`,
+  so transition (`0x100`), replay (`0x10`), and live-match (`0x2`) frames are
+  not conflated with front-end/loading state (`0x4`).
+- A fresh no-QuickBoot iPad run reproduced the reported class of failure:
+  state `0x100` reached 626–1,274 draws and 0.90–1.08M vertices at 9.6–29.3
+  fps; subsequent state `0x2` frames stayed around 450–580 draws and 12–17
+  fps. `missingTex=0` and `zeroTex=0` throughout, so this is not explained by
+  missing asset lookup.
+- The new `scripts/test_replay_render_contract.py` passes its pinned-source
+  gate and intentionally fails against the captured iPad log on the slow
+  replay/transition frames. This is the current red gate for the next source-
+  correct render optimization; no geometry suppression or synthetic frame is
+  accepted as a fix.
+- Only one simulator is left booted after the comparison, per the active
+  audit constraint.
+
+## 2026-08-20 — Native replay visual gate and culling probe
+
+- The native BGRA EFB dump from the exact iPad highlight window contains a
+  0.917 upper-EFB ratio of the captured flat-mustard signature
+  `(R=206,G=186,B=107)`, against a 0.400 limit. The new
+  `scripts/test_replay_visual_contract.py` therefore fails on the known bad
+  frame before presentation-layer processing.
+- The pinned `World::Render` source confirms skybox objects are still subject
+  to `World_IsSphereInFrustumInline`; the replay path does not render a
+  replacement sky. The next linked diagnostic records the authoritative
+  `g_bClipToFrustum` and `World::sbSkyboxRenderingDisabled` bytes beside the
+  replay state, so a fix can be tied to the actual guest culling decision.
+- The attempted matrix/EFB relaunch was not accepted as fresh evidence because
+  the simulator reused the prior diagnostic log and did not produce a new
+  uniquely attributable dump. No renderer behavior change is claimed from it.
+- A controlled diagnostic A/B temporarily forced `g_bClipToFrustum=0` during
+  the replay/transition states. It increased the transition workload from
+  roughly 1,200 to 1,700 draws and made actors visibly oversized, but the
+  mustard background remained. The no-frustum theory is rejected; the probe
+  was removed before the normal archive was rebuilt.
+- The live decomp skybox probe then found a valid object in the bad window:
+  `skybox=0x8159A7A0`, `objectFlags=0x1`, `creationFlags=0x8180`, radius
+  `338.641`, and position `(0,0,99.95)`. At replay state `0x10` its
+  `skyAlpha=1.000`, `cameraType=3`, and `pretendGameplay=0`. Thus the skybox
+  is present, enabled, and opaque; the remaining defect is in its material or
+  view submission, not guest culling or gameplay translucency.
+- The opt-in packet trace narrowed this further: the skybox model is valid and
+  has one packet, but replay/transition GX submission contains no `GLV_Skybox`
+  view-2 packet while views 11/12/16/17/19/20/21/29/31 are active. The new
+  `--require-skybox-packet` mode in `scripts/test_replay_render_contract.py`
+  records this as a failing red gate until the missing view submission is
+  repaired.

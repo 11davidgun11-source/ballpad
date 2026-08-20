@@ -5,6 +5,7 @@
 
 extern "C" {
 #include "generated.h"
+#include "game_addresses.h"
 #include "gxruntime/aurora_backend.h"
 #include "gxruntime/efb_access.h"
 #include "host/mmio.h"
@@ -34,13 +35,13 @@ void ballpad_debug_step(CPUState* cpu, unsigned long long blocks) {
     static unsigned long long s_tasks[4] = {0, 0, 0, 0};
     static unsigned long long s_padcalls[2] = {0, 0};
     const u32 pc = cpu->pc;
-    if (pc == 0x801D2914u) s_tasks[0]++;       // nlTaskManager::RunAllTasks
-    else if (pc == 0x8016E330u) s_tasks[1]++;  // FixedUpdateTask::Run
-    else if (pc == 0x8017071Cu) s_tasks[2]++;  // FrontEndTask::Run
-    else if (pc == 0x80170BACu) s_tasks[3]++;  // GameRenderTask::Run
-    if (pc == 0x801C3A78u) s_padcalls[0]++;    // UpdatePlatPad
-    else if (pc == 0x801C3808u) s_padcalls[1]++;  // PadStatus::Update
-    if (pc == 0x8016E330u) {  // FixedUpdateTask::Run: sample per-frame ticker delta
+    if (pc == GAME_FN_DEBUG_TASK_RUN_ALL) s_tasks[0]++;       // nlTaskManager::RunAllTasks
+    else if (pc == GAME_FN_FIXED_UPDATE_RUN) s_tasks[1]++;  // FixedUpdateTask::Run
+    else if (pc == GAME_FN_DEBUG_FRONT_END_RUN) s_tasks[2]++;  // FrontEndTask::Run
+    else if (pc == GAME_FN_GAME_RENDER_RUN) s_tasks[3]++;  // GameRenderTask::Run
+    if (pc == GAME_FN_DEBUG_UPDATE_PLAT_PAD) s_padcalls[0]++;    // UpdatePlatPad
+    else if (pc == GAME_FN_DEBUG_PAD_STATUS_UPDATE) s_padcalls[1]++;  // PadStatus::Update
+    if (pc == GAME_FN_FIXED_UPDATE_RUN) {  // FixedUpdateTask::Run: sample per-frame ticker delta
       static u64 s_prev_tb = 0;
       if (s_prev_tb != 0u) {
         const u64 delta = cpu->timebase - s_prev_tb;

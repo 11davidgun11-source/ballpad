@@ -18,17 +18,20 @@ struct SDLGameContainer: UIViewRepresentable {
             context.coordinator.renderScale = renderScale
             // M10: recreate the EFB render targets at the new supersample scale.
             ballpad_ios_host_set_efb_scale(Int32(renderScale))
-            FileHandle.standardError.write(Data("[display] scale=\(renderScale)\n".utf8))
+            // Do not write directly to stderr here. The simulator's console
+            // pipe can be closed while SwiftUI is still laying out this view;
+            // FileHandle.write then throws and aborts the app from updateUIView.
+            NSLog("[display] scale=%@", String(describing: renderScale))
         }
         if context.coordinator.aspectMode != aspectMode {
             context.coordinator.aspectMode = aspectMode
             context.coordinator.applyAspect()
-            FileHandle.standardError.write(Data("[display] aspect=\(aspectMode)\n".utf8))
+            NSLog("[display] aspect=%@", aspectMode)
         }
         if context.coordinator.paused != paused {
             context.coordinator.paused = paused
             ballpad_ios_host_set_paused(paused)
-            FileHandle.standardError.write(Data("[display] paused=\(paused)\n".utf8))
+            NSLog("[display] paused=%@", String(describing: paused))
         }
     }
 
@@ -143,7 +146,8 @@ struct SDLGameContainer: UIViewRepresentable {
                     sum += UInt64(framePtr[i]) + UInt64(framePtr[i+1]) + UInt64(framePtr[i+2])
                 }
                 let mean = Double(sum) / (3.0 * Double(min(n, 640*528)))
-                FileHandle.standardError.write(Data("[display] diag mean=\(Int(mean)) imageSet=\(imageView?.image != nil) size=\(w)x\(h)\n".utf8))
+                NSLog("[display] diag mean=%d imageSet=%@ size=%ux%u",
+                      Int(mean), String(describing: imageView?.image != nil), w, h)
             }
             let provider = CGDataProvider(dataInfo: frameLease, data: framePtr,
                                           size: count) { info, _, _ in
@@ -234,8 +238,8 @@ struct GameHostView: View {
                     if ProcessInfo.processInfo.environment["BALLPAD_TEST_HOOKS"] == "1" {
                         Text(guestInfo)
                             .font(.system(size: 8).monospaced())
-                            .foregroundStyle(.white.opacity(0.25))
-                            .accessibilityIdentifier("guestBlocks")
+                        .foregroundStyle(.white.opacity(0.25))
+                        .accessibilityIdentifier("guestBlocks")
                     }
                     if settings.showFps {
                         Text(String(format: "%.0f fps", fps))
@@ -246,7 +250,12 @@ struct GameHostView: View {
                         renderScale: $settings.renderScale,
                         aspectMode: $settings.aspectMode,
                         showFps: $settings.showFps,
-                        onTouchSettings: { showMenu = true },
+                        // SwiftUI Menu is still dismissing when its action
+                        // fires. Defer the sheet transition one main-loop
+                        // turn so iPadOS does not drop the presentation.
+                        onTouchSettings: {
+                            DispatchQueue.main.async { showMenu = true }
+                        },
                         onImportGame: { showGameImporter = true },
                         onImportCard: { showCardImporter = true },
                         onExportCard: exportCard,
@@ -326,7 +335,7 @@ struct GameHostView: View {
             statsTimer?.invalidate()
             statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
                 fps = ballpad_ios_host_fps()
-                guestInfo = "\(ballpad_ios_host_guest_blocks()) \(ballpad_ios_host_game_state())"
+                guestInfo = "\(ballpad_ios_host_guest_blocks()) \(ballpad_ios_host_game_state()) \(ballpad_ios_host_scene_id()) \(ballpad_ios_host_scene_relative_fixed_updates()) \(ballpad_ios_host_scene_seen_mask())"
             }
             runUITest()
         }
@@ -474,7 +483,7 @@ struct GameHostView: View {
         let mode = ProcessInfo.processInfo.environment["BALLPAD_UI_TEST"] ?? ""
         guard !mode.isEmpty else { return }
         func log(_ msg: String) {
-            FileHandle.standardError.write(Data("[uitest] \(msg)\n".utf8))
+            NSLog("[uitest] %@", msg)
         }
         switch mode {
         case "move":

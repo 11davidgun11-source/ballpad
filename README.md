@@ -29,7 +29,7 @@ or a generated game module.
 | Area | Current result |
 |---|---|
 | Native app | Universal arm64 iPhone/iPad development target; iPhone 17e and iPad A16 Simulator paths exercised |
-| Rendering | Live Aurora GX Metal reaches menus and match scenes, but moving-match visual parity is currently open: QuickBoot-resumed HUD/skinned player rendering is visibly incorrect. GXCore is experimental-only (`DOL_GX_CORE=1`). |
+| Rendering | The decomp-aligned GXCore path is now the product default: fresh phone/iPad replay EFBs pass the mustard-background regression, while live Aurora remains an explicit diagnostic opt-out (`DOL_GX_CORE=0`). |
 | Game setup | Local Files import validates a raw `G4QE01` revision 0 image before staged activation |
 | Touch | Move stick, C-stick, D-pad, A/B/X/Y/Z, L/R, Start, editable positions, per-control sizing, global size/opacity |
 | Controllers | Thread-safe touch + GameController mixing; touch controls can hide automatically on connection |
@@ -38,14 +38,26 @@ or a generated game module.
 | Saves | Sandboxed Slot A card with native Files import and share-sheet export |
 | Audio | Enabled by default; fresh boot playback exercised on iPad A16 Simulator (physical-device audibility/lifecycle still unproven) |
 | QuickBoot | Disabled by default: its CPU/RAM restore does not yet restore all live Aurora GX gameplay state. `BALLPAD_ENABLE_QUICKBOOT=1` is diagnostic-only until moving-match parity passes. |
+| Decomp integration | The exact game DOL matches the complete function-level source target. The approved plan is to make that source map a verified build contract, remove named raw-address coupling, and replace block-count autostart with scene-driven automation; execution awaits owner approval of C0–C6. |
 | Distribution | Source/development build only; no audited IPA or physical-device compatibility claim yet |
 
 Ballpad is an in-progress development build, not a finished commercial-quality
 release. Moving-match rendering, physical-device performance, audio lifecycle,
 save stress, post-match transitions, and oldest-OS compatibility still need
 fresh validation before a public binary release.
-See the [Sunpad parity audit](docs/21-sunpad-parity-audit.md) and the historical
-[acceptance ledger](docs/15-validation-log.md).
+For the candid engineering status and the next exit-gated phase, see the
+[technical audit and plan](docs/24-technical-audit-2026-08-19.md). See the
+[Sunpad parity audit](docs/21-sunpad-parity-audit.md) and historical
+[acceptance ledger](docs/15-validation-log.md) for supporting evidence.
+The current implementation order is the reviewed
+[decomp integration decision](docs/28-decomp-integration-plan-2026-08-19.md),
+with one approval-gated copy/paste
+[agent loop](docs/BOT6_DECOMP_INTEGRATION_LOOP.md). The first tranche makes the
+decomp a verified build/symbol contract and uses source-named scene hooks to
+replace the brittle block-count test route. It does not authorize a native
+rewrite. The earlier
+[graphics repair runbook](docs/27-graphics-repair-runbook-2026-08-19.md)
+remains the verification reference used by the new loop.
 
 ## Get started
 
@@ -160,6 +172,14 @@ Raw ISO/GCM images are recognized. Compressed images are not supported.
 | [`app/BallpadUITests/`](app/BallpadUITests/) | Import, menu, touch, and match-driving UI acceptance tests |
 | [`docs/21-sunpad-parity-audit.md`](docs/21-sunpad-parity-audit.md) | Current comparative audit, work completed, and remaining release gates |
 | [`docs/23-goal-loop-2026-08-18.md`](docs/23-goal-loop-2026-08-18.md) | Evidence-based agent loop, current baseline, and acceptance gates for the remaining stability/parity work |
+| [`docs/24-technical-audit-2026-08-19.md`](docs/24-technical-audit-2026-08-19.md) | Current technical audit, decision log, and next-phase plan |
+| [`docs/25-next-agent-graphics-investigation-brief.md`](docs/25-next-agent-graphics-investigation-brief.md) | Technical handoff brief for the next investigation agent |
+| [`docs/26-quickboot-graphics-investigation-2026-08-19.md`](docs/26-quickboot-graphics-investigation-2026-08-19.md) | QuickBoot feasibility, state inventory, ranked causes, and validation design |
+| [`docs/27-graphics-repair-runbook-2026-08-19.md`](docs/27-graphics-repair-runbook-2026-08-19.md) | Ordered repair packages, gates, commands, and stop conditions |
+| [`docs/28-decomp-integration-plan-2026-08-19.md`](docs/28-decomp-integration-plan-2026-08-19.md) | Primary-agent decision: verified decomp contract, source-aware runtime, and scene-driven autostart |
+| [`docs/BOT6_DECOMP_INTEGRATION_LOOP.md`](docs/BOT6_DECOMP_INTEGRATION_LOOP.md) | Exact copy/paste implementation loop for C0–C6; this is the only next-agent prompt |
+| [`docs/29-decomp-runtime-crosswalk.md`](docs/29-decomp-runtime-crosswalk.md) | Data-free crosswalk from pinned decomp functions and state ownership to current Ballpad runtime boundaries |
+| [`docs/BOT5_GRAPHICS_REPAIR_LOOP.md`](docs/BOT5_GRAPHICS_REPAIR_LOOP.md) | Superseded graphics-only loop retained for its detailed historical contract |
 | [`docs/15-validation-log.md`](docs/15-validation-log.md) | Historical phone/iPad gate evidence |
 | [`docs/09-open-questions.md`](docs/09-open-questions.md) | Runtime investigations and known renderer constraints |
 | `ref/` | Ignored local research/dependency worktrees, including the Sunpad reference |

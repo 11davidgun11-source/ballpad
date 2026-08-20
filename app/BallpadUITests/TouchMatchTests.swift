@@ -151,4 +151,127 @@ final class TouchMatchTests: XCTestCase {
         XCTAssertTrue([2, 4].contains(state()),
                       "still in a live-match cGame state after sustained touch input")
     }
+
+    /// Scene-driven replacement for the historical block-anchor endurance
+    /// gate above. It waits on the host's source-named scene automation to
+    /// reach a real match, then exercises the actual touch overlay without
+    /// assuming a fixed guest-throughput budget.
+    func testTouchControlsSustainSceneDrivenMatch() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["BALLPAD_LOG_FILE"] = "$HOME/Documents/touch-scene-match.log"
+        app.launchEnvironment["BALLPAD_NO_QUICKBOOT"] = "1"
+        app.launchEnvironment["BALLPAD_AUTOSTART"] = "1"
+        app.launchEnvironment["BALLPAD_TEST_HOOKS"] = "1"
+        app.launch()
+
+        let probe = app.staticTexts["guestBlocks"].firstMatch
+        XCTAssertTrue(probe.waitForExistence(timeout: 40),
+                      "scene-driven guest progress probe")
+
+        func snapshot() -> (UInt64, Int) {
+            let parts = probe.label.split(separator: " ")
+            return (
+                parts.first.flatMap { UInt64($0) } ?? 0,
+                parts.dropFirst().first.flatMap { Int($0) } ?? -1
+            )
+        }
+
+        let matchDeadline = Date().addingTimeInterval(240)
+        while Date() < matchDeadline && snapshot().1 != 4 {
+            Thread.sleep(forTimeInterval: 1)
+        }
+        XCTAssertEqual(snapshot().1, 4, "scene automation reaches an active match")
+
+        func control(_ id: String) -> XCUIElement {
+            app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier == %@", "control.\(id)"))
+                .firstMatch
+        }
+        let stick = control("stick")
+        let a = control("a")
+        let b = control("b")
+        let l = control("l")
+        let r = control("r")
+        for element in [stick, a, b, l, r] {
+            XCTAssertTrue(element.waitForExistence(timeout: 10),
+                          "scene-driven touch control \(element.identifier)")
+        }
+
+        let before = snapshot().0
+        for cycle in 0..<4 {
+            let target = stick.coordinate(withNormalizedOffset: cycle.isMultiple(of: 2)
+                                          ? CGVector(dx: 0.82, dy: 0.25)
+                                          : CGVector(dx: 0.20, dy: 0.78))
+            stick.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: target)
+            target.press(forDuration: 1.0)
+            a.press(forDuration: 1.0)
+            b.press(forDuration: 1.0)
+            l.press(forDuration: 1.0)
+            r.press(forDuration: 1.0)
+        }
+
+        XCTAssertGreaterThan(snapshot().0, before,
+                             "guest continues progressing under real touch input")
+        XCTAssertTrue([2, 4].contains(snapshot().1),
+                      "guest remains in a live match state after touch exercise")
+    }
+
+    /// The overlay must remain attached to the normalized display canvas while
+    /// the source-driven decomp path moves through boot, menus, selection, and
+    /// match setup—not only after cGame reaches the field.
+    func testTouchOverlayPersistsAcrossDecompScenes() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["BALLPAD_LOG_FILE"] = "$HOME/Documents/touch-scene-overlay.log"
+        app.launchEnvironment["BALLPAD_NO_QUICKBOOT"] = "1"
+        app.launchEnvironment["BALLPAD_AUTOSTART"] = "1"
+        app.launchEnvironment["BALLPAD_TEST_HOOKS"] = "1"
+        app.launch()
+
+        let sceneProbe = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == %@", "guestBlocks"))
+            .firstMatch
+        XCTAssertTrue(sceneProbe.waitForExistence(timeout: 40),
+                      "source-named scene probe")
+
+        func sceneSeenMask() -> UInt64 {
+            UInt64(sceneProbe.label.split(separator: " ").dropFirst(4).first ?? "0") ?? 0
+        }
+        func control(_ id: String) -> XCUIElement {
+            app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier == %@", "control.\(id)"))
+                .firstMatch
+        }
+        let controls = ["stick", "a", "b", "l", "r"].map(control)
+
+        // IDs observed in the pinned decomp scene timeline during fresh
+        // phone/iPad passes: health, card/save, title, main menu,
+        // side/captain selection, stadium-card, and match setup.
+        let milestones = [51, 39, 53, 2, 1, 8, 27, 9, 43]
+        for expected in milestones {
+            let bit = UInt64(1) << UInt64(expected)
+            let deadline = Date().addingTimeInterval(60)
+            while Date() < deadline && sceneSeenMask() & bit == 0 {
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+            XCTAssertNotEqual(sceneSeenMask() & bit, 0,
+                              "decomp scene milestone \(expected) was observed")
+            for (id, element) in zip(["stick", "a", "b", "l", "r"], controls) {
+                XCTAssertTrue(element.waitForExistence(timeout: 3),
+                              "overlay control \(id) mounted after scene \(expected)")
+                // The stick is a coordinate-driven drag surface rather than
+                // a UIButton-shaped accessibility target; its existence and
+                // frame are the stable assertion. Face/shoulder controls
+                // must remain directly hittable.
+                if id != "stick" {
+                    XCTAssertTrue(element.isHittable,
+                                  "control.\(id) remains hittable after scene \(expected)")
+                }
+            }
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = "Touch overlay after scene \(expected)"
+            shot.lifetime = .keepAlways
+            add(shot)
+        }
+    }
 }

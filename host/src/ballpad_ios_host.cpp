@@ -20,6 +20,7 @@ extern "C" {
 #include "host/mmio.h"
 #include "host/hle.h"
 #include "host/interrupt.h"
+#include "host/game_map.h"
 #include "host/audio.h"
 }
 
@@ -98,10 +99,12 @@ std::atomic<bool> g_paused{false};
 std::atomic<bool> g_lifecycle_paused{false};
 std::atomic<unsigned long long> g_public_blocks{0};
 std::atomic<long long> g_public_game_state{-1};
+std::atomic<uint64_t> g_public_scene_seen_mask{0};
 std::atomic<unsigned long long> g_public_step_budget{0};
 std::atomic<unsigned long long> g_public_step_micros{0};
 std::atomic<unsigned long long> g_display_frames_copied{0};
 std::atomic<unsigned long long> g_display_frames_dropped{0};
+std::atomic<unsigned long long> g_display_copy_micros{0};
 std::thread g_guest_thread;
 std::mutex g_frame_mutex;
 std::once_flag g_process_exit_once;
@@ -799,6 +802,7 @@ bool ballpad_ios_host_start(const BallpadIosHostConfig* cfg) {
   g_lifecycle_paused.store(false);
   g_public_blocks.store(g_blocks, std::memory_order_relaxed);
   g_public_game_state.store(-1, std::memory_order_relaxed);
+  g_public_scene_seen_mask.store(0, std::memory_order_relaxed);
   std::call_once(g_process_exit_once,
                  [] { std::atexit(process_exit_guard); });
   if (g_guest_thread.joinable())
@@ -817,6 +821,11 @@ static void step_guest(void) {
   const auto t_step_begin = std::chrono::steady_clock::now();
   const unsigned long long blocks_step_begin = g_blocks;
   CPUState* cpu = &g_cpu;
+  // Scene history is a diagnostic/test hook, not gameplay state. Sampling it
+  // once per guest block materially taxes the hottest loop; a 50K-block
+  // cadence is comfortably below the source scene transition windows while
+  // keeping the production path bounded.
+  static unsigned long long s_next_scene_probe = 50000ull;
   unsigned long long until = g_blocks + g_frame_blocks;
   // Batch the window-close check: the event is rare; checking every ~100K
   // blocks (hundreds of times/sec) is more than enough.
@@ -831,6 +840,16 @@ static void step_guest(void) {
     }
     interrupt_poll(cpu);
     hle_poll_callback(cpu);
+    if (g_blocks >= s_next_scene_probe) {
+      s_next_scene_probe += 50000ull;
+      HleSceneSnapshot observed_scene{};
+      hle_scene_snapshot(&observed_scene);
+      const int observed_scene_id = observed_scene.requested_scene >= 0
+          ? observed_scene.requested_scene : observed_scene.current_scene;
+      if (observed_scene_id >= 0 && observed_scene_id < 64)
+        g_public_scene_seen_mask.fetch_or(1ull << observed_scene_id,
+                                          std::memory_order_relaxed);
+    }
     u32 pc = cpu->pc;
     if (!dolrecomp_call(cpu, pc)) {
       g_stop_reason = "pc left recompiled code";
@@ -849,124 +868,143 @@ static void step_guest(void) {
     g_blocks++;
   }
   if (g_blocks >= kMaxBlocks && !g_stop_reason[0]) g_stop_reason = "max-blocks watchdog";
-  // Auto-input: navigate to a match (BALLPAD_AUTOSTART=1).
-  // Guest-block-paced phase machine verified against the Path C (RecompCore)
-  // oracle on macOS. The guest advances 350000 blocks per presented frame, so
-  // block thresholds are platform-independent guest-time anchors:
-  //   boot -> health ~1.15B, mem check ~1.3B, save prompt ~1.45B,
-  //   title ~2.2B, main menu ~2.6B, team select ~3.8B, match start ~4.8B.
-  // Each phase holds a PAD state for hold_blocks, then releases; steps advance
-  // at the at_blocks threshold (the loop neutralizes between steps).
+  // Scene-driven developer automation. It reacts to source-named scene
+  // observations and relative FixedUpdateTask frames only.
   static bool s_autostart = [] {
     const char* v = getenv("BALLPAD_AUTOSTART");
     return v != nullptr && v[0] != '\0' && v[0] != '0';
   }();
-  // Autostart exists only to create/develop the QuickBoot snapshot. Once a
-  // snapshot has been restored, replaying the entire menu-navigation script
-  // injects dozens of in-match A presses (tackles) into the saved game.
   if (s_autostart && !g_quickbooted) {
-    struct AutoStep { u16 button; int sx, sy; unsigned long long hold_blocks, at_blocks; };
-    static AutoStep kAutoSteps[] = {
-        // 0: boot wait; guest reaches the health screen on its own.
-        {0x0000, 0, 0, 0, 1150000000ull},
-        // A past the health screen (~1.15B); A past the memory-card check.
-        {0x0100, 0, 0, 20000000ull, 1300000000ull},
-        {0x0100, 0, 0, 20000000ull, 1450000000ull},
-        // CONTINUE WITHOUT SAVING (save creation hangs on the chassis oracle).
-        {0x0004, 0, 0, 15000000ull, 1500000000ull},
-        {0x0100, 0, 0, 20000000ull, 2200000000ull},
-        // The boot reaches the memcard save/load popup (option 0 = Retry
-        // loops forever): D_DOWN selects "Continue without ...", A confirms.
-        {0x0004, 0, 0, 15000000ull, 2500000000ull},
-        {0x0100, 0, 0, 20000000ull, 2600000000ull},
-        // Title advances on A (0x100) -> main menu.
-        {0x0100, 0, 0, 20000000ull, 2900000000ull},
-        // Match-start drive: repeat (D_LEFT, A x3, D_LEFT, A x3) on a cadence.
-        // The A's advance menus/rosters; a D_LEFT that lands on the side-choice
-        // screen (after a roster A chain, or right after a popup dismiss)
-        // picks the left side and the following A starts the match. In-match
-        // the presses are harmless (left + tackle).
-        {0x0001, 0, 0, 15000000ull, 3000000000ull},
-        {0x0100, 0, 0, 20000000ull, 3100000000ull},
-        {0x0100, 0, 0, 20000000ull, 3200000000ull},
-        {0x0100, 0, 0, 20000000ull, 3300000000ull},
-        {0x0001, 0, 0, 15000000ull, 3400000000ull},
-        {0x0100, 0, 0, 20000000ull, 3500000000ull},
-        {0x0100, 0, 0, 20000000ull, 3600000000ull},
-        {0x0100, 0, 0, 20000000ull, 3700000000ull},
-        {0x0001, 0, 0, 15000000ull, 3900000000ull},
-        {0x0100, 0, 0, 20000000ull, 4000000000ull},
-        {0x0100, 0, 0, 20000000ull, 4100000000ull},
-        {0x0100, 0, 0, 20000000ull, 4200000000ull},
-        {0x0001, 0, 0, 15000000ull, 4300000000ull},
-        {0x0100, 0, 0, 20000000ull, 4400000000ull},
-        {0x0100, 0, 0, 20000000ull, 4500000000ull},
-        {0x0100, 0, 0, 20000000ull, 4600000000ull},
-        {0x0001, 0, 0, 15000000ull, 4800000000ull},
-        {0x0100, 0, 0, 20000000ull, 4900000000ull},
-        {0x0100, 0, 0, 20000000ull, 5000000000ull},
-        {0x0100, 0, 0, 20000000ull, 5100000000ull},
-        {0x0001, 0, 0, 15000000ull, 5200000000ull},
-        {0x0100, 0, 0, 20000000ull, 5300000000ull},
-        {0x0100, 0, 0, 20000000ull, 5400000000ull},
-        {0x0100, 0, 0, 20000000ull, 5500000000ull},
-        {0x0001, 0, 0, 15000000ull, 5700000000ull},
-        {0x0100, 0, 0, 20000000ull, 5800000000ull},
-        {0x0100, 0, 0, 20000000ull, 5900000000ull},
-        {0x0100, 0, 0, 20000000ull, 6000000000ull},
-        {0x0001, 0, 0, 15000000ull, 6100000000ull},
-        {0x0100, 0, 0, 20000000ull, 6200000000ull},
-        {0x0100, 0, 0, 20000000ull, 6300000000ull},
-        {0x0100, 0, 0, 20000000ull, 6400000000ull},
-        {0x0001, 0, 0, 15000000ull, 6600000000ull},
-        {0x0100, 0, 0, 20000000ull, 6700000000ull},
-        {0x0100, 0, 0, 20000000ull, 6800000000ull},
-        {0x0100, 0, 0, 20000000ull, 6900000000ull},
+    static constexpr const char* kSceneMoveSegmentId =
+        "ballpad-scene-move-v1:neutral-600-fixed-updates";
+    static constexpr const char* kSceneMoveSegmentSha256 =
+        "1c446471cbd11091671af575f8317d60af0e7f7f6dfe5a41e4f71f186c836a46";
+    struct SceneAutoDriver {
+      int last_scene = -999;
+      unsigned substep = 0;
+      unsigned action_attempts = 0;
+      unsigned sequence_attempts = 0;
+      uint64_t scene_enter_frame = 0;
+      uint64_t next_action_frame = 0;
+      uint64_t action_start = 0;
+      uint16_t button = 0;
+      bool active = false;
+      bool released = false;
+      bool move_segment_complete = false;
+      bool move_segment_advanced = false;
+      bool watchdog_reported = false;
     };
-    static const unsigned kAutoCount =
-        static_cast<unsigned>(sizeof(kAutoSteps) / sizeof(kAutoSteps[0]));
-    static unsigned s_auto_phase = 0;
-    static bool s_auto_holding = false;
-    static unsigned long long s_auto_hold_start = 0;
-    const AutoStep& st = kAutoSteps[s_auto_phase < kAutoCount ? s_auto_phase : kAutoCount - 1];
-    if (s_auto_phase >= kAutoCount) {
-      // Done: release the pad ONCE (the last drive step holds a button). It
-      // must not keep zeroing every step — that would clobber real user input
-      // within one guest step (~17 ms), making the game unresponsive for the
-      // rest of the session (found 2026-08-09 while demoing a fresh boot).
-      static bool s_auto_released = false;
-      if (!s_auto_released) {
-        s_auto_released = true;
-        BallPadStatus s{};
-        ballpad_pad_get(0, &s);
-        s.button = 0; s.stickX = 0; s.stickY = 0; s.err = 0;
-        ballpad_pad_set(0, &s);
+    static SceneAutoDriver d;
+    HleSceneSnapshot scene{};
+    hle_scene_snapshot(&scene);
+    const uint64_t frame = scene.relative_fixed_updates;
+    const int observed = scene.requested_scene >= 0 ? scene.requested_scene : scene.current_scene;
+    const bool match_zero = (scene.marker_flags & 2u) != 0u;
+    if (match_zero) {
+      if (!d.released) {
+        d.released = true;
+        d.active = false;
+        ballpad_pad_clear_touch(0);
+        std::fprintf(stderr, "[ballpad-ios] scene automation released at match-zero rel_frame=%llu\n",
+                     (unsigned long long)frame);
+        std::fprintf(stderr, "[ballpad-ios] scene move segment id=%s sha256=%s start_rel_frame=%llu input=neutral\n",
+                     kSceneMoveSegmentId, kSceneMoveSegmentSha256,
+                     (unsigned long long)frame);
       }
-    } else {
-      BallPadStatus s{};
-      s.err = 0;
-      if (g_blocks >= st.at_blocks) {
-        if (!s_auto_holding) {
-          s_auto_holding = true;
-          s_auto_hold_start = g_blocks;
-          std::fprintf(stderr, "[ballpad-ios] autostart step=%u/%u btn=0x%04X at=%llu\n",
-                       s_auto_phase, kAutoCount, st.button, (unsigned long long)st.at_blocks);
-        }
-        if (g_blocks - s_auto_hold_start < st.hold_blocks) {
-          s.button = st.button;
-          s.stickX = (s8)st.sx; s.stickY = (s8)st.sy;
-        } else {
-          ++s_auto_phase;
-          s_auto_holding = false;
-        }
+      if (d.released && !d.move_segment_complete && frame >= 600u) {
+        d.move_segment_complete = true;
+        std::fprintf(stderr, "[ballpad-ios] scene move segment id=%s sha256=%s complete_rel_frame=%llu\n",
+                     kSceneMoveSegmentId, kSceneMoveSegmentSha256,
+                     (unsigned long long)frame);
       }
-      ballpad_pad_set(0, &s);
-      if (s_auto_phase >= kAutoCount) {
-        std::fprintf(stderr, "[ballpad-ios] autostart complete at blocks=%llu\n",
-                     (unsigned long long)g_blocks);
+      if (d.move_segment_complete && !d.move_segment_advanced && frame >= 900u) {
+        d.move_segment_advanced = true;
+        std::fprintf(stderr, "[ballpad-ios] scene move segment id=%s sha256=%s continue_rel_frame=%llu input=neutral\n",
+                     kSceneMoveSegmentId, kSceneMoveSegmentSha256,
+                     (unsigned long long)frame);
+      }
+    } else if (observed != d.last_scene) {
+      d.last_scene = observed;
+      d.substep = 0;
+      d.action_attempts = 0;
+      d.sequence_attempts = 0;
+      d.scene_enter_frame = frame;
+      d.next_action_frame = frame;
+      d.active = false;
+      d.button = 0;
+    }
+    // HealthWarningSceneV2::Update does not consult FE input until its
+    // source-defined two-second presentation delay has elapsed (60 Hz fixed
+    // updates). Keep this readiness debounce in relative guest frames.
+    // ChooseCaptainsSceneV2's pinned update returns while its presentation is
+    // still in the opening slide (the side phase explicitly gates at 1.15 s).
+    // Give both source-defined presentation gates time to settle.
+    const uint64_t ready_frame = d.scene_enter_frame +
+        (observed == 51 ? 120u : (observed == 8 ? 90u : 0u));
+    if (!match_zero && !d.active && observed == d.last_scene &&
+        frame >= ready_frame && frame >= d.next_action_frame &&
+        d.action_attempts < 3u) {
+      uint16_t next = 0;
+      if ((observed == 51 || observed == 2 || observed == 3 || observed == 9 ||
+           (observed >= 31 && observed <= 34)) && d.substep == 0)
+        next = BALLPAD_BUTTON_A;
+      else if (observed == 35 && d.substep < 2)
+        next = d.substep == 0 ? BALLPAD_BUTTON_DOWN : BALLPAD_BUTTON_A;
+      else if (observed >= 4 && observed <= 7 && d.substep < 2)
+        next = d.substep == 0 ? BALLPAD_BUTTON_LEFT : BALLPAD_BUTTON_A;
+      // ChooseCaptainsSceneV2 first advances the captain phase, then enters
+      // IChooseSide; its source-side controller path requires left-side
+      // assignment before the two final acceptance presses.
+      else if (observed == 8 && d.substep < 4)
+        next = d.substep == 1 ? BALLPAD_BUTTON_LEFT : BALLPAD_BUTTON_A;
+      else if (observed >= 0 && observed <= 65 && d.substep == 0)
+        next = BALLPAD_BUTTON_A;
+      if (next != 0) {
+        d.button = next;
+        d.action_start = frame;
+        d.active = true;
+        d.action_attempts++;
+        std::fprintf(stderr, "[ballpad-ios] scene action scene=%d substep=%u btn=0x%04X rel_frame=%llu\n",
+                     observed, d.substep, d.button, (unsigned long long)frame);
       }
     }
-    // A1 quick-boot: capture the savestate while the phase machine is parked
+    if (!match_zero && d.active) {
+      BallPadStatus pad{};
+      pad.err = 0;
+      // Menu handlers sample pad state across several fixed updates; match
+      // the proven touch-driver hold without tying the action to guest blocks.
+      if (frame - d.action_start < 30u) {
+        pad.button = d.button;
+        ballpad_pad_set(0, &pad);
+      } else {
+        d.active = false;
+        if ((observed == 35 || (observed >= 4 && observed <= 7)) && d.substep < 2u) {
+          d.substep++;
+          d.action_attempts = 0;
+        } else if (observed == 8 && d.substep < 4u) {
+          d.substep++;
+          d.action_attempts = 0;
+          if (d.substep == 4u) {
+            d.sequence_attempts++;
+            if (d.sequence_attempts < 2u) {
+              d.substep = 0;
+              d.action_attempts = 0;
+            }
+          }
+        }
+        // A JustPressed consumer may sample before a scene's source-defined
+        // readiness point. Permit at most two release-gap retries while the
+        // named scene remains unchanged.
+        d.next_action_frame = frame + 60u;
+        ballpad_pad_clear_touch(0);
+      }
+    }
+    if (!match_zero && !d.watchdog_reported && frame >= 30000u) {
+      d.watchdog_reported = true;
+      std::fprintf(stderr, "[ballpad-ios] scene watchdog current=%d expected=match-zero rel_frame=%llu\n",
+                   observed, (unsigned long long)frame);
+    }
+    // A1 quick-boot: capture the savestate while the scene driver is parked
     // at the final match-start step (the game is on the side-choice /
     // stadium-card screen — a stable menu state with the DVD idle). On
     // restore, the host replays the match-start A; the match scene setup
@@ -985,8 +1023,8 @@ static void step_guest(void) {
         getenv("BALLPAD_ENABLE_QUICKBOOT")[0] != '0';
     if (quickbootCaptureEnabled && !s_quickboot_captured &&
         getenv("BALLPAD_SKIP_QUICKBOOT_SAVE") == nullptr &&
-        s_auto_phase == kAutoCount - 1 &&
-        !s_auto_holding &&
+        scene.current_scene == 9 &&
+        !d.active &&
         (cpu->pc == 0x800051B4u || cpu->pc == 0x800051D8u)) {
       s_quickboot_captured = true;
       ballpad_ios_host_save_quickboot();
@@ -1125,6 +1163,9 @@ void guest_loop() {
   // Adaptive block budget: nudge g_frame_blocks toward a ~16.6 ms step slice.
   constexpr unsigned long long kMinBlocks = 100000ull;
   constexpr unsigned long long kMaxBlocksStep = 4000000ull;
+  constexpr double kTargetStepMs = 16.6;
+  constexpr double kSlowStepMs = 18.0;
+  constexpr double kFastStepMs = 14.0;
   while (!g_stop.load()) {
     if (g_paused.load() || g_lifecycle_paused.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1135,10 +1176,20 @@ void guest_loop() {
     const double stepMs = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - step_t0)
                               .count();
-    if (stepMs < 13.0 && g_frame_blocks < kMaxBlocksStep)
+    if (stepMs < kFastStepMs && g_frame_blocks < kMaxBlocksStep)
       g_frame_blocks += 50000ull;
-    else if (stepMs > 22.0 && g_frame_blocks > kMinBlocks)
-      g_frame_blocks -= 50000ull;
+    else if (stepMs > kSlowStepMs && g_frame_blocks > kMinBlocks) {
+      const auto decrement = stepMs > (kTargetStepMs * 1.5) ? 150000ull : 75000ull;
+      g_frame_blocks = g_frame_blocks > kMinBlocks + decrement ? g_frame_blocks - decrement : kMinBlocks;
+    }
+    // Keep the emulated audio clock from outrunning the host audio consumer
+    // when a light scene completes early. Block adaptation controls workload;
+    // this remainder keeps a fixed update tied to real time without adding
+    // latency to genuinely slow scenes.
+    if (stepMs < kTargetStepMs) {
+      std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(
+          kTargetStepMs - stepMs));
+    }
   }
 }
 
@@ -1156,6 +1207,7 @@ void ballpad_ios_host_stop(void) {
   g_started = false;
   g_cpu_valid = false;
   g_public_game_state.store(-1, std::memory_order_relaxed);
+  g_public_scene_seen_mask.store(0, std::memory_order_relaxed);
   g_public_step_budget.store(0, std::memory_order_relaxed);
   g_public_step_micros.store(0, std::memory_order_relaxed);
 }
@@ -1182,6 +1234,26 @@ long long ballpad_ios_host_game_state(void) {
   if (!g_started.load())
     return -1;
   return g_public_game_state.load(std::memory_order_relaxed);
+}
+
+int ballpad_ios_host_scene_id(void) {
+  if (!g_started.load())
+    return -1;
+  HleSceneSnapshot scene{};
+  hle_scene_snapshot(&scene);
+  return scene.requested_scene >= 0 ? scene.requested_scene : scene.current_scene;
+}
+
+uint64_t ballpad_ios_host_scene_relative_fixed_updates(void) {
+  if (!g_started.load())
+    return 0;
+  HleSceneSnapshot scene{};
+  hle_scene_snapshot(&scene);
+  return scene.relative_fixed_updates;
+}
+
+uint64_t ballpad_ios_host_scene_seen_mask(void) {
+  return g_public_scene_seen_mask.load(std::memory_order_relaxed);
 }
 
 int ballpad_ios_host_get_efb_scale(void) { return g_efb_scale; }
@@ -1216,6 +1288,9 @@ bool ballpad_ios_host_diagnostic_snapshot(char* buffer, uint32_t buffer_size) {
   }
   ballpad_ios_host_frame_unlock();
 
+  HleSceneSnapshot scene{};
+  hle_scene_snapshot(&scene);
+
   const int written = std::snprintf(
       buffer, buffer_size,
       "Host running: %s\\n"
@@ -1223,6 +1298,14 @@ bool ballpad_ios_host_diagnostic_snapshot(char* buffer, uint32_t buffer_size) {
       "Guest paused: %s\\n"
       "Lifecycle paused: %s\\n"
       "Boot source: %s\\n"
+      "Decomp commit: %s\\n"
+      "Decomp DOL SHA-1: %s\\n"
+      "Decomp SDK SHA-256: %s\\n"
+      "Scene sequence: %llu\\n"
+      "Scene requested/current: %d/%d\\n"
+      "Scene markers: 0x%08X\\n"
+      "Relative fixed updates: %llu\\n"
+      "Guest game state: %d\\n"
       "Guest step budget: %llu blocks\\n"
       "Last guest step: %.2f ms\\n"
       "Aurora presents: %llu\\n"
@@ -1236,6 +1319,12 @@ bool ballpad_ios_host_diagnostic_snapshot(char* buffer, uint32_t buffer_size) {
       g_paused.load() ? "yes" : "no",
       g_lifecycle_paused.load() ? "yes" : "no",
       g_quickbooted ? "QuickBoot" : "fresh boot",
+      game_decomp_commit(),
+      game_decomp_dol_sha1(),
+      game_decomp_sdk_sha256(),
+      (unsigned long long)scene.event_sequence,
+      scene.requested_scene, scene.current_scene, scene.marker_flags,
+      (unsigned long long)scene.relative_fixed_updates, scene.game_state,
       g_public_step_budget.load(std::memory_order_relaxed),
       (double)g_public_step_micros.load(std::memory_order_relaxed) / 1000.0,
       aurora_present_count(),
@@ -1436,7 +1525,22 @@ const uint8_t* ballpad_ios_host_take_display_frame(uint32_t* width_out,
   const size_t bytes = (size_t)fw * fh * sizeof(u32);
   if (slot->bytes.size() != bytes)
     slot->bytes.resize(bytes);
+  const auto copy_start = std::chrono::steady_clock::now();
   std::memcpy(slot->bytes.data(), efb->color, bytes);
+  const auto copy_micros = static_cast<unsigned long long>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - copy_start)
+          .count());
+  g_display_copy_micros.fetch_add(copy_micros, std::memory_order_relaxed);
+  static const bool s_copy_diag = [] {
+    const char* value = std::getenv("BALLPAD_DISPLAY_COPY_DIAGNOSTICS");
+    return value != nullptr && value[0] == '1';
+  }();
+  if (s_copy_diag && (g_display_frames_copied.load(std::memory_order_relaxed) % 120u) == 0u) {
+    std::fprintf(stderr, "[display-copy] fill=%llu bytes=%zu copy_us=%llu total_copy_us=%llu\n",
+                 fill, bytes, copy_micros,
+                 g_display_copy_micros.load(std::memory_order_relaxed));
+  }
 
   // Opt-in forensic capture of the exact native-endian BGRA buffer handed to
   // Core Graphics. This separates a live Aurora/readback corruption from a

@@ -1,8 +1,31 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 27b70fc..4371d9e 100644
+index 27b70fc..fbf1a8d 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -102,3 +102,44 @@ if(STRIKERSRECOMP_ENABLE_AURORA)
+@@ -68,11 +68,22 @@ add_executable(StrikersRecomp
+     runtime/host/interrupt.c
+     runtime/host/hle.c
+     runtime/host/sdk_map.c
++    runtime/host/game_map.c
+     runtime/host/main.c
+     "${STRIKERSRECOMP_GENERATED_DIR}/generated.c"
+     ${STRIKERSRECOMP_CHUNKS}
+ )
+ 
++set(BALLPAD_XXHASH_DIR "${CMAKE_SOURCE_DIR}/../RecompCore/Externals/xxhash/xxHash")
++set(BALLPAD_SDL_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../RecompCore/Externals/SDL/SDL/include")
++if(EXISTS "${BALLPAD_XXHASH_DIR}/xxhash.c")
++    target_sources(StrikersRecomp PRIVATE "${BALLPAD_XXHASH_DIR}/xxhash.c")
++    target_include_directories(StrikersRecomp PRIVATE "${BALLPAD_XXHASH_DIR}")
++endif()
++if(EXISTS "${BALLPAD_SDL_INCLUDE_DIR}/SDL3/SDL_main.h")
++    target_include_directories(StrikersRecomp PRIVATE "${BALLPAD_SDL_INCLUDE_DIR}")
++endif()
++
+ if(NOT EXISTS "${STRIKERSRECOMP_GENERATED_DIR}/sdk_symbols.inc")
+     message(FATAL_ERROR
+         "SDK intercept table not found at ${STRIKERSRECOMP_GENERATED_DIR}/sdk_symbols.inc.\n"
+@@ -102,3 +113,49 @@ if(STRIKERSRECOMP_ENABLE_AURORA)
      target_compile_definitions(StrikersRecomp PRIVATE STRIKERSRECOMP_AURORA=1)
      set_target_properties(StrikersRecomp PROPERTIES LINKER_LANGUAGE CXX)
  endif()
@@ -27,10 +50,15 @@ index 27b70fc..4371d9e 100644
 +      runtime/host/interrupt.c
 +      runtime/host/hle.c
 +      runtime/host/sdk_map.c
++      runtime/host/game_map.c
 +      "${STRIKERSRECOMP_GENERATED_DIR}/generated.c"
 +      ${STRIKERSRECOMP_CHUNKS}
 +      "${BALLPAD_HOST_DIR}/src/ballpad_ppc_helpers.c"
 +  )
++  if(EXISTS "${BALLPAD_XXHASH_DIR}/xxhash.c")
++    target_sources(BallpadHost PRIVATE "${BALLPAD_XXHASH_DIR}/xxhash.c")
++    target_include_directories(BallpadHost PRIVATE "${BALLPAD_XXHASH_DIR}")
++  endif()
 +  target_include_directories(BallpadHost PRIVATE
 +      "${CMAKE_SOURCE_DIR}/runtime"
 +      "${STRIKERSRECOMP_GENERATED_DIR}"
@@ -190,10 +218,18 @@ index 9ac2302..59ddfb2 100644
  
  bool audio_mmio_contains(u32 address);
 diff --git a/runtime/host/hle.c b/runtime/host/hle.c
-index 5da95e1..08716e1 100644
+index 5da95e1..a49b8fa 100644
 --- a/runtime/host/hle.c
 +++ b/runtime/host/hle.c
-@@ -29,6 +29,8 @@
+@@ -21,6 +21,7 @@
+ #include "host/interrupt.h"
+ #include "host/mmio.h"
+ #include "host/sdk_map.h"
++#include "game_addresses.h"
+ 
+ #include <limits.h>
+ #include <math.h>
+@@ -29,6 +30,8 @@
  #include <string.h>
  #include <time.h>
  
@@ -202,7 +238,7 @@ index 5da95e1..08716e1 100644
  typedef void (*HleHandler)(CPUState* cpu);
  
  typedef struct {
-@@ -1224,10 +1226,10 @@ static void hle_CARDFormatAsync(CPUState* cpu) {
+@@ -1224,10 +1227,10 @@ static void hle_CARDFormatAsync(CPUState* cpu) {
  }
  
  static u32 guest_hash_bytes(const void* data, u32 bytes) {
@@ -217,7 +253,7 @@ index 5da95e1..08716e1 100644
      return hash ? hash : 1u;
  }
  
-@@ -1301,6 +1303,13 @@ static GxTextureBinding g_textures[GX_MAX_TEXTURES];
+@@ -1301,7 +1304,132 @@ static GxTextureBinding g_textures[GX_MAX_TEXTURES];
  static GxTlutBinding g_tluts[GX_MAX_TLUTS];
  static u32 g_array_address[32];
  static u8 g_array_stride[32];
@@ -229,9 +265,128 @@ index 5da95e1..08716e1 100644
 +    u8 array_stride[32];
 +} HleGxQuickbootState;
  static unsigned g_gx_begin_count;
++static unsigned g_replay_packet_diag_count;
++static unsigned g_replay_sky_packet_diag_count;
++
++void ballpad_diag_draw_model(CPUState* cpu, u32 object) {
++    if (getenv("STRIKERS_DRAW_MODEL_LOG") == NULL || object == 0u)
++        return;
++    const u32 creation = mem_read32(cpu, object + 0x78u);
++    const bool all_models = getenv("STRIKERS_DRAW_MODEL_ALL") != NULL;
++    if (!all_models && (creation & 0x100u) == 0u)
++        return;
++    const u32 flags = mem_read32(cpu, object + 0x8Cu);
++    unsigned view = 3u;
++    if (flags & 0x8u)
++        view = 0x16u;
++    else {
++        if (creation & 0x4u)
++            view = 7u;
++        if (creation & 0x100u)
++            view = 2u;
++        if (flags & 0x40u)
++            view = 0x13u;
++    }
++    static unsigned logged_models;
++    if (all_models && logged_models >= 2000u)
++        return;
++    ++logged_models;
++    const u32 task_manager = mem_read32(cpu, 0x803742B8u);
++    const u32 state = task_manager ? mem_read32(cpu, task_manager + 0x08u) : 0u;
++    fprintf(stderr,
++            "[draw-model] state=0x%08X object=0x%08X creation=0x%08X "
++            "flags=0x%08X view=%u model=0x%08X pos=(%.2f,%.2f,%.2f)\n",
++            state, object, creation, flags, view, mem_read32(cpu, object + 0x9Cu),
++            (double)guest_read_f32(cpu, object + 0x34u),
++            (double)guest_read_f32(cpu, object + 0x38u),
++            (double)guest_read_f32(cpu, object + 0x3Cu));
++}
++
++void ballpad_diag_view_attach(CPUState* cpu, u32 view, u32 layer, u32 model) {
++    if (getenv("STRIKERS_VIEW_ATTACH_LOG") == NULL || view != 2u)
++        return;
++    const u32 view_ptr = mem_read32(cpu, 0x80336FC0u + view * 4u);
++    const u32 render_list = view_ptr ? mem_read32(cpu, view_ptr + 0xF0u) : 0u;
++    u32 roots[7] = {0};
++    for (unsigned i = 0; i < 7u; ++i) {
++        const u32 tree = render_list ? mem_read32(cpu, render_list + 0x0Cu + i * 4u) : 0u;
++        roots[i] = tree ? mem_read32(cpu, tree + 0x08u) : 0u;
++    }
++    fprintf(stderr,
++            "[view-attach] view=%u layer=%u model=0x%08X packets=%u "
++            "viewPtr=0x%08X list=0x%08X listUnk=0x%08X sort=%u packetList=0x%08X\n",
++            view, layer, model,
++            model ? mem_read32(cpu, model + 0x00u) : 0u,
++            view_ptr, render_list,
++            render_list ? mem_read32(cpu, render_list + 0x00u) : 0u,
++            render_list ? mem_read32(cpu, render_list + 0x04u) : 0u,
++            render_list ? mem_read32(cpu, render_list + 0x2Cu) : 0u);
++    fprintf(stderr, "[view-attach-roots] %08X,%08X,%08X,%08X,%08X,%08X,%08X\n",
++            roots[0], roots[1], roots[2], roots[3], roots[4], roots[5], roots[6]);
++}
++
++void ballpad_diag_view_send(CPUState* cpu) {
++    if (getenv("STRIKERS_VIEW_ATTACH_LOG") == NULL)
++        return;
++    const u32 view_ptr = mem_read32(cpu, 0x80336FC0u + 2u * 4u);
++    const u32 list = view_ptr ? mem_read32(cpu, view_ptr + 0xF0u) : 0u;
++    fprintf(stderr,
++            "[view-send] view=2 enabled=%u list=0x%08X roots=%08X,%08X,%08X,%08X,%08X,%08X,%08X\n",
++            mem_read8(cpu, 0x80302050u + 2u), list,
++            list ? mem_read32(cpu, mem_read32(cpu, list + 0x0Cu) + 0x08u) : 0u,
++            list ? mem_read32(cpu, mem_read32(cpu, list + 0x10u) + 0x08u) : 0u,
++            list ? mem_read32(cpu, mem_read32(cpu, list + 0x14u) + 0x08u) : 0u,
++            list ? mem_read32(cpu, mem_read32(cpu, list + 0x18u) + 0x08u) : 0u,
++            list ? mem_read32(cpu, mem_read32(cpu, list + 0x1Cu) + 0x08u) : 0u,
++            list ? mem_read32(cpu, mem_read32(cpu, list + 0x20u) + 0x08u) : 0u,
++            list ? mem_read32(cpu, mem_read32(cpu, list + 0x24u) + 0x08u) : 0u);
++}
++
++static u32 gx_texture_base_bytes(u32 width, u32 height, u32 format);
++
++void ballpad_diag_send_frame(CPUState* cpu, u32 view, u32 packet) {
++    if (getenv("STRIKERS_VIEW_ATTACH_LOG") == NULL || view != 2u)
++        return;
++    const u32 task_manager = mem_read32(cpu, 0x803742B8u);
++    const u32 state = task_manager ? mem_read32(cpu, task_manager + 0x08u) : 0u;
++    fprintf(stderr,
++            "[send-frame] state=0x%08X view=2 packet=0x%08X verts=%u streams=%u "
++            "program=0x%08X raster=0x%08X texconfig=0x%02X tex0=0x%08X\n",
++            state, packet,
++            packet ? mem_read16(cpu, packet + 0x08u) : 0u,
++            packet ? mem_read8(cpu, packet + 0x0Bu) : 0u,
++            packet ? mem_read32(cpu, packet + 0x1Cu) : 0u,
++            packet ? mem_read32(cpu, packet + 0x20u) : 0u,
++            packet ? mem_read8(cpu, packet + 0x40u) : 0u,
++            packet ? mem_read32(cpu, packet + 0x28u) : 0u);
++    if (packet != 0u && state == 0x100u &&
++        getenv("STRIKERS_SKY_TEXTURE_LOG") != NULL) {
++        const u32 texture = mem_read32(cpu, packet + 0x28u);
++        const u32 tex_obj = texture ? texture + 0x24u : 0u;
++        const u32 image0 = tex_obj ? mem_read32(cpu, tex_obj + 8u) : 0u;
++        const u32 image3 = tex_obj ? mem_read32(cpu, tex_obj + 12u) : 0u;
++        const u32 data = GC_RAM_BASE | ((image3 & 0x001FFFFFu) << 5);
++        const u32 width = texture ? mem_read16(cpu, texture + 4u) : 0u;
++        const u32 height = texture ? mem_read16(cpu, texture + 6u) : 0u;
++        const u32 format = tex_obj ? mem_read32(cpu, tex_obj + 20u) : 0u;
++        const u32 tlut = tex_obj ? mem_read32(cpu, tex_obj + 24u) : 0u;
++        u32 bytes = gx_texture_base_bytes(width, height, format);
++        const u32 hash = guest_hash(cpu, data, bytes, &bytes);
++        fprintf(stderr,
++                "[sky-texture] state=0x%08X packet=0x%08X texture=0x%08X "
++                "magic=0x%08X levels=%u palette=%u "
++                "image0=0x%08X image3=0x%08X data=0x%08X %ux%u fmt=%u "
++                "tlut=%u bytes=%u hash=0x%08X\n",
++                state, packet, texture, texture ? mem_read32(cpu, texture) : 0u,
++                texture ? mem_read8(cpu, texture + 8u) : 0u,
++                texture ? mem_read16(cpu, texture + 0x10u) : 0u, image0, image3,
++                data, width, height, format, tlut, bytes, hash);
++    }
++}
  static unsigned g_gx_array_count;
  // Per-frame accounting of indexed-array uploads. Aurora uploads each distinct
-@@ -1731,8 +1740,32 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+ // indexed array's *whole advertised size* into a fixed, non-growable 8 MB
+@@ -1731,8 +1859,32 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
      const bool movie_generation =
          thp_movie_plane_generation(cpu, guest_data, width, height, format,
                                     &data_bytes, &data_hash, &cache_object);
@@ -266,7 +421,7 @@ index 5da95e1..08716e1 100644
      const u32 version =
          gx_texture_resource_version(width, height, format, tlut, flags,
                                      data_bytes, data_hash);
-@@ -1768,6 +1801,10 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+@@ -1768,6 +1920,10 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
      bool changed = !binding->valid ||
                     binding->object != cache_object ||
                     binding->version != version;
@@ -277,7 +432,7 @@ index 5da95e1..08716e1 100644
      binding->valid = true;
      binding->object = cache_object;
      binding->guest_data = guest_data;
-@@ -1779,10 +1816,14 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
+@@ -1779,10 +1935,14 @@ static void record_GXLoadTexObj(CPUState* cpu, u32 obj, u32 slot) {
      binding->data_bytes = data_bytes;
      binding->data_hash = data_hash;
      binding->version = version;
@@ -296,7 +451,16 @@ index 5da95e1..08716e1 100644
      if (g_movie_log && format == 1u) {
          unsigned seq = ++g_movie_texobj_log_count;
          bool should_log = changed || seq <= 96u || (seq % 60u) == 0u;
-@@ -2751,6 +2792,92 @@ static void emit_gx_resource_metadata(CPUState* cpu) {
+@@ -2605,7 +2765,7 @@ static void notify_GXLoadPosMtxImm(CPUState* cpu) {
+         matrix_log_enabled = getenv("STRIKERS_MATRIX_LOG") != NULL ? 1 : 0;
+     const bool ball_load =
+         ball_state_log_enabled() &&
+-        guest_backchain_contains(cpu, 0x8011DF10u, 0x8011E38Cu);
++        guest_backchain_contains(cpu, GAME_FN_HLE_KPHYSICSNOTIFY_16, 0x8011E38Cu);
+     if (!matrix_log_enabled && !ball_load)
+         return;
+     const u32 mtx_addr = hle_arg_u32(cpu, 0);
+@@ -2751,10 +2911,131 @@ static void emit_gx_resource_metadata(CPUState* cpu) {
      }
  }
  
@@ -388,19 +552,714 @@ index 5da95e1..08716e1 100644
 +
  static void notify_GXBegin(CPUState* cpu) {
      ++g_gx_begin_count;
++    if (getenv("STRIKERS_GFX_PACKET_LOG") != NULL) {
++        u32 task_manager = mem_read32(cpu, 0x803742B8u);
++        u32 state = task_manager ? mem_read32(cpu, task_manager + 0x08u) : 0u;
++        if (state == 0x10u || state == 0x100u) {
++            const u32 packet = cpu->gpr[30];
++            const u32 view = mem_read32(cpu, 0x80374010u);
++            if (view == 2u) {
++                fprintf(stderr,
++                        "[gfx-sky-packet] n=%u state=0x%08X packet=0x%08X "
++                        "verts=%u texconfig=0x%02X tex0=0x%08X\n",
++                        g_replay_sky_packet_diag_count++, state, packet,
++                        mem_read16(cpu, packet + 0x08u),
++                        mem_read8(cpu, packet + 0x40u),
++                        mem_read32(cpu, packet + 0x28u));
++            } else if (g_replay_packet_diag_count < 80u) {
++                fprintf(stderr,
++                        "[gfx-packet] n=%u state=0x%08X view=%u packet=0x%08X "
++                        "index=0x%08X verts=%u prim=%u streams=%u "
++                        "program=0x%08X raster=0x%08X matrix=0x%08X "
++                        "texconfig=0x%02X tex0=0x%08X tex1=0x%08X tex2=0x%08X\n",
++                        g_replay_packet_diag_count++, state, view, packet,
++                        mem_read32(cpu, packet + 0x04u),
++                        mem_read16(cpu, packet + 0x08u),
++                        mem_read8(cpu, packet + 0x0Au),
++                        mem_read8(cpu, packet + 0x0Bu),
++                        mem_read32(cpu, packet + 0x1Cu),
++                        mem_read32(cpu, packet + 0x20u),
++                        mem_read32(cpu, packet + 0x24u),
++                        mem_read8(cpu, packet + 0x40u),
++                        mem_read32(cpu, packet + 0x28u),
++                        mem_read32(cpu, packet + 0x2Cu),
++                        mem_read32(cpu, packet + 0x30u));
++            }
++        }
++    }
      if (ball_state_log_enabled() &&
-@@ -3208,6 +3335,9 @@ typedef struct {
+-        guest_backchain_contains(cpu, 0x8011DF10u, 0x8011E38Cu)) {
++        guest_backchain_contains(cpu, GAME_FN_HLE_KPHYSICSNOTIFY_16, 0x8011E38Cu)) {
+         fprintf(stderr,
+                 "[ball-draw] guest-frame=%llu begin=%u prim=%u fmt=%u "
+                 "count=%u lr=0x%08X\n",
+@@ -2879,15 +3160,97 @@ static void notify_GXCopyDisp(CPUState* cpu) {
+         if (s_cutscene_diag) {
+             static u64 s_diag_frame = 0;
+             u8 render_world = mem_read8(cpu, 0x8037273Cu); // g_bRenderWorld
++            u8 clip_to_frustum = mem_read8(cpu, 0x80372908u); // g_bClipToFrustum
++            u8 skybox_disabled = mem_read8(cpu, 0x80373E97u); // World::sbSkyboxRenderingDisabled
++            u32 stadium = mem_read32(cpu, 0x80373EE4u); // pBasicStadiumInstance
++            u32 skybox = stadium ? mem_read32(cpu, stadium + 0x14Cu) : 0u;
++            u32 clouds = stadium ? mem_read32(cpu, stadium + 0x150u) : 0u;
++            u32 task_manager = mem_read32(cpu, 0x803742B8u);
++            u32 curr_state = task_manager ? mem_read32(cpu, task_manager + 0x08u) : 0u;
++            u32 prev_state = task_manager ? mem_read32(cpu, task_manager + 0x10u) : 0u;
++            u32 camera_type = mem_read32(cpu, 0x803729F8u); // cCameraManager::m_pBeginFrameCameraType
++            u8 pretend_gameplay_cam = mem_read8(cpu, 0x80373E9Bu);
++            float sky_dots[6] = {0};
++            u8 sky_frustum_visible = 0;
++            if (stadium && skybox) {
++                const float sx = guest_read_f32(cpu, skybox + 0x34u);
++                const float sy = guest_read_f32(cpu, skybox + 0x38u);
++                const float sz = guest_read_f32(cpu, skybox + 0x3Cu);
++                const float radius = guest_read_f32(cpu, skybox + 0x90u);
++                sky_frustum_visible = 1;
++                for (unsigned plane = 0; plane < 6u; ++plane) {
++                    const u32 p = stadium + 0x80u + plane * 16u;
++                    const float dot = sx * guest_read_f32(cpu, p + 0x00u) +
++                                      sy * guest_read_f32(cpu, p + 0x04u) +
++                                      sz * guest_read_f32(cpu, p + 0x08u) +
++                                      guest_read_f32(cpu, p + 0x0Cu);
++                    sky_dots[plane] = dot;
++                    if (dot < -radius)
++                        sky_frustum_visible = 0;
++                }
++            }
+             // Log only transitions / every 60th frame to cut spam; always log
+             // when world is off (H3-adjacent guest skip).
+             static u8 s_prev_rw = 0xFFu;
++            static u32 s_prev_curr = 0xFFFFFFFFu;
++            static u32 s_prev_prev = 0xFFFFFFFFu;
+             u64 fr = ++s_diag_frame;
+             if (render_world != s_prev_rw || render_world == 0u ||
++                curr_state != s_prev_curr || prev_state != s_prev_prev ||
+                 (fr % 60u) == 0u)
+-                fprintf(stderr, "[cutscene] frame=%llu g_bRenderWorld=%u\n",
+-                        (unsigned long long)fr, render_world);
++                fprintf(stderr,
++                        "[replay] frame=%llu state=0x%08X prev=0x%08X "
++                        "g_bRenderWorld=%u clip=%u skyboxDisabled=%u "
++                        "skybox=0x%08X clouds=0x%08X "
++                        "skyFlags=0x%08X skyCreate=0x%08X skyObjFlags=0x%08X "
++                        "skyModel=0x%08X skyPackets=%u skyModelId=0x%08X "
++                        "skyPacket=0x%08X skyTex0=0x%08X skyTexCfg=0x%02X "
++                        "skyRadius=%.3f "
++                        "skyCull=%u skyDots=(%.2f,%.2f,%.2f,%.2f,%.2f,%.2f) "
++                        "skyAlpha=%.3f cameraType=%u pretendGameplay=%u "
++                        "skyPos=(%.2f,%.2f,%.2f) views(2,7,11,16)=%u,%u,%u,%u "
++                        "renderBuffer(en,send,ex)=%u,%u,%u "
++                        "task_manager=0x%08X\n",
++                        (unsigned long long)fr, curr_state, prev_state,
++                        render_world, clip_to_frustum, skybox_disabled,
++                        skybox, clouds,
++                        skybox ? mem_read32(cpu, skybox + 0x8Cu) : 0u,
++                        skybox ? mem_read32(cpu, skybox + 0x78u) : 0u,
++                        skybox ? mem_read32(cpu, skybox + 0x8Cu) : 0u,
++                        skybox ? mem_read32(cpu, skybox + 0x9Cu) : 0u,
++                        skybox && mem_read32(cpu, skybox + 0x9Cu)
++                            ? mem_read32(cpu, mem_read32(cpu, skybox + 0x9Cu)) : 0u,
++                        skybox && mem_read32(cpu, skybox + 0x9Cu)
++                            ? mem_read32(cpu, mem_read32(cpu, skybox + 0x9Cu) + 0x04u) : 0u,
++                        skybox && mem_read32(cpu, skybox + 0x9Cu)
++                            ? mem_read32(cpu, mem_read32(cpu, skybox + 0x9Cu) + 0x0Cu) : 0u,
++                        skybox && mem_read32(cpu, skybox + 0x9Cu) &&
++                                mem_read32(cpu, mem_read32(cpu, skybox + 0x9Cu) + 0x0Cu)
++                            ? mem_read32(cpu, mem_read32(cpu, mem_read32(cpu, skybox + 0x9Cu) + 0x0Cu) + 0x28u) : 0u,
++                        skybox && mem_read32(cpu, skybox + 0x9Cu) &&
++                                mem_read32(cpu, mem_read32(cpu, skybox + 0x9Cu) + 0x0Cu)
++                            ? mem_read8(cpu, mem_read32(cpu, mem_read32(cpu, skybox + 0x9Cu) + 0x0Cu) + 0x40u) : 0u,
++                        skybox ? (double)guest_read_f32(cpu, skybox + 0x90u) : 0.0,
++                        sky_frustum_visible,
++                        (double)sky_dots[0], (double)sky_dots[1],
++                        (double)sky_dots[2], (double)sky_dots[3],
++                        (double)sky_dots[4], (double)sky_dots[5],
++                        skybox ? (double)guest_read_f32(cpu, skybox + 0x68u) : 0.0,
++                        camera_type, pretend_gameplay_cam,
++                        skybox ? (double)guest_read_f32(cpu, skybox + 0x34u) : 0.0,
++                        skybox ? (double)guest_read_f32(cpu, skybox + 0x38u) : 0.0,
++                        skybox ? (double)guest_read_f32(cpu, skybox + 0x3Cu) : 0.0,
++                        mem_read8(cpu, 0x80302050u + 2u),
++                        mem_read8(cpu, 0x80302050u + 7u),
++                        mem_read8(cpu, 0x80302050u + 11u),
++                        mem_read8(cpu, 0x80302050u + 16u),
++                        mem_read8(cpu, 0x8034322Cu + 8u),
++                        mem_read8(cpu, 0x8034322Cu + 9u),
++                        mem_read8(cpu, 0x8034322Cu + 10u),
++                        task_manager);
+             s_prev_rw = render_world;
++            s_prev_curr = curr_state;
++            s_prev_prev = prev_state;
+         }
+     }
+     matrix_log_frame(cpu);
+@@ -3208,48 +3571,51 @@ typedef struct {
  } HleAddrEntry;
  
  static const HleAddrEntry kAddrHandlers[] = {
 +    // Ballpad: skip the boot save/load scene (the memcard popup Retry loop).
 +    // The guest then goes straight to the LEGAL -> title flow.
-+    { 0x800B0D5Cu, hle_return_zero,                "SaveLoadScene::IsIOEnabled" },
++    { GAME_FN_HLE_KADDRHANDLERS_0, hle_return_zero,                "SaveLoadScene::IsIOEnabled" },
      // DSP boot handshake: polls a DSP mailbox bit that never changes without a
      // modeled DSP. Audio is routed through Aurora, so skip the hardware init.
-     { 0x80254718u, hle_noop,                     "__OSInitAudioSystem" },
+-    { 0x80254718u, hle_noop,                     "__OSInitAudioSystem" },
++    { GAME_FN_HLE_KADDRHANDLERS_1, hle_noop,                     "__OSInitAudioSystem" },
+     // AI sample-rate-converter calibration: times transitions of the AI sample
+     // counter (__AIRegs[2]), which never ticks without modeled AI hardware.
+     // Aurora owns audio, so skip the calibration (its result feeds only AI regs).
+-    { 0x8023B610u, hle_noop,                     "__AI_SRC_INIT" },
++    { GAME_FN_HLE_KADDRHANDLERS_2, hle_noop,                     "__AI_SRC_INIT" },
+     // MusyX's CPU-side sequencer and voice engine run unchanged. Only skip the
+     // physical DSP task boot; audio.c executes the resulting AX command lists.
+-    { 0x80282B98u, hle_salInitDsp,                "salInitDsp" },
+-    { 0x80281BCCu, hle_aramUploadData,            "aramUploadData" },
+-    { 0x8023D638u, hle_ARQPostRequest,            "ARQPostRequest" },
+-    { 0x802442C4u, hle_return_zero,                "DSPCheckMailToDSP" },
++    { GAME_FN_HLE_KADDRHANDLERS_3, hle_salInitDsp,                "salInitDsp" },
++    { GAME_FN_HLE_KADDRHANDLERS_4, hle_aramUploadData,            "aramUploadData" },
++    { GAME_FN_HLE_KADDRHANDLERS_5, hle_ARQPostRequest,            "ARQPostRequest" },
++    { GAME_FN_HLE_KADDRHANDLERS_6, hle_return_zero,                "DSPCheckMailToDSP" },
+     // DVD: host serves the disc file system from the ISO (see DVD handlers).
+-    { 0x8024608Cu, hle_DVDInit,                  "DVDInit" },
+-    { 0x80245C0Cu, hle_DVDConvertPathToEntrynum, "DVDConvertPathToEntrynum" },
+-    { 0x80245F00u, hle_DVDFastOpen,              "DVDFastOpen" },
+-    { 0x80245F74u, hle_DVDClose,                 "DVDClose" },
+-    { 0x80245F98u, hle_DVDReadAsyncPrio,         "DVDReadAsyncPrio" },
+-    { 0x80248118u, hle_DVDGetCommandBlockStatus, "DVDGetCommandBlockStatus" },
+-    { 0x80248164u, hle_DVDGetDriveStatus,        "DVDGetDriveStatus" },
++    { GAME_FN_HLE_KADDRHANDLERS_7, hle_DVDInit,                  "DVDInit" },
++    { GAME_FN_HLE_KADDRHANDLERS_8, hle_DVDConvertPathToEntrynum, "DVDConvertPathToEntrynum" },
++    { GAME_FN_HLE_KADDRHANDLERS_9, hle_DVDFastOpen,              "DVDFastOpen" },
++    { GAME_FN_HLE_KADDRHANDLERS_10, hle_DVDClose,                 "DVDClose" },
++    { GAME_FN_HLE_KADDRHANDLERS_11, hle_DVDReadAsyncPrio,         "DVDReadAsyncPrio" },
++    { GAME_FN_HLE_KADDRHANDLERS_12, hle_DVDGetCommandBlockStatus, "DVDGetCommandBlockStatus" },
++    { GAME_FN_HLE_KADDRHANDLERS_13, hle_DVDGetDriveStatus,        "DVDGetDriveStatus" },
+     // CARDFormatAsync is present in G4QE01 but absent from Aurora's SDK header
+     // intersection, so it is registered by its exact game address.
+-    { 0x802429FCu, hle_CARDFormatAsync,           "CARDFormatAsync" },
+-    { 0x80257CC0u, hle_OSGetResetButtonState,    "OSGetResetButtonState" },
++    { GAME_FN_HLE_KADDRHANDLERS_14, hle_CARDFormatAsync,           "CARDFormatAsync" },
++    { GAME_FN_HLE_KADDRHANDLERS_15, hle_OSGetResetButtonState,    "OSGetResetButtonState" },
+     // Locked-cache DMA helpers. THP video decode writes into the 0xE0000000
+     // scratch area and uses these to move rows into MEM1 texture planes.
+-    { 0x80254C54u, hle_LCStoreBlocks,             "LCStoreBlocks" },
+-    { 0x80254C78u, hle_LCStoreData,               "LCStoreData" },
+-    { 0x80254D24u, hle_noop,                      "LCQueueWait" },
++    { GAME_FN_HLE_KADDRHANDLERS_16, hle_LCStoreBlocks,             "LCStoreBlocks" },
++    { GAME_FN_HLE_KADDRHANDLERS_17, hle_LCStoreData,               "LCStoreData" },
++    { GAME_FN_HLE_KADDRHANDLERS_18, hle_noop,                      "LCQueueWait" },
+ #ifdef STRIKERSRECOMP_AURORA
+-    { 0x80252680u, hle_PSMTXConcat,                "PSMTXConcat" },
+-    { 0x8024D240u, hle_GXSetArray,                "GXSetArray" },
+-    { 0x8024DD20u, hle_GXBegin,                   "GXBegin" },
+-    { 0x80251510u, hle_GXCallDisplayList,          "GXCallDisplayList" },
++    { GAME_FN_HLE_KADDRHANDLERS_19, hle_PSMTXConcat,                "PSMTXConcat" },
++    { GAME_FN_HLE_KADDRHANDLERS_20, hle_GXSetArray,                "GXSetArray" },
++    { GAME_FN_HLE_KADDRHANDLERS_21, hle_GXBegin,                   "GXBegin" },
++    { GAME_FN_HLE_KADDRHANDLERS_22, hle_GXCallDisplayList,          "GXCallDisplayList" },
+ #endif
+-    { 0x8025AC10u, hle_PADReset,                  "PADReset" },
+-    { 0x8025AD20u, hle_PADRecalibrate,            "PADRecalibrate" },
+-    { 0x8025AE34u, hle_PADInit,                   "PADInit" },
+-    { 0x8025AF84u, hle_PADRead,                   "PADRead" },
+-    { 0x8025B284u, hle_PADControlMotor,           "PADControlMotor" },
+-    { 0x8025B33Cu, hle_PADSetSpec,                "PADSetSpec" },
++    { GAME_FN_HLE_KADDRHANDLERS_23, hle_PADReset,                  "PADReset" },
++    { GAME_FN_HLE_KADDRHANDLERS_24, hle_PADRecalibrate,            "PADRecalibrate" },
++    { GAME_FN_HLE_KADDRHANDLERS_25, hle_PADInit,                   "PADInit" },
++    { GAME_FN_HLE_KADDRHANDLERS_26, hle_PADRead,                   "PADRead" },
++    { GAME_FN_HLE_KADDRHANDLERS_27, hle_PADControlMotor,           "PADControlMotor" },
++    { GAME_FN_HLE_KADDRHANDLERS_28, hle_PADSetSpec,                "PADSetSpec" },
+ };
+ 
+ // Functions to trace (log name + first args) without intercepting: the
+@@ -3261,21 +3627,21 @@ typedef struct {
+ } HleTraceEntry;
+ 
+ static const HleTraceEntry kTrace[] = {
+-    { 0x8023BA70u, "ARInit" },
+-    { 0x8023BB40u, "ARGetBaseAddress" },
+-    { 0x8023BB48u, "ARGetSize" },
+-    { 0x8025DA80u, "VIInit" },
+-    { 0x8025DF30u, "VIWaitForRetrace" },
+-    { 0x8025E3F8u, "VIConfigure" },
+-    { 0x8025ED30u, "VISetNextFrameBuffer" },
+-    { 0x80255360u, "OSLoadContext" },
+-    { 0x80259370u, "__OSReschedule" },
+-    { 0x80259598u, "OSResumeThread" },
+-    { 0x80256B74u, "__OSInterruptInit" },
+-    { 0x80259990u, "OSSleepThread" },
+-    { 0x80259820u, "OSSuspendThread" },
+-    { 0x8024D7ACu, "GXSetDrawDone" },
+-    { 0x8024DBACu, "GXFinishInterruptHandler" },
++    { GAME_FN_HLE_KTRACE_0, "ARInit" },
++    { GAME_FN_HLE_KTRACE_1, "ARGetBaseAddress" },
++    { GAME_FN_HLE_KTRACE_2, "ARGetSize" },
++    { GAME_FN_HLE_KTRACE_3, "VIInit" },
++    { GAME_FN_HLE_KTRACE_4, "VIWaitForRetrace" },
++    { GAME_FN_HLE_KTRACE_5, "VIConfigure" },
++    { GAME_FN_HLE_KTRACE_6, "VISetNextFrameBuffer" },
++    { GAME_FN_HLE_KTRACE_7, "OSLoadContext" },
++    { GAME_FN_HLE_KTRACE_8, "__OSReschedule" },
++    { GAME_FN_HLE_KTRACE_9, "OSResumeThread" },
++    { GAME_FN_HLE_KTRACE_10, "__OSInterruptInit" },
++    { GAME_FN_HLE_KTRACE_11, "OSSleepThread" },
++    { GAME_FN_HLE_KTRACE_12, "OSSuspendThread" },
++    { GAME_FN_HLE_KTRACE_13, "GXSetDrawDone" },
++    { GAME_FN_HLE_KTRACE_14, "GXFinishInterruptHandler" },
+ };
+ 
+ static const char* trace_name(u32 address) {
+@@ -3317,61 +3683,61 @@ typedef struct {
+ } AudioApiCounter;
+ 
+ static AudioApiCounter g_audio_api[] = {
+-    { 0x8027DF14u, "sndInit", 0 },
+-    { 0x8027E04Cu, "sndQuit", 0 },
+-    { 0x8027E080u, "sndIsInstalled", 0 },
+-    { 0x80281AB0u, "sndSetHooks", 0 },
+-    { 0x80268A08u, "sndFXStartParaInfo", 0 },
+-    { 0x802689C8u, "sndFXKeyOff", 0 },
+-    { 0x80268B34u, "sndFXCheck", 0 },
+-    { 0x80268908u, "sndFXCtrl", 0 },
+-    { 0x80268968u, "sndFXCtrl14", 0 },
+-    { 0x80268BB4u, "sndFXAssignVolGroup2FXId", 0 },
+-    { 0x80268C3Cu, "sndVolume", 0 },
+-    { 0x80268B80u, "sndSilence", 0 },
+-    { 0x80268C9Cu, "sndOutputMode", 0 },
+-    { 0x80268D88u, "sndSetAuxProcessingCallbacks", 0 },
+-    { 0x8026C518u, "sndStreamActivate", 0 },
+-    { 0x8026CB70u, "sndStreamDeactivate", 0 },
+-    { 0x8026A160u, "sndStreamAllocEx", 0 },
+-    { 0x8026BE44u, "sndStreamFree", 0 },
+-    { 0x8026AD40u, "sndStreamMixParameterEx", 0 },
+-    { 0x80269B14u, "sndStreamARAMUpdate", 0 },
+-    { 0x8026B910u, "sndStreamLPFParameter", 0 },
+-    { 0x8026A644u, "sndStreamADPCMParameter", 0 },
+-    { 0x8026B2A8u, "sndStreamFrq", 0 },
+-    { 0x80277274u, "sndPushGroup", 0 },
+-    { 0x802775C0u, "sndPopGroup", 0 },
+-    { 0x80277BA4u, "sndSeqPlayEx", 0 },
+-    { 0x80277990u, "sndStackSetCurrent", 0 },
+-    { 0x80277910u, "sndStackGetSize", 0 },
+-    { 0x80277918u, "sndStackAdd", 0 },
+-    { 0x802779C4u, "sndStackGetARAMAddressRange", 0 },
+-    { 0x80277A04u, "sndStackGetAvailableSampleMemory", 0 },
+-    { 0x80277254u, "sndSetSampleDataUploadCallback", 0 },
+-    { 0x8027C644u, "sndAddEmitter2StudioPara", 0 },
+-    { 0x8027C0A4u, "sndUpdateEmitter", 0 },
+-    { 0x8027C6A0u, "sndRemoveEmitter", 0 },
+-    { 0x8027C17Cu, "sndCheckEmitter", 0 },
+-    { 0x8027C748u, "sndEmitterVoiceID", 0 },
+-    { 0x8027CACCu, "sndAddListenerEx", 0 },
+-    { 0x8027C958u, "sndUpdateListener", 0 },
+-    { 0x8027CCECu, "sndRemoveListener", 0 },
+-    { 0x80275D00u, "sndPitchUpOne", 0 },
+-    { 0x80275D3Cu, "sndGetPitch", 0 },
+-    { 0x80280774u, "sndSin", 0 },
+-    { 0x80282F98u, "sndAuxCallbackPrepareReverbSTD", 0 },
+-    { 0x80282F44u, "sndAuxCallbackUpdateSettingsReverbSTD", 0 },
+-    { 0x80282FD4u, "sndAuxCallbackShutdownReverbSTD", 0 },
+-    { 0x80283B50u, "sndAuxCallbackPrepareReverbHI", 0 },
+-    { 0x80283AF8u, "sndAuxCallbackUpdateSettingsReverbHI", 0 },
+-    { 0x80283B90u, "sndAuxCallbackShutdownReverbHI", 0 },
+-    { 0x80284E38u, "sndAuxCallbackPrepareDelay", 0 },
+-    { 0x80284C68u, "sndAuxCallbackUpdateSettingsDelay", 0 },
+-    { 0x80284E60u, "sndAuxCallbackShutdownDelay", 0 },
+-    { 0x80285584u, "sndAuxCallbackPrepareChorus", 0 },
+-    { 0x802854ECu, "sndAuxCallbackUpdateSettingsChorus", 0 },
+-    { 0x80285784u, "sndAuxCallbackShutdownChorus", 0 },
++    { GAME_FN_HLE_KNOTIFY_2, "sndInit", 0 },
++    { GAME_FN_HLE_KNOTIFY_3, "sndQuit", 0 },
++    { GAME_FN_HLE_KNOTIFY_4, "sndIsInstalled", 0 },
++    { GAME_FN_HLE_KNOTIFY_5, "sndSetHooks", 0 },
++    { GAME_FN_HLE_KNOTIFY_6, "sndFXStartParaInfo", 0 },
++    { GAME_FN_HLE_KNOTIFY_7, "sndFXKeyOff", 0 },
++    { GAME_FN_HLE_KNOTIFY_8, "sndFXCheck", 0 },
++    { GAME_FN_HLE_KNOTIFY_9, "sndFXCtrl", 0 },
++    { GAME_FN_HLE_KNOTIFY_10, "sndFXCtrl14", 0 },
++    { GAME_FN_HLE_KNOTIFY_11, "sndFXAssignVolGroup2FXId", 0 },
++    { GAME_FN_HLE_KNOTIFY_12, "sndVolume", 0 },
++    { GAME_FN_HLE_KNOTIFY_13, "sndSilence", 0 },
++    { GAME_FN_HLE_KNOTIFY_14, "sndOutputMode", 0 },
++    { GAME_FN_HLE_KNOTIFY_15, "sndSetAuxProcessingCallbacks", 0 },
++    { GAME_FN_HLE_KNOTIFY_16, "sndStreamActivate", 0 },
++    { GAME_FN_HLE_KNOTIFY_17, "sndStreamDeactivate", 0 },
++    { GAME_FN_HLE_KNOTIFY_18, "sndStreamAllocEx", 0 },
++    { GAME_FN_HLE_KNOTIFY_19, "sndStreamFree", 0 },
++    { GAME_FN_HLE_KNOTIFY_20, "sndStreamMixParameterEx", 0 },
++    { GAME_FN_HLE_KNOTIFY_21, "sndStreamARAMUpdate", 0 },
++    { GAME_FN_HLE_KNOTIFY_22, "sndStreamLPFParameter", 0 },
++    { GAME_FN_HLE_KNOTIFY_23, "sndStreamADPCMParameter", 0 },
++    { GAME_FN_HLE_KNOTIFY_24, "sndStreamFrq", 0 },
++    { GAME_FN_HLE_KNOTIFY_25, "sndPushGroup", 0 },
++    { GAME_FN_HLE_KNOTIFY_26, "sndPopGroup", 0 },
++    { GAME_FN_HLE_KNOTIFY_27, "sndSeqPlayEx", 0 },
++    { GAME_FN_HLE_KNOTIFY_28, "sndStackSetCurrent", 0 },
++    { GAME_FN_HLE_KNOTIFY_29, "sndStackGetSize", 0 },
++    { GAME_FN_HLE_KNOTIFY_30, "sndStackAdd", 0 },
++    { GAME_FN_HLE_KNOTIFY_31, "sndStackGetARAMAddressRange", 0 },
++    { GAME_FN_HLE_KNOTIFY_32, "sndStackGetAvailableSampleMemory", 0 },
++    { GAME_FN_HLE_KNOTIFY_33, "sndSetSampleDataUploadCallback", 0 },
++    { GAME_FN_HLE_KNOTIFY_34, "sndAddEmitter2StudioPara", 0 },
++    { GAME_FN_HLE_KNOTIFY_35, "sndUpdateEmitter", 0 },
++    { GAME_FN_HLE_KNOTIFY_36, "sndRemoveEmitter", 0 },
++    { GAME_FN_HLE_KNOTIFY_37, "sndCheckEmitter", 0 },
++    { GAME_FN_HLE_KNOTIFY_38, "sndEmitterVoiceID", 0 },
++    { GAME_FN_HLE_KNOTIFY_39, "sndAddListenerEx", 0 },
++    { GAME_FN_HLE_KNOTIFY_40, "sndUpdateListener", 0 },
++    { GAME_FN_HLE_KNOTIFY_41, "sndRemoveListener", 0 },
++    { GAME_FN_HLE_KNOTIFY_42, "sndPitchUpOne", 0 },
++    { GAME_FN_HLE_KNOTIFY_43, "sndGetPitch", 0 },
++    { GAME_FN_HLE_KNOTIFY_44, "sndSin", 0 },
++    { GAME_FN_HLE_KNOTIFY_45, "sndAuxCallbackPrepareReverbSTD", 0 },
++    { GAME_FN_HLE_KNOTIFY_46, "sndAuxCallbackUpdateSettingsReverbSTD", 0 },
++    { GAME_FN_HLE_KNOTIFY_47, "sndAuxCallbackShutdownReverbSTD", 0 },
++    { GAME_FN_HLE_KNOTIFY_48, "sndAuxCallbackPrepareReverbHI", 0 },
++    { GAME_FN_HLE_KNOTIFY_49, "sndAuxCallbackUpdateSettingsReverbHI", 0 },
++    { GAME_FN_HLE_KNOTIFY_50, "sndAuxCallbackShutdownReverbHI", 0 },
++    { GAME_FN_HLE_KNOTIFY_51, "sndAuxCallbackPrepareDelay", 0 },
++    { GAME_FN_HLE_KNOTIFY_52, "sndAuxCallbackUpdateSettingsDelay", 0 },
++    { GAME_FN_HLE_KNOTIFY_53, "sndAuxCallbackShutdownDelay", 0 },
++    { GAME_FN_HLE_KNOTIFY_54, "sndAuxCallbackPrepareChorus", 0 },
++    { GAME_FN_HLE_KNOTIFY_55, "sndAuxCallbackUpdateSettingsChorus", 0 },
++    { GAME_FN_HLE_KNOTIFY_56, "sndAuxCallbackShutdownChorus", 0 },
+ };
+ 
+ static void notify_audio_api(CPUState* cpu) {
+@@ -3721,119 +4087,217 @@ static void notify_LCDisable(CPUState* cpu) {
+                 cpu->hid2, cpu->lr);
+ }
+ 
++enum {
++    HLE_SCENE_MARKER_HUD_CREATED = 1u << 0,
++    HLE_SCENE_MARKER_MATCH_ZERO = 1u << 1,
++};
++
++static HleSceneSnapshot g_scene_snapshot = {
++    0u, -2, -2, 0u, 0u, -1,
++};
++static bool g_scene_trace_initialized = false;
++static bool g_scene_trace = false;
++
++static void scene_trace_init(void) {
++    if (!g_scene_trace_initialized) {
++        g_scene_trace_initialized = true;
++        g_scene_trace = getenv("BALLPAD_SCENE_TRACE") != NULL;
++    }
++}
++
++static int32_t scene_current(CPUState* cpu) {
++    const u32 manager = mem_read32(cpu, GAME_OBJ_SCENE_MANAGER_POINTER);
++    const u32 depth = manager != 0u ? mem_read32(cpu, manager + 4u) : 0u;
++    if (manager == 0u || depth == 0u || depth > 32u)
++        return -2;
++    return (int32_t)mem_read32(cpu, manager + 8u + (depth - 1u) * 4u);
++}
++
++static int32_t scene_game_state(CPUState* cpu) {
++    const u32 game = mem_read32(cpu, GAME_OBJ_GAME_POINTER);
++    return game != 0u ? (int32_t)mem_read32(cpu, game + 0x24u) : -1;
++}
++
++static void scene_emit(CPUState* cpu, const char* event, const char* function,
++                       int32_t requested) {
++    scene_trace_init();
++    g_scene_snapshot.event_sequence++;
++    g_scene_snapshot.requested_scene = requested;
++    g_scene_snapshot.current_scene = scene_current(cpu);
++    g_scene_snapshot.game_state = scene_game_state(cpu);
++    if (g_scene_trace)
++        fprintf(stderr, "[scene] seq=%llu event=%s scene=%d function=%s "
++                        "rel_frame=%llu game_state=%d\n",
++                (unsigned long long)g_scene_snapshot.event_sequence, event,
++                g_scene_snapshot.current_scene, function,
++                (unsigned long long)g_scene_snapshot.relative_fixed_updates,
++                g_scene_snapshot.game_state);
++}
++
++static void notify_scene_push(CPUState* cpu) {
++    scene_emit(cpu, "push", "Push__20BaseGameSceneManagerF9SceneList14ScreenMovementb",
++               (int32_t)cpu->gpr[4]);
++}
++
++static void notify_scene_pop(CPUState* cpu) {
++    scene_emit(cpu, "pop", "Pop__20BaseGameSceneManagerFv", -2);
++}
++
++static void notify_scene_push_loading(CPUState* cpu) {
++    scene_emit(cpu, "push-loading", "PushLoadingScene__20BaseGameSceneManagerFb", 43);
++}
++
++static void notify_scene_hud_created(CPUState* cpu) {
++    g_scene_snapshot.marker_flags |= HLE_SCENE_MARKER_HUD_CREATED |
++                                     HLE_SCENE_MARKER_MATCH_ZERO;
++    g_scene_snapshot.relative_fixed_updates = 0u;
++    scene_emit(cpu, "match-zero", "SceneCreated__10HUDOverlayFv", 67);
++}
++
++static void notify_scene_fixed_update(CPUState* cpu) {
++    g_scene_snapshot.relative_fixed_updates++;
++    if ((g_scene_snapshot.marker_flags & HLE_SCENE_MARKER_MATCH_ZERO) == 0u) {
++        g_scene_snapshot.current_scene = scene_current(cpu);
++        g_scene_snapshot.game_state = scene_game_state(cpu);
++        return;
++    }
++    const u64 frame = g_scene_snapshot.relative_fixed_updates;
++    if (frame == 1u || frame == 60u || frame == 300u || frame == 600u) {
++        scene_emit(cpu, "fixed-update", "Run__15FixedUpdateTaskFf", -2);
++    } else {
++        g_scene_snapshot.current_scene = scene_current(cpu);
++        g_scene_snapshot.game_state = scene_game_state(cpu);
++    }
++}
++
++bool hle_scene_snapshot(HleSceneSnapshot* out) {
++    if (out == NULL)
++        return false;
++    *out = g_scene_snapshot;
++    return true;
++}
++
+ static const HleAddrEntry kPhysicsNotify[] = {
+-    { 0x80009E00u, notify_cBallUpdateOrientation, "cBall::UpdateOrientation" },
+-    { 0x8000B828u, notify_cBallPostPhysicsUpdate, "cBall::PostPhysicsUpdate" },
+-    { 0x80132B10u, notify_PhysicsUpdate,       "PhysicsUpdate" },
+-    { 0x801343C8u, notify_PhysicsAIBallPostUpdate, "PhysicsAIBall::PostUpdate" },
+-    { 0x8020199Cu, notify_PhysicsWorldUpdate,  "PhysicsWorld::Update" },
+-    { 0x80201A8Cu, notify_PhysicsWorldPreUpdate, "PhysicsWorld::PreUpdate" },
+-    { 0x80220894u, notify_dWorldQuickStep,   "dWorldQuickStep" },
+-    { 0x802214E8u, notify_dBodySetForce,     "dBodySetForce" },
+-    { 0x80221530u, notify_dBodyAddForce,     "dBodyAddForce" },
+-    { 0x8022160Cu, notify_dBodySetAngularVel, "dBodySetAngularVel" },
+-    { 0x8022161Cu, notify_dBodySetLinearVel, "dBodySetLinearVel" },
+-    { 0x8022162Cu, notify_dBodySetRotation,  "dBodySetRotation" },
+-    { 0x802216B4u, notify_dBodySetPosition,  "dBodySetPosition" },
+-    { 0x80222DC0u, notify_SorLcp,             "SOR_LCP" },
+-    { 0x80222994u, notify_SorLcpReturn,       "SOR_LCP return" },
+-    { 0x80223F30u, notify_dxStepBody,        "dxStepBody" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_0, notify_cBallUpdateOrientation, "cBall::UpdateOrientation" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_1, notify_cBallPostPhysicsUpdate, "cBall::PostPhysicsUpdate" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_2, notify_PhysicsUpdate,       "PhysicsUpdate" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_3, notify_PhysicsAIBallPostUpdate, "PhysicsAIBall::PostUpdate" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_4, notify_PhysicsWorldUpdate,  "PhysicsWorld::Update" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_5, notify_PhysicsWorldPreUpdate, "PhysicsWorld::PreUpdate" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_6, notify_dWorldQuickStep,   "dWorldQuickStep" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_7, notify_dBodySetForce,     "dBodySetForce" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_8, notify_dBodyAddForce,     "dBodyAddForce" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_9, notify_dBodySetAngularVel, "dBodySetAngularVel" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_10, notify_dBodySetLinearVel, "dBodySetLinearVel" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_11, notify_dBodySetRotation,  "dBodySetRotation" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_12, notify_dBodySetPosition,  "dBodySetPosition" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_13, notify_SorLcp,             "SOR_LCP" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_14, notify_SorLcpReturn,       "SOR_LCP return" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_15, notify_dxStepBody,        "dxStepBody" },
+ #ifdef STRIKERSRECOMP_AURORA
+-    { 0x8011DF10u, notify_DrawableBallRender, "DrawableBall::Render" },
++    { GAME_FN_HLE_KPHYSICSNOTIFY_16, notify_DrawableBallRender, "DrawableBall::Render" },
+ #endif
+ };
+ 
+ static const HleAddrEntry kNotify[] = {
+-    { 0x80259990u, notify_OSSleepThread,  "OSSleepThread" },
+-    { 0x802442FCu, notify_DSPSendMailToDSP, "DSPSendMailToDSP" },
++    { GAME_FN_SCENE_PUSH, notify_scene_push, "BaseGameSceneManager::Push" },
++    { GAME_FN_SCENE_POP, notify_scene_pop, "BaseGameSceneManager::Pop" },
++    { GAME_FN_SCENE_PUSH_LOADING, notify_scene_push_loading,
++      "BaseGameSceneManager::PushLoadingScene" },
++    { GAME_FN_HUD_SCENE_CREATED, notify_scene_hud_created,
++      "HUDOverlay::SceneCreated" },
++    { GAME_FN_FIXED_UPDATE_RUN, notify_scene_fixed_update,
++      "FixedUpdateTask::Run" },
++    { GAME_FN_HLE_KTRACE_11, notify_OSSleepThread,  "OSSleepThread" },
++    { GAME_FN_HLE_KNOTIFY_1, notify_DSPSendMailToDSP, "DSPSendMailToDSP" },
+     // B2.1: full certificate-demanded MusyX API surface (notify-only counters).
+-    { 0x8027DF14u, notify_audio_api, "sndInit" },
+-    { 0x8027E04Cu, notify_audio_api, "sndQuit" },
+-    { 0x8027E080u, notify_audio_api, "sndIsInstalled" },
+-    { 0x80281AB0u, notify_audio_api, "sndSetHooks" },
+-    { 0x80268A08u, notify_audio_api, "sndFXStartParaInfo" },
+-    { 0x802689C8u, notify_audio_api, "sndFXKeyOff" },
+-    { 0x80268B34u, notify_audio_api, "sndFXCheck" },
+-    { 0x80268908u, notify_audio_api, "sndFXCtrl" },
+-    { 0x80268968u, notify_audio_api, "sndFXCtrl14" },
+-    { 0x80268BB4u, notify_audio_api, "sndFXAssignVolGroup2FXId" },
+-    { 0x80268C3Cu, notify_audio_api, "sndVolume" },
+-    { 0x80268B80u, notify_audio_api, "sndSilence" },
+-    { 0x80268C9Cu, notify_audio_api, "sndOutputMode" },
+-    { 0x80268D88u, notify_audio_api, "sndSetAuxProcessingCallbacks" },
+-    { 0x8026C518u, notify_audio_api, "sndStreamActivate" },
+-    { 0x8026CB70u, notify_audio_api, "sndStreamDeactivate" },
+-    { 0x8026A160u, notify_audio_api, "sndStreamAllocEx" },
+-    { 0x8026BE44u, notify_audio_api, "sndStreamFree" },
+-    { 0x8026AD40u, notify_audio_api, "sndStreamMixParameterEx" },
+-    { 0x80269B14u, notify_audio_api, "sndStreamARAMUpdate" },
+-    { 0x8026B910u, notify_audio_api, "sndStreamLPFParameter" },
+-    { 0x8026A644u, notify_audio_api, "sndStreamADPCMParameter" },
+-    { 0x8026B2A8u, notify_audio_api, "sndStreamFrq" },
+-    { 0x80277274u, notify_audio_api, "sndPushGroup" },
+-    { 0x802775C0u, notify_audio_api, "sndPopGroup" },
+-    { 0x80277BA4u, notify_audio_api, "sndSeqPlayEx" },
+-    { 0x80277990u, notify_audio_api, "sndStackSetCurrent" },
+-    { 0x80277910u, notify_audio_api, "sndStackGetSize" },
+-    { 0x80277918u, notify_audio_api, "sndStackAdd" },
+-    { 0x802779C4u, notify_audio_api, "sndStackGetARAMAddressRange" },
+-    { 0x80277A04u, notify_audio_api, "sndStackGetAvailableSampleMemory" },
+-    { 0x80277254u, notify_audio_api, "sndSetSampleDataUploadCallback" },
+-    { 0x8027C644u, notify_audio_api, "sndAddEmitter2StudioPara" },
+-    { 0x8027C0A4u, notify_audio_api, "sndUpdateEmitter" },
+-    { 0x8027C6A0u, notify_audio_api, "sndRemoveEmitter" },
+-    { 0x8027C17Cu, notify_audio_api, "sndCheckEmitter" },
+-    { 0x8027C748u, notify_audio_api, "sndEmitterVoiceID" },
+-    { 0x8027CACCu, notify_audio_api, "sndAddListenerEx" },
+-    { 0x8027C958u, notify_audio_api, "sndUpdateListener" },
+-    { 0x8027CCECu, notify_audio_api, "sndRemoveListener" },
+-    { 0x80275D00u, notify_audio_api, "sndPitchUpOne" },
+-    { 0x80275D3Cu, notify_audio_api, "sndGetPitch" },
+-    { 0x80280774u, notify_audio_api, "sndSin" },
+-    { 0x80282F98u, notify_audio_api, "sndAuxCallbackPrepareReverbSTD" },
+-    { 0x80282F44u, notify_audio_api, "sndAuxCallbackUpdateSettingsReverbSTD" },
+-    { 0x80282FD4u, notify_audio_api, "sndAuxCallbackShutdownReverbSTD" },
+-    { 0x80283B50u, notify_audio_api, "sndAuxCallbackPrepareReverbHI" },
+-    { 0x80283AF8u, notify_audio_api, "sndAuxCallbackUpdateSettingsReverbHI" },
+-    { 0x80283B90u, notify_audio_api, "sndAuxCallbackShutdownReverbHI" },
+-    { 0x80284E38u, notify_audio_api, "sndAuxCallbackPrepareDelay" },
+-    { 0x80284C68u, notify_audio_api, "sndAuxCallbackUpdateSettingsDelay" },
+-    { 0x80284E60u, notify_audio_api, "sndAuxCallbackShutdownDelay" },
+-    { 0x80285584u, notify_audio_api, "sndAuxCallbackPrepareChorus" },
+-    { 0x802854ECu, notify_audio_api, "sndAuxCallbackUpdateSettingsChorus" },
+-    { 0x80285784u, notify_audio_api, "sndAuxCallbackShutdownChorus" },
+-    { 0x80257994u, notify_OSResetSystem,    "OSResetSystem" },
+-    { 0x801D2908u, notify_SetNextState,     "nlTaskManager::SetNextState" },
+-    { 0x801D2B28u, notify_TaskManagerStartup, "nlTaskManager::Startup" },
+-    { 0x800A9A5Cu, notify_SHMainMenuUpdate, "SHMainMenu::Update" },
+-    { 0x800C3C64u, notify_IChooseSideCheckControllers, "IChooseSide::CheckControllers" },
+-    { 0x800C36E8u, notify_IChooseSidePositionController, "IChooseSide::PositionController" },
+-    { 0x801CB7F8u, notify_MoviePlay,        "MoviePlay" },
+-    { 0x801CB8E0u, notify_MovieStop,        "MovieStop" },
+-    { 0x801CBA48u, notify_MovieStart,       "MovieStart" },
+-    { 0x801CC5E8u, notify_THPSimpleDecode,  "THPSimpleDecode" },
+-    { 0x801CB868u, notify_THPSimpleDecodeReturn, "THPSimpleDecode return" },
+-    { 0x801CC6C4u, notify_THPVideoDecodeReturn, "THPVideoDecode return" },
+-    { 0x801CC7F0u, notify_THPVideoDecodeReturn, "THPVideoDecode return" },
+-    { 0x801CCB00u, notify_THPSimplePreLoad, "THPSimplePreLoad" },
+-    { 0x801CCDD0u, notify_THPSimpleSetBuffer, "THPSimpleSetBuffer" },
+-    { 0x801CD2C8u, notify_THPSimpleOpen,    "THPSimpleOpen" },
+-    { 0x802857ACu, notify_THPVideoDecode,   "THPVideoDecode" },
+-    { 0x80254BF4u, notify_LCEnable,          "LCEnable" },
+-    { 0x80254C2Cu, notify_LCDisable,         "LCDisable" },
+-    { 0x80255360u, notify_OSLoadContext,     "OSLoadContext" },
++    { GAME_FN_HLE_KNOTIFY_2, notify_audio_api, "sndInit" },
++    { GAME_FN_HLE_KNOTIFY_3, notify_audio_api, "sndQuit" },
++    { GAME_FN_HLE_KNOTIFY_4, notify_audio_api, "sndIsInstalled" },
++    { GAME_FN_HLE_KNOTIFY_5, notify_audio_api, "sndSetHooks" },
++    { GAME_FN_HLE_KNOTIFY_6, notify_audio_api, "sndFXStartParaInfo" },
++    { GAME_FN_HLE_KNOTIFY_7, notify_audio_api, "sndFXKeyOff" },
++    { GAME_FN_HLE_KNOTIFY_8, notify_audio_api, "sndFXCheck" },
++    { GAME_FN_HLE_KNOTIFY_9, notify_audio_api, "sndFXCtrl" },
++    { GAME_FN_HLE_KNOTIFY_10, notify_audio_api, "sndFXCtrl14" },
++    { GAME_FN_HLE_KNOTIFY_11, notify_audio_api, "sndFXAssignVolGroup2FXId" },
++    { GAME_FN_HLE_KNOTIFY_12, notify_audio_api, "sndVolume" },
++    { GAME_FN_HLE_KNOTIFY_13, notify_audio_api, "sndSilence" },
++    { GAME_FN_HLE_KNOTIFY_14, notify_audio_api, "sndOutputMode" },
++    { GAME_FN_HLE_KNOTIFY_15, notify_audio_api, "sndSetAuxProcessingCallbacks" },
++    { GAME_FN_HLE_KNOTIFY_16, notify_audio_api, "sndStreamActivate" },
++    { GAME_FN_HLE_KNOTIFY_17, notify_audio_api, "sndStreamDeactivate" },
++    { GAME_FN_HLE_KNOTIFY_18, notify_audio_api, "sndStreamAllocEx" },
++    { GAME_FN_HLE_KNOTIFY_19, notify_audio_api, "sndStreamFree" },
++    { GAME_FN_HLE_KNOTIFY_20, notify_audio_api, "sndStreamMixParameterEx" },
++    { GAME_FN_HLE_KNOTIFY_21, notify_audio_api, "sndStreamARAMUpdate" },
++    { GAME_FN_HLE_KNOTIFY_22, notify_audio_api, "sndStreamLPFParameter" },
++    { GAME_FN_HLE_KNOTIFY_23, notify_audio_api, "sndStreamADPCMParameter" },
++    { GAME_FN_HLE_KNOTIFY_24, notify_audio_api, "sndStreamFrq" },
++    { GAME_FN_HLE_KNOTIFY_25, notify_audio_api, "sndPushGroup" },
++    { GAME_FN_HLE_KNOTIFY_26, notify_audio_api, "sndPopGroup" },
++    { GAME_FN_HLE_KNOTIFY_27, notify_audio_api, "sndSeqPlayEx" },
++    { GAME_FN_HLE_KNOTIFY_28, notify_audio_api, "sndStackSetCurrent" },
++    { GAME_FN_HLE_KNOTIFY_29, notify_audio_api, "sndStackGetSize" },
++    { GAME_FN_HLE_KNOTIFY_30, notify_audio_api, "sndStackAdd" },
++    { GAME_FN_HLE_KNOTIFY_31, notify_audio_api, "sndStackGetARAMAddressRange" },
++    { GAME_FN_HLE_KNOTIFY_32, notify_audio_api, "sndStackGetAvailableSampleMemory" },
++    { GAME_FN_HLE_KNOTIFY_33, notify_audio_api, "sndSetSampleDataUploadCallback" },
++    { GAME_FN_HLE_KNOTIFY_34, notify_audio_api, "sndAddEmitter2StudioPara" },
++    { GAME_FN_HLE_KNOTIFY_35, notify_audio_api, "sndUpdateEmitter" },
++    { GAME_FN_HLE_KNOTIFY_36, notify_audio_api, "sndRemoveEmitter" },
++    { GAME_FN_HLE_KNOTIFY_37, notify_audio_api, "sndCheckEmitter" },
++    { GAME_FN_HLE_KNOTIFY_38, notify_audio_api, "sndEmitterVoiceID" },
++    { GAME_FN_HLE_KNOTIFY_39, notify_audio_api, "sndAddListenerEx" },
++    { GAME_FN_HLE_KNOTIFY_40, notify_audio_api, "sndUpdateListener" },
++    { GAME_FN_HLE_KNOTIFY_41, notify_audio_api, "sndRemoveListener" },
++    { GAME_FN_HLE_KNOTIFY_42, notify_audio_api, "sndPitchUpOne" },
++    { GAME_FN_HLE_KNOTIFY_43, notify_audio_api, "sndGetPitch" },
++    { GAME_FN_HLE_KNOTIFY_44, notify_audio_api, "sndSin" },
++    { GAME_FN_HLE_KNOTIFY_45, notify_audio_api, "sndAuxCallbackPrepareReverbSTD" },
++    { GAME_FN_HLE_KNOTIFY_46, notify_audio_api, "sndAuxCallbackUpdateSettingsReverbSTD" },
++    { GAME_FN_HLE_KNOTIFY_47, notify_audio_api, "sndAuxCallbackShutdownReverbSTD" },
++    { GAME_FN_HLE_KNOTIFY_48, notify_audio_api, "sndAuxCallbackPrepareReverbHI" },
++    { GAME_FN_HLE_KNOTIFY_49, notify_audio_api, "sndAuxCallbackUpdateSettingsReverbHI" },
++    { GAME_FN_HLE_KNOTIFY_50, notify_audio_api, "sndAuxCallbackShutdownReverbHI" },
++    { GAME_FN_HLE_KNOTIFY_51, notify_audio_api, "sndAuxCallbackPrepareDelay" },
++    { GAME_FN_HLE_KNOTIFY_52, notify_audio_api, "sndAuxCallbackUpdateSettingsDelay" },
++    { GAME_FN_HLE_KNOTIFY_53, notify_audio_api, "sndAuxCallbackShutdownDelay" },
++    { GAME_FN_HLE_KNOTIFY_54, notify_audio_api, "sndAuxCallbackPrepareChorus" },
++    { GAME_FN_HLE_KNOTIFY_55, notify_audio_api, "sndAuxCallbackUpdateSettingsChorus" },
++    { GAME_FN_HLE_KNOTIFY_56, notify_audio_api, "sndAuxCallbackShutdownChorus" },
++    { GAME_FN_HLE_KNOTIFY_57, notify_OSResetSystem,    "OSResetSystem" },
++    { GAME_FN_HLE_KNOTIFY_58, notify_SetNextState,     "nlTaskManager::SetNextState" },
++    { GAME_FN_HLE_KNOTIFY_59, notify_TaskManagerStartup, "nlTaskManager::Startup" },
++    { GAME_FN_HLE_KNOTIFY_60, notify_SHMainMenuUpdate, "SHMainMenu::Update" },
++    { GAME_FN_HLE_KNOTIFY_61, notify_IChooseSideCheckControllers, "IChooseSide::CheckControllers" },
++    { GAME_FN_HLE_KNOTIFY_62, notify_IChooseSidePositionController, "IChooseSide::PositionController" },
++    { GAME_FN_HLE_KNOTIFY_63, notify_MoviePlay,        "MoviePlay" },
++    { GAME_FN_HLE_KNOTIFY_64, notify_MovieStop,        "MovieStop" },
++    { GAME_FN_HLE_KNOTIFY_65, notify_MovieStart,       "MovieStart" },
++    { GAME_FN_HLE_KNOTIFY_66, notify_THPSimpleDecode,  "THPSimpleDecode" },
++    { GAME_FN_HLE_KNOTIFY_67, notify_THPSimpleDecodeReturn, "THPSimpleDecode return" },
++    { GAME_FN_HLE_KNOTIFY_68, notify_THPVideoDecodeReturn, "THPVideoDecode return" },
++    { GAME_FN_HLE_KNOTIFY_69, notify_THPVideoDecodeReturn, "THPVideoDecode return" },
++    { GAME_FN_HLE_KNOTIFY_70, notify_THPSimplePreLoad, "THPSimplePreLoad" },
++    { GAME_FN_HLE_KNOTIFY_71, notify_THPSimpleSetBuffer, "THPSimpleSetBuffer" },
++    { GAME_FN_HLE_KNOTIFY_72, notify_THPSimpleOpen,    "THPSimpleOpen" },
++    { GAME_FN_HLE_KNOTIFY_73, notify_THPVideoDecode,   "THPVideoDecode" },
++    { GAME_FN_HLE_KNOTIFY_74, notify_LCEnable,          "LCEnable" },
++    { GAME_FN_HLE_KNOTIFY_75, notify_LCDisable,         "LCDisable" },
++    { GAME_FN_HLE_KTRACE_7, notify_OSLoadContext,     "OSLoadContext" },
+ #ifdef STRIKERSRECOMP_AURORA
+-    { 0x8024E974u, notify_GXCopyDisp,      "GXCopyDisp" },
+-    { 0x8024EADCu, notify_GXCopyTex,       "GXCopyTex" },
+-    { 0x8024F89Cu, notify_GXLoadTexObj,    "GXLoadTexObj" },
+-    { 0x8024F928u, notify_GXLoadTlut,      "GXLoadTlut" },
+-    { 0x8025186Cu, notify_GXLoadPosMtxImm, "GXLoadPosMtxImm" },
+-    { 0x8025DF30u, notify_VIWaitForRetrace,"VIWaitForRetrace" },
+-    { 0x8025E3F8u, notify_VIConfigure,     "VIConfigure" },
+-    { 0x8025EC00u, notify_VIFlush,         "VIFlush" },
+-    { 0x8025ED30u, notify_VISetNextFrameBuffer, "VISetNextFrameBuffer" },
+-    { 0x801BFAACu, notify_glxSwapSetBlack, "glxSwapSetBlack" },
+-    { 0x8025ED9Cu, notify_VISetBlack,      "VISetBlack" },
++    { GAME_FN_HLE_KNOTIFY_77, notify_GXCopyDisp,      "GXCopyDisp" },
++    { GAME_FN_HLE_KNOTIFY_78, notify_GXCopyTex,       "GXCopyTex" },
++    { GAME_FN_HLE_KNOTIFY_79, notify_GXLoadTexObj,    "GXLoadTexObj" },
++    { GAME_FN_HLE_KNOTIFY_80, notify_GXLoadTlut,      "GXLoadTlut" },
++    { GAME_FN_HLE_KNOTIFY_81, notify_GXLoadPosMtxImm, "GXLoadPosMtxImm" },
++    { GAME_FN_HLE_KTRACE_4, notify_VIWaitForRetrace,"VIWaitForRetrace" },
++    { GAME_FN_HLE_KTRACE_5, notify_VIConfigure,     "VIConfigure" },
++    { GAME_FN_HLE_KNOTIFY_84, notify_VIFlush,         "VIFlush" },
++    { GAME_FN_HLE_KTRACE_6, notify_VISetNextFrameBuffer, "VISetNextFrameBuffer" },
++    { GAME_FN_HLE_KNOTIFY_86, notify_glxSwapSetBlack, "glxSwapSetBlack" },
++    { GAME_FN_HLE_KNOTIFY_87, notify_VISetBlack,      "VISetBlack" },
+ #endif
+ };
+ 
+@@ -4061,6 +4525,7 @@ void hle_install(CPUState* cpu) {
+     memset(g_array_address, 0, sizeof g_array_address);
+     memset(g_array_stride, 0, sizeof g_array_stride);
+     g_gx_begin_count = 0;
++    g_replay_packet_diag_count = 0;
+     g_gx_array_count = 0;
+     g_frame_array_bytes = 0;
+     g_frame_array_calls = 0;
 diff --git a/runtime/host/hle.h b/runtime/host/hle.h
-index 16fa5f5..32a7b7a 100644
+index 16fa5f5..75ea04a 100644
 --- a/runtime/host/hle.h
 +++ b/runtime/host/hle.h
 @@ -2,6 +2,8 @@
@@ -412,10 +1271,22 @@ index 16fa5f5..32a7b7a 100644
  
  // High-level-emulation intercept point.
  //
-@@ -27,4 +29,12 @@ void hle_card_close(void);
+@@ -27,4 +29,24 @@ void hle_card_close(void);
  // recursively running it inside the intercepted CARD call.
  bool hle_poll_callback(CPUState* cpu);
  
++typedef struct HleSceneSnapshot {
++    uint64_t event_sequence;
++    int32_t requested_scene;
++    int32_t current_scene;
++    uint32_t marker_flags;
++    uint64_t relative_fixed_updates;
++    int32_t game_state;
++} HleSceneSnapshot;
++
++/* Read-only scene observations. The host owns automation policy. */
++bool hle_scene_snapshot(HleSceneSnapshot* out);
++
 +// QuickBoot diagnostic state for Aurora's guest-addressed GX metadata. This
 +// deliberately excludes native renderer/WGPU objects: it records only values
 +// that can be resolved again against restored guest RAM and re-emitted to a
@@ -634,7 +1505,7 @@ index e1b353b..b084eb2 100644
 +
  #endif // STRIKERSRECOMP_HOST_INTERRUPT_H
 diff --git a/runtime/host/main.c b/runtime/host/main.c
-index 041328a..5aa14e4 100644
+index 041328a..340ef3d 100644
 --- a/runtime/host/main.c
 +++ b/runtime/host/main.c
 @@ -6,6 +6,8 @@
@@ -646,6 +1517,96 @@ index 041328a..5aa14e4 100644
  #include "generated.h"
  
  #include "gxruntime/aurora_backend.h"
+@@ -19,6 +21,7 @@
+ #include "host/mmio.h"
+ #include "host/hle.h"
+ #include "host/interrupt.h"
++#include "host/game_map.h"
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -101,7 +104,12 @@ static void dump_backchain(CPUState* cpu) {
+         u32 caller = mem_read32(cpu, sp);
+         if (caller <= sp || caller < GC_RAM_BASE) break;
+         u32 ret = mem_read32(cpu, caller + 4u);
+-        fprintf(stderr, "    #%-2d sp=0x%08X ret=0x%08X\n", f, sp, ret);
++        u32 offset = 0;
++        const GameSymbol* symbol = game_symbol_containing(ret, &offset);
++        fprintf(stderr, "    #%-2d sp=0x%08X ret=0x%08X", f, sp, ret);
++        if (symbol != NULL)
++            fprintf(stderr, " %s+0x%X", symbol->name, offset);
++        fputc('\n', stderr);
+         sp = caller;
+     }
+ }
+@@ -115,6 +123,15 @@ static const char* exception_name(u32 exc) {
+     return "none";
+ }
+ 
++static void log_pc_symbol(const char* prefix, u32 pc) {
++    u32 offset = 0;
++    const GameSymbol* symbol = game_symbol_containing(pc, &offset);
++    if (symbol != NULL)
++        fprintf(stderr, "%s0x%08X (%s+0x%X)", prefix, pc, symbol->name, offset);
++    else
++        fprintf(stderr, "%s0x%08X (decomp function unavailable)", prefix, pc);
++}
++
+ static float guest_float(CPUState* cpu, u32 address) {
+     union {
+         u32 bits;
+@@ -603,9 +620,10 @@ int main(int argc, char** argv) {
+         }
+         if (g_pcdump_request) {
+             g_pcdump_request = 0;
+-            fprintf(stderr, "[pcdump] pc=0x%08X lr=0x%08X r1=0x%08X msr=0x%08X "
+-                            "blocks=%llu\n  recent:",
+-                    cpu.pc, cpu.lr, cpu.gpr[1], cpu.msr, blocks);
++            fprintf(stderr, "[pcdump] ");
++            log_pc_symbol("pc=", cpu.pc);
++            fprintf(stderr, " lr=0x%08X r1=0x%08X msr=0x%08X blocks=%llu\n  recent:",
++                    cpu.lr, cpu.gpr[1], cpu.msr, blocks);
+             for (unsigned k = 0; k < PC_HIST; ++k)
+                 fprintf(stderr, " 0x%08X",
+                         pc_hist[(pc_hist_i + k) % PC_HIST]);
+@@ -627,9 +645,11 @@ int main(int argc, char** argv) {
+                 gap_report_note("hle", "dispatch-miss", key, last_pc,
+                                 "guest pc has no recompiled block and no HLE handler");
+             }
+-            fprintf(stderr, "[run] left recompiled code: pc=0x%08X reached from "
+-                            "block 0x%08X (lr=0x%08X)\n",
+-                    cpu.pc, last_pc, cpu.lr);
++            fprintf(stderr, "[run] left recompiled code: ");
++            log_pc_symbol("pc=", cpu.pc);
++            fprintf(stderr, " reached from ");
++            log_pc_symbol("block=", last_pc);
++            fprintf(stderr, " (lr=0x%08X)\n", cpu.lr);
+             fprintf(stderr, "[run] recent block entry PCs (oldest first):\n   ");
+             for (unsigned k = 0; k < PC_HIST; k++)
+                 fprintf(stderr, " 0x%08X", pc_hist[(pc_hist_i + k) % PC_HIST]);
+@@ -654,8 +674,9 @@ int main(int argc, char** argv) {
+         }
+         blocks++;
+         if (trace_every && (blocks % trace_every) == 0)
+-            fprintf(stderr, "[trace] block %llu pc=0x%08X lr=0x%08X r1=0x%08X\n",
+-                    blocks, cpu.pc, cpu.lr, cpu.gpr[1]);
++            fprintf(stderr, "[trace] block %llu ", blocks);
++            log_pc_symbol("pc=", cpu.pc);
++            fprintf(stderr, " lr=0x%08X r1=0x%08X\n", cpu.lr, cpu.gpr[1]);
+     }
+ 
+     if (getenv("STRIKERS_PC_HIST")) {
+@@ -702,7 +723,9 @@ int main(int argc, char** argv) {
+     if (getenv("STRIKERS_DUMP_GAME_STATE"))
+         dump_game_state(&cpu);
+ 
+-    printf("[run] stopped: %s\n", stop_reason);
++    printf("[run] stopped: %s ", stop_reason);
++    log_pc_symbol("pc=", cpu.pc);
++    printf("\n");
+     printf("[run] blocks executed : %llu\n", blocks);
+     printf("[run] final pc         : 0x%08X\n", cpu.pc);
+     printf("[run] link register    : 0x%08X\n", cpu.lr);
 diff --git a/runtime/host/mmio.c b/runtime/host/mmio.c
 index adce0b3..ef66a76 100644
 --- a/runtime/host/mmio.c
@@ -722,3 +1683,222 @@ index e69aac3..b6763b3 100644
 +void mmio_restore_state(const void* src);
 +
  #endif /* MELEERECOMP_MMIO_H */
+diff --git a/tools/symbols.py b/tools/symbols.py
+index ae68291..86f6d3a 100644
+--- a/tools/symbols.py
++++ b/tools/symbols.py
+@@ -24,9 +24,35 @@ Usage:
+                              [--out generated/sdk_symbols.inc]
+ """
+ import argparse
++import hashlib
++import json
+ import os
+ import re
+ import sys
++from dataclasses import dataclass
++
++PINNED_DECOMP_COMMIT = "c0bf2ed65f6220e69a8db1f8f115c867737f315f"
++
++
++class ContractError(ValueError):
++    """The decomp input cannot satisfy Ballpad's exact source contract."""
++
++
++@dataclass(frozen=True)
++class SymbolRecord:
++    name: str
++    address: int
++    kind: str
++    size: int = 0
++    line: int = 0
++
++
++@dataclass(frozen=True)
++class SymbolMatch:
++    name: str
++    address: int
++    size: int
++    offset: int
+ 
+ # Identifier immediately preceding a '(' in a header: a function declaration or
+ # call. Restricted to leading uppercase so we skip lowercase helper macros.
+@@ -34,7 +60,129 @@ HEADER_FUNC_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]+)\s*\(")
+ 
+ # "Name = .section:0xADDR; // type:function size:0xNN scope:... align:..."
+ SYMBOL_RE = re.compile(
+-    r"^(\S+)\s*=\s*\.\w+:0x([0-9A-Fa-f]+);.*type:function", )
++    r"^(\S+)\s*=\s*([^:;]+):0x([0-9A-Fa-f]+);\s*//\s*type:(function|object)\b(?:\s+size:0x([0-9A-Fa-f]+))?.*$",
++)
++
++
++def parse_symbol_records(text, required_names=None):
++    """Parse every function/object symbol, retaining address-sorted records."""
++    records = []
++    by_name = {}
++    for line_no, raw in enumerate(text.splitlines(), 1):
++        line = raw.strip()
++        if not line:
++            continue
++        if "=" not in line:
++            continue
++        match = SYMBOL_RE.match(line)
++        if not match:
++            if "type:function" in line or "type:object" in line:
++                raise ContractError(f"malformed symbol line {line_no}: {raw}")
++            continue
++        name, _section, address, kind, size = match.groups()
++        record = SymbolRecord(name, int(address, 16), kind,
++                              int(size or "0", 16), line_no)
++        records.append(record)
++        by_name.setdefault(name, []).append(record)
++    for name in required_names or ():
++        matches = by_name.get(name, [])
++        if not matches:
++            raise ContractError(f"missing required symbol: {name}")
++        if len(matches) != 1:
++            raise ContractError(f"ambiguous required symbol: {name}")
++    return tuple(sorted(records, key=lambda record: (record.address, record.line)))
++
++
++def sdk_table_sha256(path):
++    with open(path, "rb") as source:
++        return hashlib.sha256(source.read()).hexdigest()
++
++
++def unique_symbol_address(records, name, kind=None):
++    matches = [r for r in records if r.name == name and (kind is None or r.kind == kind)]
++    if len(matches) != 1:
++        state = "missing" if not matches else "ambiguous"
++        raise ValueError(f"{state} symbol: {name}")
++    return matches[0].address
++
++
++def containing_function(records, address):
++    for record in reversed(records):
++        if record.kind == "function" and record.address <= address < record.address + record.size:
++            return SymbolMatch(record.name, record.address, record.size,
++                                address - record.address)
++        if record.address <= address:
++            break
++    return None
++
++
++def _json_bytes(value):
++    return json.dumps(value, indent=2, sort_keys=True) + "\n"
++
++
++def build_game_artifacts(records, allowlist, out_dir, commit, dol_sha1, sdk_sha256):
++    """Write deterministic full-map, constants, and provenance artifacts."""
++    out = os.fspath(out_dir)
++    os.makedirs(out, exist_ok=True)
++    records = tuple(sorted(records, key=lambda r: (r.address, r.line, r.name)))
++    lines = ["// Auto-generated by tools/symbols.py -- do not edit.\n"]
++    lines += [f'    {{ 0x{r.address:08X}u, 0x{r.size:X}u, "{r.name}" }},\n' for r in records]
++    with open(os.path.join(out, "game_symbols.inc"), "w") as f:
++        f.writelines(lines)
++    constants = ["// Auto-generated Ballpad decomp constants.\n", "#ifndef BALLPAD_GAME_ADDRESSES_H\n#define BALLPAD_GAME_ADDRESSES_H\n"]
++    resolved = {}
++    for stable, spec in sorted(allowlist.items()):
++        address = unique_symbol_address(records, spec["name"], spec["kind"]) + int(spec.get("offset", 0))
++        resolved[stable] = {**spec, "address": address}
++        constants.append(f"#define {stable} 0x{address:08X}u\n")
++    constants.append("#endif\n")
++    with open(os.path.join(out, "game_addresses.h"), "w") as f:
++        f.writelines(constants)
++    metadata = {
++        "commit": commit, "dol_sha1": dol_sha1, "sdk_sha256": sdk_sha256,
++        "function_records": sum(r.kind == "function" for r in records),
++        "object_records": sum(r.kind == "object" for r in records),
++        "records": len(records), "unique_names": len({r.name for r in records}),
++        "constants": resolved,
++    }
++    with open(os.path.join(out, "decomp_contract.json"), "w") as f:
++        f.write(_json_bytes(metadata))
++    with open(os.path.join(out, "decomp_contract.inc"), "w") as f:
++        f.write("// Auto-generated decomp provenance.\n")
++        f.write(f'#define BALLPAD_DECOMP_COMMIT "{commit}"\n')
++        f.write(f'#define BALLPAD_DECOMP_DOL_SHA1 "{dol_sha1}"\n')
++        f.write(f'#define BALLPAD_DECOMP_SDK_SHA256 "{sdk_sha256}"\n')
++    return metadata
++
++
++def verify_decomp_contract(decomp_dir, dol_path, expected_commit,
++                           expected_dol_sha1, sdk_path,
++                           expected_sdk_sha256, required_names=()):
++    """Fail closed on the immutable DOL, pin, config hash, symbols, and SDK."""
++    decomp_dir = os.fspath(decomp_dir)
++    cfg = os.path.join(decomp_dir, "config", "G4QE01", "config.yml")
++    symbols = os.path.join(decomp_dir, "config", "G4QE01", "symbols.txt")
++    if expected_commit != PINNED_DECOMP_COMMIT:
++        raise ContractError(f"decomp commit mismatch: {expected_commit}")
++    if not os.path.isfile(cfg) or not os.path.isfile(symbols):
++        raise ContractError("missing decomp contract files")
++    with open(cfg, errors="replace") as source:
++        config_text = source.read()
++    configured = re.search(r"^hash:\s*([0-9a-f]{40})\s*$",
++                           config_text, re.MULTILINE)
++    if not configured or configured.group(1) != expected_dol_sha1:
++        raise ContractError("DOL SHA-1 does not match decomp config")
++    with open(dol_path, "rb") as source:
++        actual_dol = hashlib.sha1(source.read()).hexdigest()
++    if actual_dol != expected_dol_sha1:
++        raise ContractError(f"DOL SHA-1 mismatch: {actual_dol}")
++    with open(symbols, errors="replace") as source:
++        parse_symbol_records(source.read(), required_names)
++    actual_sdk = sdk_table_sha256(sdk_path)
++    if actual_sdk != expected_sdk_sha256:
++        raise ContractError(f"SDK table SHA-256 mismatch: {actual_sdk}")
++    return {"commit": expected_commit, "dol_sha1": actual_dol,
++            "sdk_sha256": actual_sdk}
+ 
+ 
+ def aurora_sdk_names(aurora_dir):
+@@ -62,10 +210,12 @@ def decomp_functions(decomp_dir):
+                  "(https://github.com/yannicksuter/smstrikers-decomp)")
+     funcs = {}
+     with open(path, errors="replace") as f:
+-        for line in f:
+-            m = SYMBOL_RE.match(line.strip())
+-            if m:
+-                funcs[m.group(1)] = int(m.group(2), 16)
++        for record in parse_symbol_records(f.read()):
++            if record.kind == "function":
++                # Preserve the historical SDK output: duplicate names resolve
++                # to the same final mapping behavior, while full records remain
++                # available to the C2 generator.
++                funcs[record.name] = record.address
+     return funcs
+ 
+ 
+@@ -76,6 +226,12 @@ def main():
+     ap.add_argument("--aurora",
+                     default=os.path.join(here, "..", "GXRuntime", "graphics", "aurora"))
+     ap.add_argument("--out", default=os.path.join(here, "generated", "sdk_symbols.inc"))
++    ap.add_argument("--game-out", help="directory for full game map/provenance artifacts")
++    ap.add_argument("--allowlist", default=os.path.join(here, "ballpad_symbols.json"))
++    ap.add_argument("--extra-allowlist")
++    ap.add_argument("--commit", default=PINNED_DECOMP_COMMIT)
++    ap.add_argument("--dol-sha1", default="")
++    ap.add_argument("--sdk-sha256", default="")
+     args = ap.parse_args()
+ 
+     sdk = aurora_sdk_names(args.aurora)
+@@ -95,6 +251,17 @@ def main():
+         for addr, name in matched:
+             out.write(f'    {{ 0x{addr:08X}u, "{name}" }},\n')
+ 
++    if args.game_out:
++        with open(os.path.join(args.decomp, "config", "G4QE01", "symbols.txt"), errors="replace") as source:
++            records = parse_symbol_records(source.read())
++        with open(args.allowlist, errors="replace") as allow:
++            allowlist = json.load(allow)
++        if args.extra_allowlist:
++            with open(args.extra_allowlist, errors="replace") as extra:
++                allowlist.update(json.load(extra))
++        build_game_artifacts(records, allowlist, args.game_out, args.commit,
++                             args.dol_sha1, args.sdk_sha256)
++
+     print(f"symbols.py: {len(funcs)} decomp functions, "
+           f"{len(sdk)} Aurora SDK names, {len(matched)} intercept candidates")
+     print(f"symbols.py: wrote {args.out}")

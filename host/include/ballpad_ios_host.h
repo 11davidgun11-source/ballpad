@@ -125,6 +125,9 @@ bool ballpad_ios_host_import_game(const char* iso_path);
  * guest cGame state (4 = in-match, -1 = no game). */
 unsigned long long ballpad_ios_host_guest_blocks(void);
 long long ballpad_ios_host_game_state(void);
+int ballpad_ios_host_scene_id(void);
+uint64_t ballpad_ios_host_scene_relative_fixed_updates(void);
+uint64_t ballpad_ios_host_scene_seen_mask(void);
 
 #ifdef __cplusplus
 }
