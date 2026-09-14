@@ -1,5 +1,13 @@
 # Ballpad
 
+> **Next implementation:** the owner selected the native
+> [new-coke/strikers](https://github.com/new-coke/strikers) port as the new engine
+> foundation. Use the [Bot 7 goal loop](docs/BOT7_NATIVE_STRIKERS_LOOP.md) and
+> [N0–N7 runbook](docs/33-native-strikers-implementation.md). This migration is
+> planned, not yet implemented; the build/status below describes the existing
+> static-recompilation implementation. Older Bot 6 execution pointers below
+> are historical for this migration.
+
 <p align="center">
   <strong>Super Mario Strikers on iPhone and iPad through static recompilation and Metal.</strong><br>
   Full GameCube touch controls, native controller support, local game import, and no bundled game data.

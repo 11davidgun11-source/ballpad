@@ -4,7 +4,22 @@ Living table of contents. Numbered for reading order.
 
 > **Path note:** On macOS case-insensitive volumes, `docs/` and `DOCS/` are the same directory.
 
-## Current planning authority (2026-08-19)
+## Current planning authority — native Strikers migration
+
+The owner selected the native source port as the next engine foundation. The
+following package supersedes older architecture restrictions and bot loops
+for this migration. Implementation is not yet complete.
+
+| Doc | Purpose |
+|---|---|
+| [BOT7_NATIVE_STRIKERS_LOOP.md](BOT7_NATIVE_STRIKERS_LOOP.md) | **Paste-ready implementation goal loop** |
+| [33-native-strikers-implementation.md](33-native-strikers-implementation.md) | **N0–N7 implementation authority and build contracts** |
+| [34-native-strikers-acceptance.md](34-native-strikers-acceptance.md) | **Simulator tests, performance gates and device limitations** |
+| [35-native-strikers-attribution.md](35-native-strikers-attribution.md) | **Credits, provenance, notices and asset audit** |
+| [36-native-strikers-progress.md](36-native-strikers-progress.md) | **Durable current state and evidence ledger** |
+| [research/strikers-ios-feasibility.md](research/strikers-ios-feasibility.md) | Source-reviewed feasibility assessment and references |
+
+## Historical planning authority (2026-08-19)
 
 | Doc | Title |
 |-----|-------|
@@ -23,10 +38,9 @@ Documents 00–22 are retained for research and history. In particular,
 [22-graphics-handoff-2026-08-10.md](22-graphics-handoff-2026-08-10.md) is a
 useful renderer handoff, but it is no longer the planning authority.
 
-Start with the root [`README.md`](../README.md) for setup and user-facing
-status, then read document 28 and the Bot 6 loop for current execution
-authority. Documents 27 and 26 supply existing graphics and QuickBoot evidence;
-document 24 remains the broader release audit.
+The root [`README.md`](../README.md) describes the existing legacy build until
+the migration is implemented. Start the new work with Bot 7 and documents
+33–36. Documents 24–32 supply historical graphics, QuickBoot and release evidence.
 
 ## Start here (Bot 2)
 1. [BOT2_LAUNCH_PROMPT.md](BOT2_LAUNCH_PROMPT.md) — **paste this into a new chat**
