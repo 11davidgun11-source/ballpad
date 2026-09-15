@@ -30,7 +30,12 @@ DEVICE=""
 FORM_FACTOR=""
 PROOF_DIR=""
 CONFIGURATION="Debug"
-BUDGET="1200"
+# The watchdog is here to catch a hang, not to decide the suite. Seven rows that each launch the
+# game, drive real touches and relaunch for a persistence read-back measured 1,145 s in run
+# f01f02-phone-r2 with two rows still to go, so a 1,200 s budget was terminating a suite that was
+# making progress -- and a SIGKILL leaves the result bundle unfinished, which reports every row as
+# missing. 2,400 s is roughly twice the longest measured run.
+BUDGET="2400"
 FORCE=0
 DO_BUILD=1
 ONLY=()
@@ -165,16 +170,25 @@ TEST_ROW_SPECS=(
     "S.uitest.render-scale-persistence=testRenderScaleSelectionPersistsAcrossRelaunch"
     "S.uitest.layout-move-reset-persistence=testMovedControlPersistsAndResetRestoresTheDefault"
     "S.uitest.lifecycle-surface=testBackgroundAndForegroundKeepTheOverlay"
+    "S.f01.import-through-files=testFreshInstallShowsImportScreenAndActivatesAPickedImage"
+    "S.f02.refusal-keeps-previous=testRefusedImportKeepsThePreviousInstallationUsable"
 )
 EXPECTED="S.run,S.provenance"
 for spec in "${TEST_ROW_SPECS[@]}"; do
     EXPECTED="${EXPECTED},${spec%%=*}"
 done
+# F01's "staged" and F02's "original image unchanged" are properties of the container after the
+# run, not of anything the app says about itself, so the reward is a row of its own below.
+EXPECTED="${EXPECTED},S.f01f02.store-bytes"
 
 # -- Own the device ----------------------------------------------------------
 sim_lock_acquire
 preflight "lock held; boot ${DEVICE}"
 xcrun simctl bootstatus "$DEVICE" -b || die "Simulator ${DEVICE} did not reach booted"
+# F01's row is "fresh install with no data", so the container starts empty rather than holding
+# whatever an earlier run left in the store. Uninstalling is what makes the absence of game data a
+# property of this run instead of an assumption about the machine.
+xcrun simctl uninstall "$DEVICE" "$IOS_BUNDLE_ID" >/dev/null 2>&1 || true
 preflight "install $(basename "$APP") from ${APP}"
 xcrun simctl install "$DEVICE" "$APP" || die "install of ${APP} failed"
 # The installed copy is what the suite actually drives, so its hash is recorded next to the
@@ -186,6 +200,65 @@ if [ -n "$INSTALLED_APP" ] && [ -f "${INSTALLED_APP}/$(basename "$APP" .app)" ];
 else
     preflight "installed binary could not be located in the container"
 fi
+
+# -- The files the picker is offered -----------------------------------------
+# F01 requires the disc to be *selected through Files*, and doc 34 says pre-seeding the sandbox
+# does not prove that. A Simulator's Files app has exactly one location to browse that this test
+# can fill: with UIFileSharingEnabled the app's own Documents folder is published as "On My iPhone
+# (or iPad) -> <display name>", so a copy of the disc goes there for the picker to offer. The
+# selection, the copy the picker hands back and the staging that follows are all the real ones.
+#
+# Everything here is the player's own game bytes, derived at run time into the gitignored build
+# tree and this container. None of it is downloaded, bundled or committed.
+UITEST_MEDIA="${BUILD_ROOT}/uitest-media"
+mkdir -p "$UITEST_MEDIA"
+FIXTURE_STAMP="${UITEST_MEDIA}/.source-sha256"
+if [ "$(cat "$FIXTURE_STAMP" 2>/dev/null)" != "$GAME_IMAGE_SHA256" ]; then
+    log "building the import fixtures from the current disc image"
+    rm -f "${UITEST_MEDIA}/uitest-valid.iso" "${UITEST_MEDIA}/uitest-truncated.iso" \
+          "${UITEST_MEDIA}/uitest-wronggame.iso"
+    # A copy-on-write clone where the volume supports one, so a 1.4 GB fixture costs no space.
+    cp -c "$GAME_IMAGE" "${UITEST_MEDIA}/uitest-valid.iso" 2>/dev/null \
+        || cp "$GAME_IMAGE" "${UITEST_MEDIA}/uitest-valid.iso"
+    python3 - "$GAME_IMAGE" "$UITEST_MEDIA" <<'PY'
+import os
+import sys
+
+source, out_dir = sys.argv[1], sys.argv[2]
+with open(source, "rb") as handle:
+    # The disc header plus the whole file table (0x330078 + 49651) fits well inside this.
+    head = handle.read(0x340000)
+
+# Truncated: the disc magic and the header are present, the file table is not. This is what a
+# part-downloaded image looks like, and the port refuses it in its own words.
+with open(os.path.join(out_dir, "uitest-truncated.iso"), "wb") as handle:
+    handle.write(head[:120000])
+
+# Wrong game: the same read, with the disc's own title changed. Every structure the port walks is
+# intact -- the magic, the file table, `common.ini` -- so this reaches the check that reads the
+# title, which is the one a player with another game's disc would hit.
+with open(os.path.join(out_dir, "uitest-wronggame.iso"), "wb") as handle:
+    handle.write(b"GKZ" + head[3:])
+PY
+    printf '%s\n' "$GAME_IMAGE_SHA256" > "$FIXTURE_STAMP"
+fi
+for fixture in uitest-valid.iso uitest-truncated.iso uitest-wronggame.iso; do
+    [ -f "${UITEST_MEDIA}/${fixture}" ] || die "the import fixture ${fixture} was not built"
+done
+
+CONTAINER="$(xcrun simctl get_app_container "$DEVICE" "$IOS_BUNDLE_ID" data 2>/dev/null || true)"
+[ -n "$CONTAINER" ] && [ -d "$CONTAINER" ] || die "no data container for ${IOS_BUNDLE_ID}; the install did not land"
+FILES_DIR="${CONTAINER}/Documents"
+mkdir -p "$FILES_DIR"
+for fixture in uitest-valid.iso uitest-truncated.iso uitest-wronggame.iso; do
+    cp -c "${UITEST_MEDIA}/${fixture}" "${FILES_DIR}/${fixture}" 2>/dev/null \
+        || cp "${UITEST_MEDIA}/${fixture}" "${FILES_DIR}/${fixture}"
+done
+preflight "files-visible fixtures in ${FILES_DIR}"
+for fixture in uitest-valid.iso uitest-truncated.iso uitest-wronggame.iso; do
+    preflight "fixture ${fixture} sha256 $(sha256_of "${FILES_DIR}/${fixture}")"
+done
+
 # A process left over from an earlier run would make the first launch observe somebody
 # else window, so both the app and the runner are stopped before the suite starts.
 xcrun simctl terminate "$DEVICE" "$IOS_BUNDLE_ID" >/dev/null 2>&1 || true
@@ -285,10 +358,43 @@ for spec in "${TEST_ROW_SPECS[@]}"; do
 done
 set +e
 python3 "$REPORT" --result-bundle "$XCRESULT" "${report_args[@]}" >> "$ROWS"
-if [ "$?" != "0" ]; then
+report_status=$?
+if [ "$report_status" != "0" ]; then
     warn "no test rows could be read from ${XCRESULT}; every required test row fails"
 fi
 set -e
+
+# A run the watchdog terminated leaves no readable result bundle -- xcresulttool answers "Info.plist
+# does not exist" -- so a suite that had already passed six rows would be reported as seven missing
+# rows. xcodebuild writes its own "Test Case ... passed/failed" line as each row finishes, and those
+# survive the kill, so they are the fallback: the same verdicts, with the log as the evidence. A row
+# the log does not mention still fails, so this cannot turn silence into a pass.
+if [ "$report_status" != "0" ] || [ ! -s "$ROWS" ]; then
+    log_new "$ROWS"
+    for spec in "${TEST_ROW_SPECS[@]}"; do
+        row_id="${spec%%=*}"
+        method="${spec#*=}"
+        # The method name is matched as a fixed string first: a regex built around a shell
+        # variable is one quoting mistake away from silently matching nothing, and matching
+        # nothing here would report a row that finished as a row that never ran.
+        row_lines="$(grep -E "^Test Case " "$LOG" | grep -F "${method}]" || true)"
+        verdict="$(printf "%s" "$row_lines" | grep -oE "\]' (passed|failed) \([0-9.]+ seconds\)" | tail -1 || true)"
+        if [ -z "$verdict" ]; then
+            printf "%s\tFAIL\tthe log holds no verdict for %s; the run ended before this row finished\t%s/uitest.log\n" \
+                "$row_id" "$method" "$(basename "$PROOF_DIR")" >> "$ROWS"
+        else
+            outcome="$(printf "%s" "$verdict" | grep -oE "passed|failed" | head -1)"
+            seconds="$(printf "%s" "$verdict" | grep -oE "\([0-9.]+ seconds\)" | head -1)"
+            if [ "$outcome" = "passed" ]; then
+                printf "%s\tPASS\t%s %s (read from the log; the terminated run left no result bundle)\t%s/uitest.log\n" \
+                    "$row_id" "$method" "$seconds" "$(basename "$PROOF_DIR")" >> "$ROWS"
+            else
+                printf "%s\tFAIL\t%s %s\t%s/uitest.log\n" \
+                    "$row_id" "$method" "$seconds" "$(basename "$PROOF_DIR")" >> "$ROWS"
+            fi
+        fi
+    done
+fi
 
 if [ "$timed_out" = "1" ]; then
     printf "S.run\tFAIL\tthe suite exceeded its %ss budget and was terminated\t%s\n" "$BUDGET" "$(basename "$PROOF_DIR")/uitest.xcresult" >> "$ROWS"
@@ -304,6 +410,47 @@ else
     printf "S.provenance\tFAIL\t%s\t%s\n" "$PROVENANCE_FAIL" "$(basename "$PROOF_DIR")/rows.tsv" >> "$ROWS"
 fi
 
+# -- What the store holds, and what the player's own files still are ---------
+# F01 requires the disc to have been chosen through Files and staged, and F02 requires the
+# original image to be unchanged. Both are read back out of the container here rather than
+# accepted from an alert the app raised about itself: the store's 'current' record names the
+# staged copy, and that copy's digest is compared with the fixture this run built.
+STORE_FAIL=""
+STORE_DIR="${FILES_DIR}/BallpadGameData"
+STAGED_RECORD="$(cat "${STORE_DIR}/current" 2>/dev/null || true)"
+STAGED_PATH="${STAGED_RECORD}"
+case "${STAGED_RECORD}" in
+    "") ;;
+    /*) ;;
+    *) STAGED_PATH="${STORE_DIR}/${STAGED_RECORD}" ;;
+esac
+OFFERED_SHA="$(sha256_of "${UITEST_MEDIA}/uitest-valid.iso")"
+STAGED_SHA=""
+if [ -z "${STAGED_RECORD}" ]; then
+    STORE_FAIL="the store holds no 'current' record, so nothing was staged and activated"
+elif [ ! -f "${STAGED_PATH}" ]; then
+    STORE_FAIL="'current' names ${STAGED_RECORD}, which is not in the container"
+else
+    STAGED_SHA="$(sha256_of "${STAGED_PATH}")"
+    [ "${STAGED_SHA}" = "${OFFERED_SHA}" ] \
+        || STORE_FAIL="the staged copy is ${STAGED_SHA}, not the fixture the picker offered (${OFFERED_SHA})"
+fi
+for fixture in uitest-valid.iso uitest-truncated.iso uitest-wronggame.iso; do
+    if [ ! -f "${FILES_DIR}/${fixture}" ]; then
+        STORE_FAIL="${STORE_FAIL:+${STORE_FAIL}; }the player's ${fixture} is gone from the container"
+        continue
+    fi
+    built="$(sha256_of "${UITEST_MEDIA}/${fixture}")"
+    chosen="$(sha256_of "${FILES_DIR}/${fixture}")"
+    [ "${built}" = "${chosen}" ] \
+        || STORE_FAIL="${STORE_FAIL:+${STORE_FAIL}; }the player's ${fixture} is ${chosen}, not the ${built} the run handed over"
+done
+if [ -z "${STORE_FAIL}" ]; then
+    printf "S.f01f02.store-bytes\tPASS\tstaged %s as %s, byte-identical to the fixture the picker offered; the three chosen files are unchanged\tstore-inventory.txt\n" "${STAGED_SHA:0:12}" "${STAGED_RECORD}" >> "$ROWS"
+else
+    printf "S.f01f02.store-bytes\tFAIL\t%s\tstore-inventory.txt\n" "${STORE_FAIL}" >> "$ROWS"
+fi
+
 # -- Screenshots -------------------------------------------------------------
 # The tests attach a screenshot at each claim, and the result bundle is where they live.
 # Exporting them is evidence gathering rather than a verdict, so a failure here is
@@ -314,6 +461,27 @@ if [ -d "$XCRESULT" ]; then
         warn "could not export attachments from ${XCRESULT}; the result bundle still holds them"
     fi
 fi
+
+# -- What the importer left behind -------------------------------------------
+# The suite decides the rows; this is the container's own state afterwards, which is what a
+# reader needs in order to see that "staged and activated" happened on disk rather than only in
+# an alert. It also re-checks the two things a refusal is required not to touch: the file the
+# player chose, and the disc image the fixtures were derived from.
+STORE_INVENTORY="${PROOF_DIR}/store-inventory.txt"
+log_new "$STORE_INVENTORY"
+{
+    printf 'container documents: %s\n' "${FILES_DIR}"
+    printf 'store path: %s\n' "${FILES_DIR}/BallpadGameData"
+    printf 'activation record: %s\n' \
+        "$(cat "${FILES_DIR}/BallpadGameData/current" 2>/dev/null || printf 'absent')"
+    find "${FILES_DIR}" -mindepth 1 -maxdepth 3 -print0 2>/dev/null \
+        | xargs -0 stat -f '%z bytes  %N' 2>/dev/null | sort -k3 || true
+    printf 'source image %s\n' "$(sha256_of "$GAME_IMAGE")"
+    for fixture in uitest-valid.iso uitest-truncated.iso uitest-wronggame.iso; do
+        printf 'chosen file %s\n' "$(sha256_of "${FILES_DIR}/${fixture}")"
+    done
+} >> "$STORE_INVENTORY"
+log "store inventory: ${STORE_INVENTORY}"
 
 set +e
 python3 "${BALLPAD_ROOT}/scripts/native/lib/suite_report.py" \

@@ -54,7 +54,6 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication(bundleIdentifier: Self.bundleIdentifier)
-        app.launchEnvironment = Self.launchEnvironment()
     }
 
 	/// The engine needs its disc image and a writable user/cache directory. The wrapper
@@ -107,6 +106,10 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// Launches the app and waits for the host overlay. A missing three-dot button after a
     /// generous bounded wait is a real failure: it means the overlay never reached the screen.
     private func launchAndWaitForOverlay(timeout: TimeInterval = 240) {
+        // The interface rows judge the overlay over a running game, so they hand the engine the
+        // disc and the writable directories they were built with. F01/F03's import rows are the
+        // opposite case and launch without them, which is why this is here and not in setUp.
+        app.launchEnvironment = Self.launchEnvironment()
         app.launch()
         XCTAssertTrue(menuButton.waitForExistence(timeout: timeout),
                       "the SunPad three-dot menu button is on screen")
@@ -329,7 +332,21 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         let moveSwitch = app.switches["Move touch controls"]
         XCTAssertTrue(moveSwitch.waitForExistence(timeout: 10), "the Move touch controls switch")
         if (moveSwitch.value as? String) != "1" { moveSwitch.tap() }
-        XCTAssertTrue(app.buttons["Finish moving touch controls"].waitForExistence(timeout: 10),
+        // Turning the switch on hides the settings panel, so once the editor is up the switch is
+        // gone from the tree and can no longer be read back. That makes the panel's own state the
+        // read-back: if it is still up, the tap did not land -- which is what a first run of this
+        // row measured, on a switch XCUITest had to scroll into view first. One retry distinguishes
+        // a consumed tap from a missed one instead of reporting the second as a broken editor.
+        if !app.buttons["Finish moving touch controls"].waitForExistence(timeout: 12) {
+            attachHierarchy("move-controls-after-first-tap")
+            // Only a switch the panel is still showing can be a missed tap: once editing is on the
+            // panel is hidden, and re-tapping the switch in that state would turn editing back off.
+            if moveSwitch.exists && moveSwitch.isHittable {
+                moveSwitch.tap()
+            }
+        }
+        attachHierarchy("move-controls-editor")
+        XCTAssertTrue(app.buttons["Finish moving touch controls"].waitForExistence(timeout: 30),
                       "the layout editor bar appears once moving is on")
 
         let start = aButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -391,5 +408,426 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         XCTAssertNotNil(waitForOverlayElement("Render resolution", timeout: 20),
                         "the settings panel still opens after resume")
         attach("after-resume")
+    }
+
+    // MARK: - Ballpad's own Files importer (doc 34 F01/F02)
+
+    /// The three files the wrapper script puts in this app's Files-visible Documents folder. They
+    /// are the player's own game bytes, derived at run time; see scripts/native/run-uitests.sh.
+    private static let validImageName = "uitest-valid.iso"
+    private static let truncatedImageName = "uitest-truncated.iso"
+    private static let wrongGameImageName = "uitest-wronggame.iso"
+
+    /// The heading the port itself asks for when its disc search finds nothing, verbatim from
+    /// src/platform/dvd.c. Asserting this exact string is what makes the row "the app shows the
+    /// port's own explanation" rather than "the app shows some screen".
+    private static let portRefusalHeading = "Super Mario Strikers: game data not found"
+
+    /// No disc, no writable directories, no seed: the launch of a fresh install. This is the
+    /// launch the old build answered by printing its refusal and exiting before UIKit existed.
+    private func launchWithNoEnvironment() {
+        app.launchEnvironment = [:]
+        app.launch()
+    }
+
+    private var importScreenTitle: XCUIElement { app.staticTexts["BallpadGameDataImportTitle"] }
+    private var importScreenChoose: XCUIElement { app.buttons["BallpadGameDataImportChoose"] }
+
+    /// The body is a multi-line text view, not a label, so it is looked up by whatever type the
+    /// interface actually published rather than by the one this bundle assumed.
+    private func importScreenElement(_ identifier: String) -> XCUIElement? {
+        let candidates = [app.staticTexts[identifier], app.textViews[identifier],
+                          app.buttons[identifier], app.otherElements[identifier]]
+        for candidate in candidates where candidate.exists { return candidate }
+        return nil
+    }
+
+    /// Which screen answers a launch with no environment: the game, because a stored disc
+    /// resolved, or the importer, because nothing did. Both are legitimate outcomes; which one a
+    /// row expects is that row's claim.
+    private enum NoEnvironmentLaunch { case game, importer, neither }
+
+    private func classifyNoEnvironmentLaunch(timeout: TimeInterval = 240) -> NoEnvironmentLaunch {
+        launchWithNoEnvironment()
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if menuButton.exists { return .game }
+            if importScreenTitle.exists { return .importer }
+            Thread.sleep(forTimeInterval: 0.5)
+        } while Date() < deadline
+        return .neither
+    }
+
+    // MARK: The Files picker
+
+    /// One flat query, resolved to a single element, or nil.
+    ///
+    /// The shape matters. A query that walks through a container -- `app.collectionViews.cells[x]`,
+    /// `app.tables.cells[x]` -- raises "Failed to get matching snapshot: No matches found for first
+    /// query match sequence" when the *container* matched nothing, which is an exception and not a
+    /// false: run f01f02-phone-r2 lost F02 to exactly that on a page of the picker with no collection
+    /// view on it. Asking the app for descendants of one type keeps every step flat, so a page that
+    /// simply does not have the element answers nil.
+    private func pickerDescendant(_ type: XCUIElement.ElementType,
+                                  matching predicate: NSPredicate,
+                                  excludingIdentifier excluded: String? = nil,
+                                  limit: Int = 8) -> XCUIElement? {
+        let query = app.descendants(matching: type).matching(predicate)
+        let count = query.count
+        guard count > 0 else { return nil }
+        for index in 0..<min(count, limit) {
+            let element = query.element(boundBy: index)
+            if let excluded, element.identifier == excluded { continue }
+            if element.exists { return element }
+        }
+        return nil
+    }
+
+    private static let pickerRowTypes: [XCUIElement.ElementType] = [.cell, .button, .other]
+
+    /// The picker's tree belongs to another framework, and the same item is a cell on one page and
+    /// a button on the next, so every step searches the honest query types rather than assuming one
+    /// of them. Only single matches are handed back: "Browse" names both the tab bar's Browse
+    /// button and, once inside that location, the navigation bar's back button, and tapping an
+    /// ambiguous query raises instead of choosing. That ambiguity is what the first run of this
+    /// row hit, so the back button is excluded by identifier here.
+    private func pickerMatch(_ labels: [String]) -> XCUIElement? {
+        for label in labels {
+            let tabBar = app.otherElements["DOC.browsingModeTabBar"]
+            if tabBar.exists {
+                let tab = tabBar.buttons[label]
+                if tab.exists { return tab.firstMatch }
+            }
+            let byName = NSPredicate(format: "label == %@ OR identifier == %@", label, label)
+            for type in Self.pickerRowTypes {
+                if let match = pickerDescendant(type, matching: byName,
+                                                excludingIdentifier: "BackButton") {
+                    return match
+                }
+            }
+        }
+        return nil
+    }
+
+    /// A row in the picker's *list* of places rather than in its sidebar. The list decorates the
+    /// name it was given, and the decoration is not part of the name: the app's own folder is
+    /// published as `identifier: 'Ballpad Strikers, Container', label: 'Ballpad Strikers, 4 items'`
+    /// (measured, run f01f02-phone-r3, attached as files-picker-in-On-My-iPhone), so an exact
+    /// comparison against the folder's name can never find the row. The prefix is the identity;
+    /// the suffix is the picker's own annotation of what is inside.
+    private func pickerContainer(named name: String, timeout: TimeInterval = 8) -> XCUIElement? {
+        let prefix = NSPredicate(format: "identifier BEGINSWITH %@ OR label BEGINSWITH %@",
+                                 name, name)
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            for type in Self.pickerRowTypes {
+                if let row = pickerDescendant(type, matching: prefix,
+                                              excludingIdentifier: "BackButton") {
+                    return row
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        return nil
+    }
+
+    private func pickerElement(_ labels: [String], timeout: TimeInterval = 15) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let element = pickerMatch(labels) { return element }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        return nil
+    }
+
+    /// The picker's row for the file, in whichever form the current layout publishes it. Icon mode
+    /// makes one cell whose identifier and label both open with the file name and then fold in the
+    /// size and the date, so the exact match is tried first and a prefix match after it.
+    private func pickerRow(named name: String, timeout: TimeInterval = 20) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        let exact = NSPredicate(format: "identifier == %@ OR label == %@", name, name)
+        let prefix = NSPredicate(format: "identifier BEGINSWITH %@ OR label BEGINSWITH %@",
+                                 name, name)
+        repeat {
+            for type in Self.pickerRowTypes {
+                if let row = pickerDescendant(type, matching: exact) { return row }
+                if let row = pickerDescendant(type, matching: prefix) { return row }
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        return nil
+    }
+
+    /// The file itself, row first and label last. A row in icon mode publishes the name twice: once
+    /// on the cell and once as a label on top of its icon, and a tap that lands on the label has
+    /// been measured to leave the picker standing (run f01f02-phone-r2, whose F01 tapped the label
+    /// and then waited out the whole alert timeout). The label is therefore only offered once the
+    /// rows have had half the budget to show up, and a label tap that changes nothing is caught by
+    /// the caller rather than believed.
+    private func pickerFile(named name: String, timeout: TimeInterval = 20) -> XCUIElement? {
+        let start = Date()
+        let deadline = start.addingTimeInterval(timeout)
+        let byName = NSPredicate(format: "identifier == %@ OR label BEGINSWITH %@", name, name)
+        repeat {
+            if let row = pickerRow(named: name, timeout: 0.5) { return row }
+            if Date().timeIntervalSince(start) > timeout / 2,
+               let label = pickerDescendant(.staticText, matching: byName) {
+                return label
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        return nil
+    }
+
+    /// A selection dismisses the whole picker service, so the tab bar's disappearance is the only
+    /// in-process sign that a tap was taken rather than merely delivered.
+    private func waitForPickerToClose(timeout: TimeInterval = 20) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if !app.otherElements["DOC.browsingModeTabBar"].exists { return true }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        return !app.otherElements["DOC.browsingModeTabBar"].exists
+    }
+
+    /// Taps the file and requires the picker to go away, retrying against the row itself when the
+    /// first tap only reached the label.
+    private func selectFileInPicker(named name: String, timeout: TimeInterval = 20) -> Bool {
+        guard let first = pickerFile(named: name, timeout: timeout) else { return false }
+        attachHierarchy("files-picker-file")
+        first.tap()
+        if waitForPickerToClose() { return true }
+
+        attachHierarchy("files-picker-still-open")
+        guard let row = pickerRow(named: name, timeout: 10) else { return false }
+        row.tap()
+        return waitForPickerToClose()
+    }
+
+    /// Drives the Files picker from wherever it opens to the named image in this app's own folder.
+    /// The folder is published to Files because the bundle sets UIFileSharingEnabled, and the
+    /// wrapper script fills it before the run (scripts/native/run-uitests.sh), so the selection,
+    /// the copy the picker hands back and the staging that follows are all the real ones. The
+    /// picker is a remote view service that remembers where it was last left, so a run can meet it
+    /// on Recents or already standing in this app's folder; each bounded pass looks for the file,
+    /// then comes in through the Browse tab, then walks one container on the way to the folder.
+    ///
+    /// The order is the one two runs measured rather than a preference. Looking for the file first
+    /// covers the run that meets the picker still standing in this app's folder, and it is short on
+    /// purpose: the first run of this row spent its whole budget here and tapped a label on a
+    /// Recents page instead of the row, which is why nothing is selected until a tap is seen to
+    /// dismiss the picker. Browse comes next because it is the route that has worked -- the run that
+    /// passed did exactly that tap and then found the file on the first query -- and the container
+    /// walk is last because it is the slowest and the least likely.
+    ///
+    /// Browse is not a shortcut to the folder, it is a shortcut to wherever the picker was left, and
+    /// the third run measured both outcomes of it: f01f02-phone-r1 opened onto this app's folder
+    /// directly, f01f02-phone-r3 opened onto the locations sidebar with iCloud Drive and On My
+    /// iPhone in it. So the walk is what makes the route deterministic, and it needs two hops --
+    /// On My iPhone, then the app's own folder -- rather than one.
+    private func pickImageThroughFiles(named name: String) {
+        // Pass 1: the file may already be on screen.
+        if selectFileInPicker(named: name, timeout: 12) { return }
+
+        // Pass 2: in through the Browse tab, which lands wherever Files was last browsing -- in a
+        // passing run, this app's own folder, which is the folder the fixture is in.
+        if let browse = pickerElement(["Browse"], timeout: 20) {
+            browse.tap()
+            Thread.sleep(forTimeInterval: 1.5)
+            attachHierarchy("files-picker-browse")
+            if selectFileInPicker(named: name) { return }
+        } else {
+            attachHierarchy("files-picker-no-browse")
+        }
+
+        // Pass 3: the locations the browse root lists on the way to this app's folder, which is
+        // what the picker's Browse tab opens onto -- a sidebar of places, not the last folder (run
+        // f01f02-phone-r3: Browse landed on `Title: On My iPhone` with iCloud Drive/On My iPhone in
+        // a Locations list). The sidebar entries carry their own name, but the folder list below
+        // them decorates it, so both spellings are looked for.
+        for container in ["On My iPhone", "On My iPad", "This iPhone", "This iPad",
+                          "Ballpad Strikers"] {
+            guard let inside = pickerMatch([container])
+                                  ?? pickerContainer(named: container, timeout: 6) else { continue }
+            inside.tap()
+            Thread.sleep(forTimeInterval: 1.5)
+            attachHierarchy("files-picker-in-"
+                            + container.replacingOccurrences(of: " ", with: "-"))
+            if selectFileInPicker(named: name) { return }
+        }
+
+        attachHierarchy("files-picker-could-not-reach-the-file")
+        XCTFail("the Files picker reached " + name + " in this app's own folder")
+    }
+
+    /// Launch with no stored disc and no environment at all: the launch of a fresh install. The
+    /// build this port replaced answered it by printing its refusal and exiting before UIKit
+    /// existed, so which screen comes up here is the row's first claim.
+    func testFreshInstallShowsImportScreenAndActivatesAPickedImage() throws {
+        let outcome = classifyNoEnvironmentLaunch()
+        XCTAssertEqual(outcome, .importer,
+                       "a launch with no data and no environment presents Ballpad's own importer "
+                       + "instead of exiting")
+        guard outcome == .importer else { return }
+
+        XCTAssertEqual(importScreenTitle.label, Self.portRefusalHeading,
+                       "the importer carries the port's own heading, verbatim")
+        XCTAssertNotNil(importScreenElement("BallpadGameDataImportBody"),
+                        "the importer carries the port's own body text")
+        XCTAssertTrue(importScreenChoose.isHittable,
+                      "the choose button is hittable without scrolling the explanation")
+        attach("f01-import-screen")
+        attachHierarchy("f01-import-screen-hierarchy")
+
+        importScreenChoose.tap()
+        pickImageThroughFiles(named: Self.validImageName)
+
+        // Staging and validation run on a background queue and answer with this alert, which is
+        // the app accepting the copy -- not yet the launch playing it.
+        let ready = app.alerts["Game Data Ready"]
+        XCTAssertTrue(ready.waitForExistence(timeout: 180),
+                      "the copy chosen through Files is accepted as this port's disc")
+        attach("f01-game-data-ready")
+        XCTAssertTrue(ready.buttons["Start the Game"].exists, "the alert continues the launch")
+        ready.buttons["Start the Game"].tap()
+
+        // The port re-resolves through the hook the importer records into, so the same process
+        // reaching its overlay is what shows the activation landed rather than the alert alone.
+        XCTAssertTrue(menuButton.waitForExistence(timeout: 300),
+                      "the same launch continues into the game on the copy chosen through Files")
+        attach("f01-overlay-after-import")
+        attachHierarchy("f01-overlay-after-import-hierarchy")
+    }
+
+    /// F02's precondition: a stored disc this app resolves on a launch with no environment. The
+    /// row that imports one normally ran first; this makes the state a property of this row rather
+    /// than of another method's leftovers.
+    private func ensureStoredGameData() {
+        guard classifyNoEnvironmentLaunch() == .importer else { return }
+        XCTAssertEqual(importScreenTitle.label, Self.portRefusalHeading,
+                       "the importer carries the port's own heading, verbatim")
+        importScreenChoose.tap()
+        pickImageThroughFiles(named: Self.validImageName)
+        let ready = app.alerts["Game Data Ready"]
+        XCTAssertTrue(ready.waitForExistence(timeout: 180),
+                      "the image this row sets up is accepted")
+        ready.buttons["Start the Game"].tap()
+        XCTAssertTrue(menuButton.waitForExistence(timeout: 300),
+                      "the image this row set up activated and the game came up")
+    }
+
+    /// The running game's own menu, down to the vendored Game Data & Saves submenu. The rows are
+    /// the vendored ones; only their destinations are Ballpad's.
+    private func openGameDataMenu() {
+        openMenu()
+        guard let dataRow = scrollMenuForElement("Game Data & Saves", timeout: 25) else {
+            XCTFail("the Game Data & Saves row is in the menu")
+            return
+        }
+        dataRow.tap()
+    }
+
+    private func tapDataMenuRow(_ title: String) {
+        guard let row = waitForOverlayElement(title, timeout: 20) else {
+            XCTFail("the vendored row is in the data submenu: " + title)
+            return
+        }
+        row.tap()
+    }
+
+    /// A refused import through the menu row: the alert the app raises has to carry the port's own
+    /// words, which is what makes this "the engine refused it" rather than "a screen appeared".
+    private func importFromMenuExpectingRefusal(named name: String, containing phrase: String) {
+        openGameDataMenu()
+        tapDataMenuRow("Import or Reimport Game Data")
+        pickImageThroughFiles(named: name)
+
+        let refusal = app.alerts["That Disc Cannot Be Used"]
+        XCTAssertTrue(refusal.waitForExistence(timeout: 180),
+                      "the refused image " + name + " is reported to the player")
+        attachHierarchy("f02-refusal-" + name.replacingOccurrences(of: ".", with: "-"))
+        let words = refusal.staticTexts.allElementsBoundByIndex.map(\.label)
+            .joined(separator: " ")
+        XCTAssertTrue(words.contains(phrase),
+                      "the refusal is the port's own words (" + phrase + "); saw: " + words)
+        refusal.buttons["OK"].tap()
+        XCTAssertFalse(refusal.waitForExistence(timeout: 5), "OK dismisses the refusal")
+    }
+
+    /// Cancel is the other half of doc 34's "failure/cancel leaves previous installation usable".
+    private func cancelMenuImport() {
+        openGameDataMenu()
+        tapDataMenuRow("Import or Reimport Game Data")
+        guard let cancel = pickerElement(["Cancel"], timeout: 60) else {
+            attachHierarchy("f02-picker-no-cancel")
+            XCTFail("the Files picker offers Cancel")
+            return
+        }
+        cancel.tap()
+        XCTAssertFalse(app.alerts["Game Data Imported"].waitForExistence(timeout: 10),
+                       "cancelling the picker imports nothing")
+    }
+
+    /// The installation is still the one that was there: a fresh process resolves it and reaches
+    /// the game. A store a refusal had damaged would show the importer instead.
+    private func assertStoredGameDataStillPlays(_ when: String) {
+        XCTAssertEqual(classifyNoEnvironmentLaunch(), .game,
+                       "the previous installation is still usable " + when)
+        attachHierarchy("f02-still-plays-" + when.replacingOccurrences(of: " ", with: "-"))
+    }
+
+    /// Removal is the one menu action that is supposed to stop the next launch resolving.
+    private func removeStoredGameData() {
+        openGameDataMenu()
+        tapDataMenuRow("Remove Stored Game Data")
+
+        let confirm = app.alerts["Remove Stored Game Data?"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 15), "the vendored confirmation is raised")
+        XCTAssertTrue(confirm.buttons["Remove"].exists, "the confirmation offers Remove")
+        confirm.buttons["Remove"].tap()
+
+        let done = app.alerts["Game Data Removed"]
+        XCTAssertTrue(done.waitForExistence(timeout: 30), "the removal reports what it did")
+        attachHierarchy("f02-removed")
+        done.buttons["OK"].tap()
+    }
+
+    /// F02. Every refusal has to leave the installation that was already there usable and has to
+    /// leave the file the player chose untouched. The words the refusals carry are the port's own,
+    /// because validation calls the engine's reader rather than a second parser; the two phrases
+    /// below are from src/platform/disc.c and this app's own header check.
+    func testRefusedImportKeepsThePreviousInstallationUsable() throws {
+        ensureStoredGameData()
+
+        importFromMenuExpectingRefusal(named: Self.truncatedImageName, containing: "truncated")
+        assertStoredGameDataStillPlays("after a truncated image was refused")
+
+        importFromMenuExpectingRefusal(named: Self.wrongGameImageName,
+                                       containing: "is not Super Mario Strikers")
+        assertStoredGameDataStillPlays("after another game's disc was refused")
+
+        cancelMenuImport()
+        assertStoredGameDataStillPlays("after the picker was cancelled")
+
+        removeStoredGameData()
+        XCTAssertEqual(classifyNoEnvironmentLaunch(), .importer,
+                       "once the stored disc is removed the next launch asks for one again")
+        attach("f02-importer-after-removal")
+
+        // The removal row leaves the machine asking for game data, so this takes it back the way a
+        // player would, from the importer that is already up. It decides nothing F02 has not
+        // already decided; what it buys is the state the wrapper script reads back afterwards --
+        // the store holds a staged copy, and that copy can be compared with the fixture the picker
+        // offered instead of with what an alert said about itself.
+        XCTAssertTrue(importScreenChoose.isHittable, "the importer is up after the removal")
+        importScreenChoose.tap()
+        pickImageThroughFiles(named: Self.validImageName)
+        let restored = app.alerts["Game Data Ready"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 180),
+                      "a removed installation can be re-imported from the importer")
+        restored.buttons["Start the Game"].tap()
+        XCTAssertTrue(menuButton.waitForExistence(timeout: 300),
+                      "the re-imported disc activates in the same launch")
+        attachHierarchy("f02-reimported")
     }
 }

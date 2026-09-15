@@ -217,15 +217,22 @@ target_link_libraries(ballpad_interface PUBLIC
 # ballpad_interface is linked PUBLIC rather than PRIVATE because the vendored headers are this
 # file's direct includes; that also means the vendored static archive is on the app's link line
 # once, through a target that names it, instead of twice.
-add_library(ballpad_hostui STATIC interface/BallpadHostUI.mm)
+add_library(ballpad_hostui STATIC
+  interface/BallpadHostUI.mm
+  interface/BallpadGameData.mm)
 set_target_properties(ballpad_hostui PROPERTIES
   CXX_STANDARD 17
   OBJCXX_STANDARD 17
   POSITION_INDEPENDENT_CODE ON)
 target_compile_options(ballpad_hostui PRIVATE "-fobjc-arc")
-target_include_directories(ballpad_hostui PRIVATE "${PORT_DIR}/include")
+target_include_directories(ballpad_hostui PRIVATE
+  "${PORT_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/interface")
 target_link_libraries(ballpad_hostui PUBLIC ballpad_interface)
-target_link_libraries(ballpad_hostui PRIVATE SDL3::SDL3)
+# UniformTypeIdentifiers is only for the Files picker's content-type filter, which lives in the
+# adapter rather than in the vendored interface: SunPad's own picker asks for iso/gcm the same way,
+# but its target does not share this file's link line.
+target_link_libraries(ballpad_hostui PRIVATE SDL3::SDL3 "-framework UniformTypeIdentifiers")
 # Whole-archive, and this is load-bearing rather than belt-and-braces.
 #
 # The port ships weak no-op versions of these four hooks (src/platform/hostui.c) so that it still

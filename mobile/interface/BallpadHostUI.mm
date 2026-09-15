@@ -22,6 +22,8 @@
 #import "SunPadInputMixer.h"
 #import "SunPadSettings.h"
 
+#import "BallpadGameData.h"
+
 // SunPad's button mask and the port's are the same twelve bits today. This is a translation rather
 // than a cast on purpose: the compiler checks these names, so if either project's layout moves the
 // wrong row is visible here, where a numeric hand-off would keep compiling and press a different
@@ -117,32 +119,65 @@ static unsigned int BallpadPortButtons(uint16_t sunPadButtons)
 #endif
 }
 
-// The four actions that ask the host to do something are where N5 attaches Ballpad's own importer,
-// settings store and diagnostics. Until those exist they record the request and stop: the menu row
-// is live and its geometry is SunPad's, but nothing here may claim to have imported, removed or
-// reconfigured anything it has not.
+// Three of these four actions are Ballpad's own work now, and all three land in BallpadGameData.mm
+// on the same store and the same validation the launch path uses -- so a menu row and a cold start
+// cannot disagree about what "imported" means. The rows themselves are the vendored ones; only
+// their destinations changed, which is the whole reason the adaptation lives here.
 - (void)gameOverlayRequestsGameDataChange:(SunPadGameOverlay *)overlay
 {
     (void)overlay;
-    SunPadLog(@"host ui: game data change requested (not routed yet)");
+    SunPadLog(@"host ui: game data change requested; opening Ballpad's importer");
+    BallpadGameDataPresentImport();
 }
 
 - (void)gameOverlayRequestsGameDataFolderImport:(SunPadGameOverlay *)overlay
 {
     (void)overlay;
-    SunPadLog(@"host ui: game data folder import requested (not routed yet)");
+    SunPadLog(@"host ui: game data folder import requested; opening Ballpad's importer");
+    BallpadGameDataPresentFolderImport();
 }
 
 - (void)gameOverlayRequestsGameDataRemoval:(SunPadGameOverlay *)overlay
 {
-    (void)overlay;
-    SunPadLog(@"host ui: game data removal confirmed by the user (not routed yet)");
+    // The overlay put up its own confirmation before calling this, so there is no second question
+    // here; what is left is to do the work and say what happened. The running game keeps the disc
+    // it already resolved, so the effect of this lands on the next launch -- which is only true
+    // because PortHostUIGameDataPath stops answering as soon as the record names nothing.
+    int removed = BallpadGameDataRemoveStoredData();
+    SunPadLog(@"host ui: game data removal confirmed by the user; %d item(s) removed", removed);
+
+    UIViewController *presenter = overlay.window.rootViewController;
+    if (presenter == nil)
+        return;
+    NSString *message = removed > 0
+        ? @"Ballpad's stored disc was removed. The game keeps running on the disc it already "
+           "loaded; quit and open Ballpad Strikers again to be asked for one. Save files and "
+           "control settings are not affected."
+        : @"There was nothing stored to remove. Save files and control settings are not affected.";
+    // The alert this came from is still being dismissed, and a presentation started on top of a
+    // dismissal in progress is dropped, so this waits it out rather than racing it.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIAlertController *alert =
+            [UIAlertController alertControllerWithTitle:@"Game Data Removed"
+                                               message:message
+                                        preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:nil]];
+        [presenter presentViewController:alert animated:YES completion:nil];
+    });
 }
 
+// The one action still recorded rather than routed, and deliberately: SunPad's narrow A/B/X/Y/Z
+// remap is a store its own view controller consults on the way to the emulator's pad, while
+// Ballpad's physical-controller path is Aurora's. Adopting the remap therefore means deciding
+// where a remap belongs on that path before writing one, which is R1 item 7 in doc 36 and the next
+// piece of this list. Nothing here claims the row did anything.
 - (void)gameOverlayRequestsControllerMapping:(SunPadGameOverlay *)overlay
 {
     (void)overlay;
-    SunPadLog(@"host ui: controller mapping requested (not routed yet)");
+    SunPadLog(@"host ui: controller mapping requested (R1 item 7: not routed yet)");
 }
 
 #pragma mark - Lifecycle
