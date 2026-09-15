@@ -1,0 +1,412 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chris Sotraidis <56282582+chrissotraidis@users.noreply.github.com>
+Date: Tue, 15 Sep 2026 01:55:26 -0500
+Subject: [PATCH] port: a pad map a host can read, and a render scale that can
+ follow again
+
+The vendored host interface paints its own controller screen and its own
+resolution row, and both were log-only here. Two seams:
+
+PortPadMapping/PortPadName/PortPadDetail expose the live Aurora pad map in
+the same terms report_gamepad() prints: the device name, every pad button and
+axis with what Aurora bound it to, and the dead zones, trigger mode and rumble
+intensity. The table is rebuilt on every call, because a controller connect
+reloads the whole mapping. An empty port is an empty map, not an error.
+
+PortSetRenderScale(scale <= 0) used to hand 0 to aurora_set_frame_buffer_scale
+and leave the scale pinned at whatever zero meant. It now means "follow the
+window again": the pin is cleared, the derived scale and the row memo are
+zeroed so the next derivation logs even at the same row count, and the call
+returns. A positive scale still pins.
+
+Aspect: PortSetTargetAspect takes a ratio, and PortFollowWindowShape keeps
+calling PortSetWindowAspect every frame, which only writes while following, so
+a pinned aspect genuinely survives and a non-positive target restores it.
+
+Desktop Release rebuilds and links.
+---
+ smstrikers-port/include/port/aspect.h   |   9 ++
+ smstrikers-port/include/port/input.h    |  23 +++++
+ smstrikers-port/include/port/launch.h   |  14 +++
+ smstrikers-port/src/Game/main.cpp       |  18 ++--
+ smstrikers-port/src/platform/aspect.c   |  47 ++++++++++
+ smstrikers-port/src/platform/input.cpp  | 109 ++++++++++++++++++++++++
+ smstrikers-port/src/platform/launch.cpp |  39 ++++++++-
+ 7 files changed, 251 insertions(+), 8 deletions(-)
+
+diff --git a/smstrikers-port/include/port/aspect.h b/smstrikers-port/include/port/aspect.h
+index 85617b5..4cb33d7 100644
+--- a/smstrikers-port/include/port/aspect.h
++++ b/smstrikers-port/include/port/aspect.h
+@@ -7,6 +7,15 @@ extern "C" {
+ #endif
+ float PortTargetAspect(void);
+ 
++// Pin the display aspect at runtime, or restore following the window with a value <= 0. A host
++// interface's own aspect control calls this; it bumps PortAspectGeneration, which main()'s frame
++// loop turns into PortApplyAspectChange and a frame-buffer resize on the next frame, so the game's
++// render mode, locked aspect and front end all move together rather than only the picture's shape.
++void PortSetTargetAspect(float aspect);
++
++// Non-zero while the aspect is the window's own rather than a pinned value.
++int PortAspectFollowsWindow(void);
++
+ // The width of the logical framebuffer, in the coordinate space the game's GXSetViewport,
+ // GXSetScissor and 2D orthographic projections all use. 640 at 4:3, 854 at 16:9.
+ unsigned int PortLogicalFrameWidth(void);
+diff --git a/smstrikers-port/include/port/input.h b/smstrikers-port/include/port/input.h
+index bb326a2..d525cd1 100644
+--- a/smstrikers-port/include/port/input.h
++++ b/smstrikers-port/include/port/input.h
+@@ -30,6 +30,29 @@ unsigned int PortInputButtonFromName(const char* name, int len);
+ 
+ unsigned long PortInputFrame(void);
+ 
++// A host interface's controller-mapping row. The physical map is Aurora's and is chosen at startup
++// from STRIKERS_PAD_*, so there is no runtime remap store to route a menu row into; what a row can
++// honestly do is show the person the map their device actually has, read back from the same place
++// `report_gamepad` prints it, without the app being linked against the engine's pad header to do
++// it. Rows are rebuilt on every call: connecting a controller reloads the whole table.
++typedef struct PortPadRow
++{
++    const char* pad;      // the GameCube control: "A", "Z", "Start", "Stick X"
++    const char* native;   // what it is bound to here: "south", "+leftx", "(none)"
++} PortPadRow;
++
++// Fills `*rows` with the current map for `port` and returns its length; 0 with `*rows` set to NULL
++// means nothing is on that port. Both strings belong to the mapping table and stay valid only until
++// the next call.
++int PortPadMapping(unsigned int port, const PortPadRow** rows);
++
++// The device name, or NULL when the port is empty.
++const char* PortPadName(unsigned int port);
++
++// Dead zones, trigger mode and rumble as one line, or NULL when the port is empty. Static storage,
++// same lifetime rule as the rows above.
++const char* PortPadDetail(unsigned int port);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/smstrikers-port/include/port/launch.h b/smstrikers-port/include/port/launch.h
+index 9dc631b..afc1eaa 100644
+--- a/smstrikers-port/include/port/launch.h
++++ b/smstrikers-port/include/port/launch.h
+@@ -17,10 +17,24 @@ void PortAuroraConfigure(AuroraConfig* cfg);
+ 
+ void PortFollowRenderScale(unsigned int windowHeight);
+ 
++// Pin the render scale, or hand the choice back to the window with a value <= 0. A host
++// interface's own resolution rows call this; STRIKERS_RES_SCALE is the same pin at startup, which
++// is why a mid-run change and an environment change land in one place.
+ void PortSetRenderScale(float scale);
+ 
+ float PortRenderScale(void);
+ 
++// The render target the renderer is configured with, in pixels: the number next to the scale in the
++// port's own `[port] render target` line, and the size Aurora hands the swapchain. Read back rather
++// than recomputed by a caller, so "the setting reached the renderer" is a measurement.
++void PortRenderTargetSize(unsigned int* width, unsigned int* height);
++
++// Non-zero once per render-target size change, and clears that: the frame loop's signal that the
++// swapchain has to be resized. A render scale change moves the target without moving the window,
++// so Aurora's own window-resize path never sees it; this is what makes a runtime scale change land
++// on the frame it was asked for rather than on whichever event happens to follow.
++int PortTakeRenderTargetChange(void);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/smstrikers-port/src/Game/main.cpp b/smstrikers-port/src/Game/main.cpp
+index e6d988e..64ef6a6 100644
+--- a/smstrikers-port/src/Game/main.cpp
++++ b/smstrikers-port/src/Game/main.cpp
+@@ -608,7 +608,9 @@ static void PortRequestManualShot()
+     aurora_capture_frame(s_shotPath);
+ }
+ 
+-// PORT: keep the picture the shape of the window; idempotent, because everything below the generation test is skipped unless the shape actually moved.
++// PORT: keep the picture the shape of the window, and the render target the size the current scale,
++// aspect and window ask for. Idempotent: the aspect re-derivation only runs when the generation
++// moved, and the resize only when the target size actually changed.
+ static void PortFollowWindowShape()
+ {
+     const AuroraWindowSize ws = aurora_window_size();
+@@ -617,11 +619,15 @@ static void PortFollowWindowShape()
+     // PORT: the automatic render scale follows the window height.
+     PortFollowRenderScale(ws.height);
+     PortSetWindowAspect(ws.width, ws.height);
+-    if (PortAspectGeneration() == gen)
+-        return;
+-
+-    PortApplyAspectChange();
+-    aurora_apply_frame_buffer_resize();
++    if (PortAspectGeneration() != gen)
++        PortApplyAspectChange();
++
++    // PORT: whatever moved the render target -- the window, the aspect or the render scale -- the
++    // swapchain follows it here, at a point between frames. A scale change moves the target without
++    // moving the window, so Aurora's own window-resize path would never see it; the deferred
++    // FutureResize that set_frame_buffer_scale queues would land a frame late.
++    if (PortTakeRenderTargetChange())
++        aurora_apply_frame_buffer_resize();
+ }
+ 
+ static SDL_Window* s_portWindow;
+diff --git a/smstrikers-port/src/platform/aspect.c b/smstrikers-port/src/platform/aspect.c
+index 825ad2d..924486f 100644
+--- a/smstrikers-port/src/platform/aspect.c
++++ b/smstrikers-port/src/platform/aspect.c
+@@ -65,6 +65,53 @@ unsigned int PortAspectGeneration(void)
+     return s_generation;
+ }
+ 
++// A host interface's own aspect setting. The shipped model resolves the target once, from
++// STRIKERS_ASPECT, and thereafter only *follows* the window; this is the missing way to change the
++// target itself after startup, which is what a runtime menu row needs. Setting a value takes the
++// aspect off the window (s_follows = 0) so PortSetWindowAspect stops overwriting it; a value <= 0
++// hands it back. Either way the generation moves so the frame loop re-derives what is sized from
++// the display aspect and resizes the frame buffer, exactly as it does for a window shape change.
++void PortSetTargetAspect(float aspect)
++{
++    float a;
++    float was;
++
++    s_resolved = 1;
++    s_follows = (aspect > 0.0f) ? 0 : 1;
++
++    if (s_follows)
++    {
++        a = (s_windowAspect > 0.0f) ? ClampAspect(s_windowAspect) : s_aspect;
++        if (a <= 0.0f)
++            a = 16.0f / 9.0f;
++    }
++    else
++    {
++        a = ClampAspect(aspect);
++        if (a != aspect)
++            fprintf(stderr, "[aspect] %.4f is outside [%.2f, %.2f]; using %.4f.\n",
++                    (double)aspect, (double)PORT_ASPECT_MIN, (double)PORT_ASPECT_MAX, (double)a);
++    }
++
++    if (a == s_aspect)
++        return;
++
++    was = s_aspect;
++    s_aspect = a;
++    s_generation++;
++
++    // Read back rather than assumed: the width below is what the game's viewport, scissor and 2D
++    // projections will use, so it is the number that shows the change reached the renderer.
++    if (getenv("STRIKERS_LOG_FRUSTUM") != NULL)
++        fprintf(stderr, "[aspect] host set %.4f (was %.4f), logical width %u\n",
++                (double)a, (double)was, PortLogicalFrameWidth());
++}
++
++int PortAspectFollowsWindow(void)
++{
++    return s_follows;
++}
++
+ // "16:9" and "16/9" and "1.7777". Returns 0 on anything else, including "auto", which the caller
+ // handles, because it is not a value but a promise to keep following the window.
+ static float ParseAspect(const char* s)
+diff --git a/smstrikers-port/src/platform/input.cpp b/smstrikers-port/src/platform/input.cpp
+index 4237a8f..5edd4bd 100644
+--- a/smstrikers-port/src/platform/input.cpp
++++ b/smstrikers-port/src/platform/input.cpp
+@@ -1,14 +1,29 @@
+ // What the keyboard and a gamepad are bound to, and where a person changes it.
+ 
++// Hoisted out of the Aurora branch below: input.h is plain C, and the stubs for it are written
++// there too, so the two spellings of this file's surface cannot drift apart.
++#include "port/input.h"
++
+ // Everything below needs Aurora.
+ #if !defined(PORT_USE_AURORA)
+ 
+ extern "C" void PortInstallKeyboardBindings(void) {}
+ extern "C" void PortNoteSceneEntered(int scene) { (void)scene; }
+ extern "C" void PortUpdateSyntheticInput(unsigned long frame) { (void)frame; }
++extern "C" int PortPadMapping(unsigned int port, const PortPadRow** rows)
++{
++    (void)port;
++    if (rows != NULL)
++        *rows = NULL;
++    return 0;
++}
++extern "C" const char* PortPadName(unsigned int port) { (void)port; return NULL; }
++extern "C" const char* PortPadDetail(unsigned int port) { (void)port; return NULL; }
+ 
+ #else
+ 
++#include <cstdarg>
++#include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
+ 
+@@ -413,6 +428,100 @@ void report_gamepad(u32 port)
+         OSReport("[port] input:   rumble not adjustable on this device\n");
+ }
+ 
++// The map a host interface shows, in the terms the report above prints it. Aurora owns the
++// strings; the only thing built here is an axis's sign, which the report writes as a prefix.
++static PortPadRow s_padRows[32];
++static char s_padRowNative[32][48];
++static char s_padDetail[256];
++
++static void pad_detail_append(size_t* used, const char* format, ...)
++{
++    const size_t cap = sizeof s_padDetail;
++    if (*used >= cap)
++        return;
++    va_list arguments;
++    va_start(arguments, format);
++    const int wrote = vsnprintf(s_padDetail + *used, cap - *used, format, arguments);
++    va_end(arguments);
++    if (wrote <= 0)
++        return;
++    *used += ((size_t)wrote < cap - *used) ? (size_t)wrote : (cap - *used);
++}
++
++int PortPadMapping(unsigned int port, const PortPadRow** rows)
++{
++    if (rows != NULL)
++        *rows = NULL;
++
++    u32 buttonCount = 0;
++    const PADButtonMapping* buttons = PADGetButtonMappings(port, &buttonCount);
++    if (buttons == nullptr)
++        return 0;   // an empty port is also how the caller learns there is no map to show
++
++    const unsigned cap = (unsigned)(sizeof s_padRows / sizeof s_padRows[0]);
++    unsigned n = 0;
++    for (u32 i = 0; i < buttonCount && n < cap; i++)
++    {
++        const char* native = buttons[i].nativeButton == PAD_NATIVE_BUTTON_INVALID
++                                 ? "(trigger axis)"
++                                 : PADGetNativeButtonName(buttons[i].nativeButton);
++        s_padRows[n].pad = PADGetButtonName(buttons[i].padButton);
++        s_padRows[n].native = native != nullptr ? native : "(none)";
++        n++;
++    }
++
++    u32 axisCount = 0;
++    const PADAxisMapping* axes = PADGetAxisMappings(port, &axisCount);
++    for (u32 i = 0; axes != nullptr && i < axisCount && n < cap; i++)
++    {
++        const char* native = PADGetNativeAxisName(axes[i].nativeAxis);
++        snprintf(s_padRowNative[n], sizeof s_padRowNative[n], "%s%s",
++                 axes[i].nativeAxis.sign == AXIS_SIGN_NEGATIVE ? "-" : "+",
++                 native != nullptr ? native : "(none)");
++        s_padRows[n].pad = PADGetAxisName(axes[i].padAxis);
++        s_padRows[n].native = s_padRowNative[n];
++        n++;
++    }
++
++    if (rows != NULL)
++        *rows = s_padRows;
++    return (int)n;
++}
++
++const char* PortPadName(unsigned int port)
++{
++    u32 count = 0;
++    if (PADGetButtonMappings(port, &count) == nullptr)
++        return NULL;
++    const char* name = PADGetName(port);
++    return name != nullptr ? name : "controller";
++}
++
++const char* PortPadDetail(unsigned int port)
++{
++    u32 count = 0;
++    if (PADGetButtonMappings(port, &count) == nullptr)
++        return NULL;
++
++    s_padDetail[0] = '\0';
++    size_t used = 0;
++    if (const PADDeadZones* dz = PADGetDeadZones(port))
++        pad_detail_append(&used, "dead zone %.2f main / %.2f c-stick%s; trigger %.2f%s",
++                          (double)dz->stickDeadZone / 32767.0,
++                          (double)dz->substickDeadZone / 32767.0,
++                          dz->useDeadzones ? "" : " (off)",
++                          (double)dz->leftTriggerActivationZone / 32767.0,
++                          dz->emulateTriggers ? "" : " (digital)");
++
++    u16 low = 0, high = 0;
++    if (PADGetRumbleIntensity(port, &low, &high))
++        pad_detail_append(&used, "; rumble %u%%",
++                          (unsigned)((low * 100u + 32767u) / 65535u));
++    else
++        pad_detail_append(&used, "; rumble not adjustable on this device");
++    return s_padDetail;
++}
++
+ // A typo in a pad_* value is reported whether or not a controller is plugged in: the person who
+ // mistyped it is the one without a working pad.
+ void check_pad_config()
+diff --git a/smstrikers-port/src/platform/launch.cpp b/smstrikers-port/src/platform/launch.cpp
+index 33a7e23..d366892 100644
+--- a/smstrikers-port/src/platform/launch.cpp
++++ b/smstrikers-port/src/platform/launch.cpp
+@@ -351,6 +351,11 @@ float g_auroraScale;
+ unsigned g_rowsWanted;
+ unsigned g_rowsGot;
+ 
++// The target size the frame loop has already acted on. Distinct from g_rowsGot, which is what the
++// scale bisection saw: a window resize, an aspect change and a scale change can all move this.
++unsigned g_appliedTargetW;
++unsigned g_appliedTargetH;
++
+ void ApplyRenderRows()
+ {
+     if (g_renderScale <= 0.0f)
+@@ -400,10 +405,21 @@ void PortFollowRenderScale(unsigned int windowHeight)
+ void PortSetRenderScale(float scale)
+ {
+     g_renderScaleChecked = true;
++    if (scale <= 0.0f)
++    {
++        // A host interface's "follow the display again", not a scale of zero: the bisection and
++        // Aurora would both read 0 as a literal request. Clearing the pin is the whole of it --
++        // PortFollowRenderScale re-derives from the window height on the next frame -- and
++        // dropping the memo makes the re-derivation print even when it lands on the same rows, so
++        // a mid-run change is visible in the log rather than inferred.
++        g_renderScalePinned = false;
++        g_renderScale = 0.0f;
++        g_rowsWanted = 0;
++        return;
++    }
++
+     g_renderScalePinned = true;
+     g_renderScale = scale;
+-    if (scale <= 0.0f)
+-        aurora_set_frame_buffer_scale(scale);
+     ApplyRenderRows();
+ }
+ 
+@@ -412,4 +428,23 @@ float PortRenderScale(void)
+     return g_renderScale;
+ }
+ 
++void PortRenderTargetSize(unsigned int* width, unsigned int* height)
++{
++    const AuroraWindowSize ws = aurora_window_size();
++    if (width != NULL)
++        *width = ws.fb_width;
++    if (height != NULL)
++        *height = ws.fb_height;
++}
++
++int PortTakeRenderTargetChange(void)
++{
++    const AuroraWindowSize ws = aurora_window_size();
++    if (ws.fb_width == g_appliedTargetW && ws.fb_height == g_appliedTargetH)
++        return 0;
++    g_appliedTargetW = ws.fb_width;
++    g_appliedTargetH = ws.fb_height;
++    return 1;
++}
++
+ #endif // PORT_USE_AURORA
