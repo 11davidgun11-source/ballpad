@@ -257,6 +257,104 @@ if [ "$SCENARIO_NAME" = "f04-live-match" ]; then
     EXPECT="${EXPECT},S.f04.live-match"
 fi
 
+# R2's audio half cannot be decided by a step either, and for a sharper reason than F04's: its claim
+# is a relationship between two clocks rather than the presence of a line. The transport tick is
+# 5 ms of audio, the loop frame is 1/60 s of game time, and sounds that arrive away from the models
+# that speak them are what a run looks like when those two rates have parted -- which is why the
+# seam read-back now prints its own frame count beside the transport tick. The reading is
+# r2-onset-summary.awk, the same shape as f04-live-summary.awk, and like that one it prints numbers
+# so each clause below can be stated rather than swallowed into a verdict.
+if [ "$SCENARIO_NAME" = "r2-audio" ]; then
+    # The sentinel is every field unreadable, so a bundle with no log at all fails the clauses
+    # below rather than passing them vacuously.
+    R2_SUMMARY="-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1"
+    if [ -f "${PROOF_DIR}/app.log" ]; then
+        R2_SUMMARY="$(awk -f "${BALLPAD_ROOT}/scripts/native/r2-onset-summary.awk" "${PROOF_DIR}/app.log")"
+    fi
+    r2_field() { printf '%s' "$R2_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
+    r2_seen() { printf '(lines/unread/measured/unmeasured/lead-lo/hi/mean/last/handovers/devhold/rate/drain-lo/hi/last/underruns/ticks-lo/hi/frames-lo/hi/wall/tick-hz/frame-hz/skew/fps: %s)' "$R2_SUMMARY"; }
+    # Every reading in this row is a rate, and the shell own [ ] compares integers only.
+    r2_between() { awk -v v="$1" -v lo="$2" -v hi="$3" 'BEGIN { print (v + 0 >= lo + 0 && v + 0 <= hi + 0) ? 1 : 0 }'; }
+    # The condition of a ternary that follows printf has to be parenthesised: host awk is BWK, which
+    # still reads a bare < or > there as the output redirection it can also be, and the whole program
+    # dies as a syntax error. Parenthesising costs nothing and is the difference between a reading
+    # and a run of this block that prints awk errors instead of numbers.
+    r2_gap() { awk -v a="$1" -v b="$2" 'BEGIN { d = a - b; printf "%.1f", (d < 0) ? -d : d }'; }
+    r2_tpf() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.3f", (b != 0) ? a / b : 0 }'; }
+
+    R2_TICK_HZ="$(r2_field 21)"
+    R2_FRAME_HZ="$(r2_field 22)"
+    R2_RATE="$(r2_field 11)"
+    R2_DRAIN="$(r2_field 14)"
+    R2_TPF="$(r2_tpf "$R2_TICK_HZ" "$R2_FRAME_HZ")"
+    R2_SPREAD="$(r2_gap "$(r2_field 6)" "$(r2_field 5)")"
+    R2_DRAIN_LO="$(awk -v r="$R2_RATE" 'BEGIN { printf "%.0f", r * 0.98 }')"
+    R2_DRAIN_HI="$(awk -v r="$R2_RATE" 'BEGIN { printf "%.0f", r * 1.02 }')"
+    R2_FAIL=""
+
+    # Every read-back line has to be readable, or the clocks under it were never judged.
+    if [ "$(r2_field 2)" -ne 0 ]; then
+        R2_FAIL="${R2_FAIL:+$R2_FAIL; }a read-back line carries a field this reading could not read, so the clocks under it were not judged $(r2_seen)"
+    fi
+    # Audio reached the device at all. With no measured line there is no onset to be early or late,
+    # and every clause after this one would be arithmetic over nothing.
+    if [ "$(r2_field 3)" -le 0 ]; then
+        R2_FAIL="${R2_FAIL:+$R2_FAIL; }not one read-back line carried an onset reading, so nothing the game produced was ever handed to the device $(r2_seen)"
+    fi
+    # A rate needs a window: the seam prints every two seconds, so under a minute is too short.
+    if [ "$(r2_between "$(r2_field 20)" 60 1000000)" != "1" ]; then
+        R2_FAIL="${R2_FAIL:+$R2_FAIL; }the read-back covered $(r2_field 20) s of the run, too short for a per-second rate to mean anything $(r2_seen)"
+    fi
+    # The device was never caught with an empty queue, so nothing was dropped mid-stream. This is
+    # the simplest reading of the operator report, and it is ruled out here rather than assumed.
+    if [ "$(r2_field 15)" -ne 0 ]; then
+        R2_FAIL="${R2_FAIL:+$R2_FAIL; }the transport found its queue empty $(r2_field 15) time(s), so audio was dropped mid-stream $(r2_seen)"
+    fi
+    # A queue length is a length in time only if the bytes leave at the rate the format implies.
+    if [ "$(r2_between "$R2_DRAIN" "$R2_DRAIN_LO" "$R2_DRAIN_HI")" != "1" ]; then
+        R2_FAIL="${R2_FAIL:+$R2_FAIL; }the stream drained at $R2_DRAIN B/s against the $R2_RATE B/s its format implies (band $R2_DRAIN_LO-$R2_DRAIN_HI), so the lead is not a length of time $(r2_seen)"
+    fi
+    # The delay itself. The transport keeps kTargetBuffers = 6 buffers of 5 ms queued, so the newest
+    # audio should sit around 30 ms behind the frame that made it: near zero would be an empty queue,
+    # and past 60 ms would be more than three frames of audio the game has already produced.
+    if [ "$(r2_between "$(r2_field 7)" 15 60)" != "1" ]; then
+        R2_FAIL="${R2_FAIL:+$R2_FAIL; }the newest audio ran a mean of $(r2_field 7) ms behind the frame that produced it, outside the 15-60 ms its 30 ms feed target allows $(r2_seen)"
+    fi
+    # And it has to be stable: a delay that sawtooths is heard as drift even when its mean is right.
+    if [ "$(r2_between "$R2_SPREAD" 0 40)" != "1" ]; then
+        R2_FAIL="${R2_FAIL:+$R2_FAIL; }that delay swung over $R2_SPREAD ms between its smallest and largest sample, so it is not a steady lag $(r2_seen)"
+    fi
+    # The frame clock, and the reason this is a sync row rather than a performance row: the game is
+    # hard-locked to the NTSC field -- 23 VIWaitForRetrace calls across the tree, and no frame-rate
+    # decoupling anywhere -- so a loop that runs above it does not buy frames, it buys speed. The
+    # models then cover their animation 5% faster than the audio device, which is driven by real
+    # time, consumes its ticks, and the two halves of one moment part. 59-61 is the band the lock
+    # itself allows.
+    if [ "$(r2_between "$R2_FRAME_HZ" 59 61)" != "1" ]; then
+        R2_FAIL="${R2_FAIL:+$R2_FAIL; }the loop ran $R2_FRAME_HZ frames a second against the 60 the game is hard-locked to, so game time and the audio device clock are not the same clock $(r2_seen)"
+    fi
+    # The reading the operator report turns on: audio time the transport consumed per frame the loop
+    # counted, against the 200/60 = 3.333 that one 60 Hz frame is. 100% is the two clocks agreeing.
+    # 3% is the room the transport's 5 ms tick quantisation needs when the frames are right.
+    if [ "$(r2_between "$(r2_field 23)" 97 103)" != "1" ]; then
+        R2_FAIL="${R2_FAIL:+$R2_FAIL; }a frame carried $R2_TPF ticks of audio where a 60 Hz frame is 3.333, so the skew is $(r2_field 23)% and the audio and the frames are not one clock $(r2_seen)"
+    fi
+    # Two independent measures of the frame rate -- the port rolling window and the seam count --
+    # landing in the same band is what makes the skew above a reading of the game rather than of one
+    # counter. They are not compared to each other: one is a window and one is a whole-run mean, so
+    # requiring them equal would be comparing a sample to an average.
+    if [ "$(r2_between "$(r2_field 24)" 59 61)" != "1" ]; then
+        R2_FAIL="${R2_FAIL:+$R2_FAIL; }the port own rolling fps says $(r2_field 24), so the seam count of $R2_FRAME_HZ is not the loop rate alone $(r2_seen)"
+    fi
+
+    if [ -z "$R2_FAIL" ]; then
+        printf 'S.r2.onset\tPASS\tthe transport ticked %.1f a second of audio beside the seam counting %.1f frames a second, over %.1f s of wall time read from the log itself: %s ticks per frame where a 60 Hz frame is 3.333, so a skew of %.1f%% -- the game\047s own rate and the device rate are one timeline -- with the newest audio %.1f ms behind the frame that produced it (run %.1f-%.1f, mean %.1f, spread %.1f ms), the stream draining at %.0f B/s against the %.0f its format implies, and %.0f underruns; the port own rolling fps %.1f is in the same band as the seam count (fields: %s)\t%s/app.log\n' "$R2_TICK_HZ" "$R2_FRAME_HZ" "$(r2_field 20)" "$R2_TPF" "$(r2_field 23)" "$(r2_field 8)" "$(r2_field 5)" "$(r2_field 6)" "$(r2_field 7)" "$R2_SPREAD" "$R2_DRAIN" "$R2_RATE" "$(r2_field 15)" "$(r2_field 24)" "$R2_SUMMARY" "$(basename "$PROOF_DIR")" >> "$ROWS"
+    else
+        printf 'S.r2.onset\tFAIL\t%s\t%s/app.log\n' "$R2_FAIL" "$(basename "$PROOF_DIR")" >> "$ROWS"
+    fi
+    EXPECT="${EXPECT},S.r2.onset"
+fi
+
 # The driver has already written result.json for the run itself; suite_report.py writes the
 # bundle-level one from the rows.  Keeping the driver's copy under its own name leaves both.
 mv "${PROOF_DIR}/result.json" "${PROOF_DIR}/driver-result.json"

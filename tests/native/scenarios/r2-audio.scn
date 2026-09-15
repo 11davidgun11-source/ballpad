@@ -10,10 +10,18 @@
 #   sound is late or gap-toothed  -> the device transport reports underruns
 #
 # The transport side of that is Ballpad's own read-back, written to the app's log every
-# two seconds whether or not anything is on screen. The mixer side is the port's, and it
-# only prints under STRIKERS_LOG_AUDIO, which is what this scenario switches on; the
-# driver merges the port's stderr into app.stdout.log, so the [port] mix: lines and the
-# per-voice smp_id lines land next to the scene lines that say what is being rendered.
+# two seconds whether or not anything is on screen, and the frame clock beside it: the
+# transport tick is 5 ms of audio and the loop frame is 1/60 s of game time, so the two
+# per-second rates in that one line are what tells a late sound from a drifting one, and
+# scripts/native/r2-onset-summary.awk is the program that reads them.
+#
+# The mixer side is the port's, and it only prints under STRIKERS_LOG_AUDIO, which is what
+# this scenario switches on. On the Simulator the driver launches through
+# simctl launch --console-pty, so the port's stderr and the app's stdout share one stream
+# and every [port] line lands in app.log interleaved with the app's own lines -- the
+# per-voice smp_id lines therefore sit next to the scene lines that say what is rendered.
+# app.stdout.log is the macOS path's, where stdout and stderr are separate files, and it
+# stays empty here.
 #
 # The route and its presses are n3-sim-replay's, verbatim: this scenario exists to look at
 # the same match through a different window, not to drive the game any differently. Goal

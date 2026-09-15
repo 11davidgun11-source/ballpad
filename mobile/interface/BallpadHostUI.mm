@@ -214,12 +214,43 @@ static NSString *BallpadDisplayReadBack(void)
 // came out the far end was not silent, and the transport's tick and underrun counts say whether the
 // device was ever handed it. The dump fields are the recorded-audio row's state, read from the
 // mixer rather than remembered here, so the row's checkmark follows the recording and not the tap.
+//
+// How many frames the port has asked this seam to publish for. It is the loop's own rate measured
+// by a clock outside the port, which is the only way to say whether the audio clock and the frame
+// clock are the same clock: the transport's ticks are 5 ms of *audio* time and this is one *frame*
+// of game time, and a run where the two per-second rates differ is a run where every voice lands
+// further from the model that speaks it than the one before.
+static unsigned long s_framesPolled;
+
 static NSString *BallpadAudioReadBack(void)
 {
     unsigned long buffers = 0;
     unsigned long underruns = 0;
     int everNonSilent = 0;
     PortAudioStats(&buffers, &underruns, &everNonSilent);
+
+    // The transport's queue, which is the half of "are the sounds attached to the models" that
+    // voices and bus peaks cannot answer: those say a sound exists, this says how far behind the
+    // frame that produced it the speaker still is. Printed with its own spread and its own drain
+    // rate, because a queue length is only a length in time if the stream's bytes are leaving at
+    // the stream's own rate.
+    PortAudioLatencyInfo onset;
+    NSString *onsetText = PortAudioLatencyStats(&onset)
+        ? [NSString stringWithFormat:@"onset lead %.1f min %.1f max %.1f mean %.1f ms over %lu "
+                                   @"frames | devhold %.1f ms | drain %.0f B/s of %u",
+                                   onset.leadMs, onset.leadMinMs, onset.leadMaxMs,
+                                   onset.leadMeanMs, onset.handovers, onset.deviceMs,
+                                   onset.drainBytesPerSec, onset.streamByteRate]
+        : @"onset unmeasured (nothing queued yet)";
+
+    // The frame clock beside the audio one, with the line's own timestamp as the third reading.
+    // The port's rolling window and this seam's own count are two independent measures of the same
+    // rate, and they are printed together because a rate compared only against itself is not a
+    // measurement.
+    PortBenchLive live;
+    PortBenchGetLive(&live);
+    NSString *transportText = [NSString stringWithFormat:@"%@ | clock frame %lu fps %.1f",
+                                                         onsetText, s_framesPolled, live.fps];
 
     PortAudioMixInfo mix;
     if (!PortAudioMixStats(&mix))
@@ -229,17 +260,17 @@ static NSString *BallpadAudioReadBack(void)
         // transport's own numbers are still worth having, because ticks with no mixer is a
         // different fault from no ticks at all.
         return [NSString stringWithFormat:@"device %d ticks %lu underruns %lu %@ | the mixer has "
-                @"not run", PortAudioDeviceOpen(), buffers, underruns,
-                everNonSilent ? @"non-silent" : @"silent"];
+                @"not run | %@", PortAudioDeviceOpen(), buffers, underruns,
+                everNonSilent ? @"non-silent" : @"silent", transportText];
     }
 
     return [NSString stringWithFormat:
             @"device %d ticks %lu underruns %lu %@ | studios %d voices %d sample %d env 0x%04x "
-            @"pan 0x%04x bus %d | frq %u master %.2f limiter %.3f | dumping %d frames %lu",
+            @"pan 0x%04x bus %d | frq %u master %.2f limiter %.3f | dumping %d frames %lu | %@",
             PortAudioDeviceOpen(), buffers, underruns, everNonSilent ? @"non-silent" : @"silent",
             mix.studios, mix.voices, mix.withSample, mix.peakEnv, mix.peakVol, mix.busPeak,
             mix.mixFrq, (double)mix.masterGain, (double)mix.limitGain, mix.dumping,
-            mix.dumpFrames];
+            mix.dumpFrames, transportText];
 }
 
 static void BallpadLogAudioTarget(NSString *what)
@@ -2389,6 +2420,11 @@ extern "C" void PortHostUIFrame(void)
 {
     @autoreleasepool
     {
+        // The frame clock the audio read-back is judged against: one count per port loop iteration,
+        // incremented before anything can return early, because a frame that draws nothing is still
+        // a frame the game ran.
+        ++s_framesPolled;
+
         // Before the overlay check, because this is a bridge between the store and the port rather
         // than a piece of the interface: it has to run for the whole run, including the frames
         // before the overlay exists and the frames after a lifecycle rebuild has not put one back
