@@ -21,8 +21,14 @@ left-analog-to-d-pad bits when the map reaches them, and the same-frame offer ca
 lines -- `uitest-phone-f04-2` and `pad-f04-2`, 23/23 rows PASS, 93 consumption lines all accounted
 for by the previous offer against 86 and 85 by the same-frame one, all twelve controls covered. The
 summary program is shared at `scripts/native/consume-summary.awk` rather than inline in the runner.
-What remains open is F04's per-control consumption on a live match, R2/F09's audio onset offset, and
-the three-dot-menu parity audit; nothing here is physical-device evidence.
+F04's other half -- consumption on a *live match* -- is closed by a witness that is not a finger:
+the control channel's state is offered to the port before it clamps into its own pad, so
+`f04-live-match` runs its sweep inside the port's own match bracket on both form factors
+(`scn-f04-live-phone-2` and `scn-f04-live-pad-1`, 3/3 rows PASS with `problems: []`), twelve of
+its thirteen in-bracket samples hold a moved main stick and a pressed control in one sample, all
+twelve controls covered, and the Start press is answered by the game entering its own pause menu.
+What remains open is R2/F09's audio onset offset and the three-dot-menu parity audit; nothing here
+is physical-device evidence.
 
 R1 row 5 -- the six touch settings -- is now closed on a reading taken from the overlay the port is
 handed, not from the store that persists it. The adapter prints each settled drawn tree as
@@ -2134,6 +2140,88 @@ Next concrete action: F04's per-control consumption on a live match; then R2/F09
   `EndPlayTask.cpp:19`, `NetMeshModelLoader.cpp:536` and `GoalieSave.cpp:377`; then the rest of the
   three-dot-menu parity audit; then N5/N7's unsigned device build, clean-reproduction proof and final
   artefacts.
+```
+
+```text
+Phase / gate: N4's remaining row -> doc 34 F04, live-match half (the engine's own pad during a match)
+Date / build identity / patch digest: 2026-09-15; engine series a378c305bf60 (unmoved -- this
+  session's diff is a scenario, an awk reader, the runner's F04 block and doc); app binary
+  c25669ffeb5b (simulator-release); disc da80883ba456 (the recorded baseline); seed save f7400a468e98
+  (the recorded baseline).
+Source invariant and observed failure: the invariant is F04's second reading -- every one of the
+  twelve controls reaches the *game's* pad during a live match, and at least one of those samples
+  carries a moved main stick and a pressed control at the same time, which is what separates "the
+  control was hittable" from "the control was consumed". Two failures stood against it. (1) The clause
+  had no witness at all: XCUIAutomation has no multi-touch, so a UI test delivers one real touch at a
+  time and cannot hold a stick and a button together, and F04's `S.f04.ui-touch-sweep` row -- real
+  touches, one at a time -- cannot produce it however wide it is made. (2) The first attempt to read
+  it FAILed the pause clause while the game's own log plainly answered the Start press:
+  `[port] enter scene 57 art/fe/pausemenu_v3.fen`, then three
+  `[dump] session ... overlay=68,67,72,77,57 pause=1` lines, against a reader that counted pause=0.
+Hypothesis: (1) a witness does not need a finger to be honest here. `src/Game/main.cpp` offers the
+  control channel's state to the port as a synthetic pad (`PortUpdateSyntheticInput`) before
+  `PortInvokePadSamplingCallback` clamps into `PadStatus::s_Current[0]`, so a channel-held stick and
+  a channel-pressed button merge into the same pad sample a finger would reach and the engine-side
+  reading is identical; the row must therefore say outright that it is an injection and leave the
+  touch proof to `S.f04.ui-touch-sweep`. The channel's own units make the reading falsifiable rather
+  than decorative: a hold of 25 of 100 is 31 raw, past the game's 15 deadzone and below the
+  analog-to-d-pad map's 33.6 threshold, so the game's own clamp must land the stick at exactly 16 and
+  every bit in the mask came from a press rather than from the stick. (2) The pause failure was a
+  reader defect, not an app defect: this bundle's `[dump]` records are CRLF-terminated, so the field
+  was `pause=1\r` and a string comparison against `pause=1` could never hold -- the neighbouring
+  match rule survived only because it coerces with `+0`, which is exactly the accident a reader must
+  not depend on.
+Change: three files, no engine change and therefore no new patch digest.
+  `tests/native/scenarios/f04-live-match.scn` (new) -- `r2-audio.scn`'s route to the pitch, a dump,
+  `stick 25 0 900`, twelve `press NAME 6` lines (A B X Y Z L R UP DOWN LEFT RIGHT START, Start last
+  because its mapping is observable as the game's own state rather than as a pad bit), then the
+  closing dumps, all bracketed by the port's own match dumps. `scripts/native/f04-live-summary.awk`
+  (new) reads `consume:` and `[dump]` lines and emits thirteen fields; it now normalizes the record
+  (`{ sub(/\r$/, "") }`) before any rule reads a field, with that reason written above it.
+  `scripts/native/run-scenario.sh` gained the F04 block: twelve clauses, and `S.f04.live-match`
+  appended only for this scenario, so a run whose dumps never bracket the sweep, which names a state
+  other than 4, which holds fewer than twelve controls, whose stick is not the clamp, or which never
+  sees the pause menu fails as a row rather than passing while measuring nothing. `bash -n` clean;
+  the awk avoids the two constructs the host's BWK awk lacks.
+Command / exit status: `scripts/native/run-scenario.sh --scenario f04-live-match --run-id
+  scn-f04-live-phone-2 --device 8619020B-... --form-factor phone` and `--run-id scn-f04-live-pad-1
+  --device B3799189-... --form-factor pad`; both exit 0 with `verdict: PASS` and `problems: []`. The
+  app binary was already built and is unchanged, so no build was needed. Exactly one Simulator booted
+  at a time; each was shut down by UDID after its run, and none is booted now.
+Runtime scene / duration / device-or-Simulator: real app, real engine, Simulator iOS 26.5 --
+  `simctl list devices booted` empty afterwards. Both runs hold in the port's own match scene: phone
+  opening `state=4 ot=0 clock=0.71 dur=300.00 score=0-0 pads=0,-1,-1,-1` and closing `clock=1.44`,
+  iPad the same shape at `clock=0.71` / `clock=1.38`; wall 54.2 s and 55.6 s.
+Evidence bundle: build/proofs/native-strikers/f04-live-match-phone-scn-f04-live-phone-2/ and
+  build/proofs/native-strikers/f04-live-match-pad-scn-f04-live-pad-1/ -- `rows.tsv`, `result.json`,
+  `driver-result.json`, `metadata.json`, `app.log`. Both publish the same reading,
+  `13 13 0 12 12 - 13 12 3 2 4 16,0 0` (total/ok/errored/simult/covered/missing/stick-lines/masks/
+  pause/bracket/state/stick/unreadable). The thirteen in-bracket samples are twelve distinct one-bit
+  masks, each on `stick 16,0` -- `0x0100 0x0200 0x0400 0x0800 0x0010 0x0040 0x0020 0x0008 0x0004
+  0x0001 0x0002` then `0x1000`, with engine `err 0` on every one -- and the `0x0000 16,0` samples
+  between them show the stick alone, so the masks are the presses and not the stick's own d-pad bits.
+  The Start press is answered by the game rather than by the pad: `[port] enter scene 57
+  art/fe/pausemenu_v3.fen` and three session dumps whose overlay grows from `68,67,72,77` to
+  `68,67,72,77,57` at `pause=1`.
+Result: PASS on both form factors for `S.run`, `S.provenance` and `S.f04.live-match` -- 3/3 rows, no
+  problems. This closes N4's last row. F04 now has both halves: the UI sweep proves the app's own
+  overlay turns a real touch into each of the twelve controls, and this row proves the engine's own
+  pad receives them, twelve of thirteen samples holding stick and control together, inside a match the
+  game itself named as state 4.
+What this result does and does not prove: proves per-control consumption by the engine's own pad
+  inside a live match -- not hittability, not scene arrival, not a screenshot -- and proves the
+  simultaneity F04 asks for, with the stick's value shown to be the game's clamp rather than the
+  channel's number. It also makes the pause clause able to fail: the clause now reads a change in the
+  game's own state (`enter scene 57`, `pause=1`) rather than the keypress. Does not prove: that the
+  simultaneity came from two *fingers*, which no Simulator UI test can produce and which the row's own
+  text declines to claim; the audio onset offset behind the operator's "the sounds seem disconnected
+  from the models speaking them", still unmeasured; or any physical-device behaviour.
+Next concrete action: R2/F09's audio onset offset, the last unmeasured reading behind the operator's
+  audio note. Design of record: sample `port_monotonic_ns()` at `SDL_PutAudioStreamData` in
+  `src/platform/audio_out.cpp:150` and compare it with `SDL_GetAudioStreamQueued` at `:176`; the
+  pitch/SRC hypothesis is dead and must not be rebuilt. Then the three-dot-menu parity audit's
+  remaining rows, then N5/N7's unsigned device build, `verify-clean.sh`, `verify-notices.sh` and the
+  final artefacts.
 ```
 
 ## Checkpoint template

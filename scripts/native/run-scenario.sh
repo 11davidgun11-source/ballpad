@@ -196,6 +196,67 @@ else
     printf 'S.provenance\tFAIL\t%s\t%s\n' "$PROVENANCE_FAIL" "$(basename "$PROOF_DIR")/rows.tsv" >> "$ROWS"
 fi
 
+# ── A scenario's own reading, where the claim needs one ──────────────────────
+# Most scenarios decide their claim inside the driver: every step observed, or the driver exits
+# nonzero. F04's live-match half cannot be decided that way, because the reading it needs is not a
+# log line a step can wait for -- it is a *count* over the port's own consume: lines, taken between
+# two dumps of the engine's match state, and it is arithmetic rather than presence. The program is
+# the same shape as the UI-test runner's consume-summary.awk and lives in the same place, and like
+# that one it prints numbers so this script can state each clause, rather than a verdict.
+#
+# What the row is allowed to claim is bounded by what was injected. The scenario drives the port's
+# control channel (press/stick), which merges into the same pad sample a finger on the glass reaches
+# -- src/Game/main.cpp calls PortUpdateSyntheticInput, which merges the host's offer and the
+# channel's held state, before the VBlank pad pass clamps the result into PadStatus::s_Current[0] --
+# so the engine-side reading is the same reading a touch would produce. It is still an injection and
+# not a touch, and the row says so: XCUIAutomation has no multi-touch, so the simultaneous clause
+# cannot be produced by two held fingers, and the row that does measure real fingers is
+# S.f04.ui-touch-sweep in the UI-test run.
+EXPECT="S.run,S.provenance"
+if [ "$SCENARIO_NAME" = "f04-live-match" ]; then
+    LIVE_SUMMARY="0 0 0 0 0 - 0 0 0 0 -1 - 0"
+    [ -f "${PROOF_DIR}/app.log" ] \
+        && LIVE_SUMMARY="$(awk -f "${BALLPAD_ROOT}/scripts/native/f04-live-summary.awk" \
+            "${PROOF_DIR}/app.log")"
+    live_field() { printf '%s' "$LIVE_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
+    live_text() { printf '%s' "$LIVE_SUMMARY" | awk -v n="$1" '{ print $n }'; }
+    LIVE_FAIL=""
+    [ "$(live_field 10)" -eq 2 ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }the port's own match dump did not bracket the sweep, so no frame in it is known to be a live match (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    [ "$(live_field 11)" -eq 4 ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }the dump that opened the bracket named match state $(live_field 11) rather than 4, so the sweep did not land in live gameplay (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    [ "$(live_field 13)" -eq 0 ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }a consume: line carries a field this script could not read, so the engine's own pad could not be judged (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    [ "$(live_field 1)" -gt 0 ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }the engine's own pad did not change once between the two match dumps, so no control reached it during the match (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    [ "$(live_field 3)" -eq 0 ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }the engine reported a pad fault while a control was held during the match (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    [ "$(live_field 7)" -gt 0 ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }no frame of the match shows the engine's own pad holding the main stick the channel was holding, so the stick did not reach the game (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    # The clause no single finger can produce, and the reason this row exists beside the UI sweep:
+    # one sample of the game's own pad carrying both a moved main stick and a pressed control.
+    [ "$(live_field 4)" -gt 0 ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }no frame of the match shows the engine's own pad holding a moved main stick and a pressed control at the same time, so the simultaneous clause was not measured (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    [ "$(live_field 5)" -eq 12 ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }those frames held only $(live_field 5) of the twelve controls, so the sweep did not carry every control into a live match (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    [ "$(live_text 6)" = "-" ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }the simultaneous frames never show the engine's pad holding $(live_text 6), so those controls were injected and not read (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    # The reading is tied back to what was asked for, not merely to "a stick moved": a hold of 25 of
+    # 100 is 31 raw, and the game's own clamp takes it past its 15 deadzone to 16.
+    [ "$(live_text 12)" = "16,0" ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }the engine's own pad held the main stick at $(live_text 12) where the game's clamp of the channel's 25-of-100 hold is 16,0, so the sample is not the clamp this row rests on (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    # The game's answer rather than the keypress: FrontEnd::UpdateForGame turns Start into
+    # EnterMenuState(MET_PAUSE) and m_bInPauseMenuState, and the port's dump prints that as pause=1.
+    [ "$(live_field 9)" -gt 0 ] \
+        || LIVE_FAIL="${LIVE_FAIL:+$LIVE_FAIL; }the game never reported its own pause menu open after the Start press, so no control was seen to change the game's state rather than only its pad (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: ${LIVE_SUMMARY})"
+    if [ -z "$LIVE_FAIL" ]; then
+        printf "S.f04.live-match\tPASS\t%s consume: lines inside the port's own match bracket, %s with no engine pad error, %s of them holding a moved main stick (at %s, the game's clamp of the channel's hold) and a pressed control in the same sample -- %s different masks, covering all %s controls (missing %s) -- and %s dump line(s) reporting the game's own pause menu open after the Start press; moved by the control channel, which merges into the same pad sample a finger reaches, not by a UI touch (total/ok/errored/simult/covered/missing/stick-lines/masks/pause/bracket/state/stick/unreadable: %s)\t%s/app.log\n" "$(live_field 1)" "$(live_field 2)" "$(live_field 4)" "$(live_text 12)" "$(live_field 8)" "$(live_field 5)" "$(live_text 6)" "$(live_field 9)" "$LIVE_SUMMARY" "$(basename "$PROOF_DIR")" >> "$ROWS"
+    else
+        printf 'S.f04.live-match\tFAIL\t%s\t%s/app.log\n' "$LIVE_FAIL" "$(basename "$PROOF_DIR")" >> "$ROWS"
+    fi
+    EXPECT="${EXPECT},S.f04.live-match"
+fi
+
 # The driver has already written result.json for the run itself; suite_report.py writes the
 # bundle-level one from the rows.  Keeping the driver's copy under its own name leaves both.
 mv "${PROOF_DIR}/result.json" "${PROOF_DIR}/driver-result.json"
@@ -203,7 +264,7 @@ set +e
 python3 "${BALLPAD_ROOT}/scripts/native/lib/suite_report.py" \
     --suite "scenario" --platform "$PLATFORM" --device "$DEVICE" --bundle-id "$IOS_BUNDLE_ID" \
     --run-id "$RUN_TAG" --proof-dir "$PROOF_DIR" --configuration Release \
-    --expect "S.run,S.provenance" \
+    --expect "$EXPECT" \
     --command "scripts/native/run-scenario.sh --scenario ${SCENARIO_NAME} --run-id ${RUN_TAG}" \
     < "$ROWS"
 status=$?

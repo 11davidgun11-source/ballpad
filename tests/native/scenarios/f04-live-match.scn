@@ -1,0 +1,64 @@
+# F04's live-match half: during a real match, does the engine's own pad hold a control -- and hold
+# one *while* the main stick is moved -- and does the game answer a control whose mapping can be
+# observed in its own state?
+#
+# What this is, and what it is not. The route is r2-audio's, verbatim, so the match is reached the
+# same way the audio row reaches it: the front end's own screens, driven by the port's
+# scene-anchored presses, with no guest schedule, no fake frames and no skipped scene. What is
+# injected is the sweep itself, on the port's control channel (STRIKERS_CONTROL, press/stick), and
+# that is a *control-channel injection*, not a UI touch. XCUIAutomation has no multi-touch, so two
+# held real touches cannot be produced, and this scenario does not pretend otherwise: the runner's
+# row says which half is a touch (S.f04.ui-touch-sweep, every one of the twelve controls drawn by a
+# real finger and read back off the engine's own pad) and which half is injected (this one).
+#
+# Where the measurement is taken, and why an injection is admissible there. src/Game/main.cpp lays
+# a frame out as PortUpdateSyntheticInput -- the host's offer, then this channel's held button and
+# stick, merged by Aurora's own dominant_axis rule rather than assigned over the offer -- then
+# PortHostUIFrame, then PortInvokePadSamplingCallback, which runs the registered VBlank pad pass
+# that clamps what it read and swaps it into PadStatus::s_Current[0]. A finger on the glass and a
+# line in the control file therefore reach the same merge and are clamped by the same pass, which is
+# why doc 34's "inputs must reach the same sampling boundary as human controls" holds for the
+# channel: the pad this row reads is the pad the game's tasks read.
+#
+# The stick is held at 25 rather than 100 on purpose. The port's left-analog-to-d-pad map
+# (src/NL/plat/platpad.cpp) ORs a compass sector into the sample only once the clamped stick reaches
+# 0.6 of its 56 radius -- 33.6 -- so a hold of 100 would put a RIGHT bit in the mask the host never
+# pressed and make "which bit came from the press" ambiguous. 25 of 100 is 31 raw, which the game's
+# own clamp takes past its 15 deadzone to 16: nonzero, past the deadzone, below the map's threshold.
+# Every bit in the mask during the sweep is therefore a bit a press made.
+#
+# Start is the last press inside the bracket because its mapping is observable as the game's own
+# response rather than as a bit: FrontEnd::UpdateForGame turns a Start press into EnterMenuState(
+# MET_PAUSE) and m_bInPauseMenuState, which the port's dump prints as pause=1. The two dumps after
+# it exist because the pause is read by PortDebugFrame at the top of a frame and the press is
+# executed later in the same frame, so the dump that follows the press by one frame can still have
+# been filled before the game answered it; three consecutive dumps bound that lag without inventing
+# a sleep. A control whose mapping can be watched in the game's own state is the stronger half of
+# doc 34's "verify game response, not merely button hittability".
+#
+# health -> saving/loading -> legal -> intro movie -> title -> main menu -> mariobg -> choose
+# captains (both sides) -> stadium select -> loading -> live match -> the sweep -> quit.
+env STRIKERS_LOG_SCENES=1
+env STRIKERS_LOG_MATCH=1
+env STRIKERS_LOG_CONSUME=1
+env STRIKERS_AUTOPRESS=A@s51+180,A@s2+240,A@s53+120,A@s3+240,A@s8+300,A@s8+420,A@s8+540,A@s8+660,LEFT@s8+780,A@s8+900,A@s8+1020,A@s9+300
+require-scene choose_captains
+wait-log state=4 ot=0 score @420
+dump f04_live_start
+stick 25 0 900
+press A 6
+press B 6
+press X 6
+press Y 6
+press Z 6
+press L 6
+press R 6
+press UP 6
+press DOWN 6
+press LEFT 6
+press RIGHT 6
+press START 6
+dump f04_live_end
+dump f04_pause_1
+dump f04_pause_2
+quit
