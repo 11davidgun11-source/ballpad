@@ -23,16 +23,24 @@ Aspect: PortSetTargetAspect takes a ratio, and PortFollowWindowShape keeps
 calling PortSetWindowAspect every frame, which only writes while following, so
 a pinned aspect genuinely survives and a non-positive target restores it.
 
-Desktop Release rebuilds and links.
+The pad map's three definitions first sat inside the unnamed namespace that
+opens above them, and a name in an unnamed namespace has internal linkage
+however it is declared: the C names never reached the linker, and because
+nothing in the file called them the compiler left them out of the object file
+altogether. They now sit at namespace scope, between two blocks of the same
+unnamed namespace, so the header's extern "C" declarations bind and
+input.cpp.o exports _PortPadMapping, _PortPadName and _PortPadDetail.
+
+Simulator Release links.
 ---
  smstrikers-port/include/port/aspect.h   |   9 ++
  smstrikers-port/include/port/input.h    |  23 +++++
  smstrikers-port/include/port/launch.h   |  14 +++
  smstrikers-port/src/Game/main.cpp       |  18 ++--
  smstrikers-port/src/platform/aspect.c   |  47 ++++++++++
- smstrikers-port/src/platform/input.cpp  | 109 ++++++++++++++++++++++++
- smstrikers-port/src/platform/launch.cpp |  39 ++++++++-
- 7 files changed, 251 insertions(+), 8 deletions(-)
+ smstrikers-port/src/platform/input.cpp  | 120 ++++++++++++++++++++++++
+ smstrikers-port/src/platform/launch.cpp |  39 +++++++-
+ 7 files changed, 262 insertions(+), 8 deletions(-)
 
 diff --git a/smstrikers-port/include/port/aspect.h b/smstrikers-port/include/port/aspect.h
 index 85617b5..4cb33d7 100644
@@ -212,7 +220,7 @@ index 825ad2d..924486f 100644
  // handles, because it is not a value but a promise to keep following the window.
  static float ParseAspect(const char* s)
 diff --git a/smstrikers-port/src/platform/input.cpp b/smstrikers-port/src/platform/input.cpp
-index 4237a8f..5edd4bd 100644
+index 4237a8f..703fe67 100644
 --- a/smstrikers-port/src/platform/input.cpp
 +++ b/smstrikers-port/src/platform/input.cpp
 @@ -1,14 +1,29 @@
@@ -245,7 +253,7 @@ index 4237a8f..5edd4bd 100644
  #include <cstdlib>
  #include <cstring>
  
-@@ -413,6 +428,100 @@ void report_gamepad(u32 port)
+@@ -413,6 +428,111 @@ void report_gamepad(u32 port)
          OSReport("[port] input:   rumble not adjustable on this device\n");
  }
  
@@ -268,6 +276,14 @@ index 4237a8f..5edd4bd 100644
 +        return;
 +    *used += ((size_t)wrote < cap - *used) ? (size_t)wrote : (cap - *used);
 +}
++
++}   // namespace
++
++// The three below are the port's C surface for a host interface (include/port/input.h), so they
++// sit outside the unnamed namespace rather than beside the map they read: a name in an unnamed
++// namespace has internal linkage however it is declared, which keeps the C names out of the link
++// and lets a function nothing in this file calls be dropped before it reaches the object file.
++// The namespace is reopened below, which continues the same unnamed namespace.
 +
 +int PortPadMapping(unsigned int port, const PortPadRow** rows)
 +{
@@ -342,6 +358,9 @@ index 4237a8f..5edd4bd 100644
 +        pad_detail_append(&used, "; rumble not adjustable on this device");
 +    return s_padDetail;
 +}
++
++namespace
++{
 +
  // A typo in a pad_* value is reported whether or not a controller is plugged in: the person who
  // mistyped it is the one without a working pad.
