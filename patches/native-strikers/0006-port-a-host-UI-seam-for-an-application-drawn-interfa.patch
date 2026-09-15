@@ -1,0 +1,313 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chris Sotraidis <56282582+chrissotraidis@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 20:35:15 -0500
+Subject: [PATCH] port: a host-UI seam for an application-drawn interface
+
+The port owns the window and the frame loop, so it is the only place that
+knows when the window exists and when a frame's input has been assembled. A
+mobile host wants its own controls above the renderer; the desktop has
+nothing to put there. Four hooks are that seam: Start once the window exists,
+PollPad while the frame's pad is assembled, Frame after it, Stop after the
+loop. Defaults are weak no-ops, so no host and a host are the same object
+list.
+
+PollPad is the interesting one. It has to run before the port's own pad
+handling rather than after, because the merge is not a hand-off: a host's
+touch state and the port's synthetic pad (keyboard, AUTOPRESS, replay) are
+OR'ed button-wise, the axis with the larger magnitude wins and a trigger
+takes the larger pressure. Either side can therefore be present alone, and a
+recorded input run stays reproducible while touch still works. Placing it
+after the pad is assembled instead would make a host's state race the
+game's read of it.
+
+The pad struct carries the GameCube button bits spelled as PORT_PAD_*, so a
+host can translate its own layout without including a Dolphin header, and
+input.cpp static_asserts every bit against PAD_BUTTON_*/PAD_TRIGGER_* so the
+two spellings cannot drift silently.
+
+Weak defaults make "did the host actually take over" a question the linker
+answers quietly, so it is written down in hostui.c: a weak definition in this
+object file satisfies the references, and a host shipping its side as a
+static archive is never searched -- the app links, runs and silently has no
+controls unless it pulls the archive in unconditionally.
+---
+ smstrikers-port/include/port/hostui.h  | 85 ++++++++++++++++++++++++++
+ smstrikers-port/src/Game/main.cpp      | 13 ++++
+ smstrikers-port/src/platform/hostui.c  | 44 +++++++++++++
+ smstrikers-port/src/platform/input.cpp | 53 ++++++++++++++++
+ 4 files changed, 195 insertions(+)
+ create mode 100644 smstrikers-port/include/port/hostui.h
+ create mode 100644 smstrikers-port/src/platform/hostui.c
+
+diff --git a/smstrikers-port/include/port/hostui.h b/smstrikers-port/include/port/hostui.h
+new file mode 100644
+index 0000000..694dab3
+--- /dev/null
++++ b/smstrikers-port/include/port/hostui.h
+@@ -0,0 +1,85 @@
++#ifndef PORT_HOSTUI_H
++#define PORT_HOSTUI_H
++
++// The port's one door into the host application's own user interface.
++//
++// The port owns the game, the window and the frame loop, so it is the only place that knows when
++// the window exists and when a frame's input has finished being assembled. An Android, iOS or
++// web host wants to put its own interface above the renderer; on the desktop there is nothing to
++// put there. These four hooks are that seam, and they are deliberately opaque: the port passes a
++// window it does not describe, and the host decides what to do with it.
++//
++// Defaults are weak no-ops (src/platform/hostui.c), so a build that supplies no host interface
++// still links and runs. A host that supplies strong definitions replaces them.
++//
++// Order the port guarantees:
++//   PortHostUIStart    once, after the window exists and before the first frame.
++//   PortHostUIPollPad  once per frame, while the port assembles that frame's pad and before the
++//                      game's tasks read it. This is where a host's input joins the port's own.
++//   PortHostUIFrame    once per frame, after that pad is assembled: a host's own per-frame
++//                      interface work (relayout, controller visibility) belongs here.
++//   PortHostUIStop     once, after the frame loop and before the window is destroyed.
++//
++// On iOS the whole loop runs on the main thread, so these are main-thread calls and a host may
++// touch UIKit from them without hopping.
++
++// The pad a host publishes. Its bits are the GameCube pad's, spelled here so that a host can
++// translate its own layout without including a Dolphin header; the port asserts them against
++// dolphin/pad.h's PAD_BUTTON_*/PAD_TRIGGER_* at compile time (src/platform/input.cpp), so the two
++// spellings cannot drift apart without a build failure. PAD_BUTTON_MENU shares the START bit and
++// is deliberately not a second name here.
++enum
++{
++    PORT_PAD_BUTTON_LEFT = 0x0001,
++    PORT_PAD_BUTTON_RIGHT = 0x0002,
++    PORT_PAD_BUTTON_DOWN = 0x0004,
++    PORT_PAD_BUTTON_UP = 0x0008,
++    PORT_PAD_TRIGGER_Z = 0x0010,
++    PORT_PAD_TRIGGER_R = 0x0020,
++    PORT_PAD_TRIGGER_L = 0x0040,
++    PORT_PAD_BUTTON_A = 0x0100,
++    PORT_PAD_BUTTON_B = 0x0200,
++    PORT_PAD_BUTTON_X = 0x0400,
++    PORT_PAD_BUTTON_Y = 0x0800,
++    PORT_PAD_BUTTON_START = 0x1000
++};
++
++// One frame of host input, in the port's own scale: the main stick and the C stick are -127..127,
++// and a trigger is 0..255.
++typedef struct PortHostPad
++{
++    unsigned int buttons;   // PORT_PAD_* bits
++    int stickX;
++    int stickY;
++    int substickX;
++    int substickY;
++    int triggerLeft;
++    int triggerRight;
++} PortHostPad;
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++// `sdlWindow` is the SDL_Window* the port presents into, or NULL if there is none.
++void PortHostUIStart(void* sdlWindow);
++
++// The host's pad for the current frame. The port merges it with its own synthetic input -- buttons
++// are OR'ed, the axis with the larger magnitude wins, a trigger takes the larger pressure -- rather
++// than letting either side replace the other, so a host's touch controls and the port's own
++// keyboard/AUTOPRESS pad stay usable at the same time. Returns nonzero when the host has a pad at
++// all, which says the host is present rather than that any control is held.
++//
++// Called exactly once per frame. A host whose input source latches rising edges and clears them
++// when read must consume that source once per call, or a press survives into an unrelated frame.
++int PortHostUIPollPad(PortHostPad* out);
++
++void PortHostUIFrame(void);
++
++void PortHostUIStop(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif // PORT_HOSTUI_H
+diff --git a/smstrikers-port/src/Game/main.cpp b/smstrikers-port/src/Game/main.cpp
+index 02c71d4..c408835 100644
+--- a/smstrikers-port/src/Game/main.cpp
++++ b/smstrikers-port/src/Game/main.cpp
+@@ -14,6 +14,9 @@
+ #include <SDL3/SDL_video.h>
+ #endif
+ #include "port/overlay.h"
++// PORT: the host application's own interface above the game (mobile touch controls). Weak no-ops
++// unless the host defines them; see include/port/hostui.h for the guarantee about when they run.
++#include "port/hostui.h"
+ extern "C" void PortDebugFrame(void);   // PORT: defined in Game.cpp
+ #include "port/launch.h"
+ #include <aurora/main.h>   // #define main aurora_main
+@@ -771,6 +774,10 @@ int main(int argc, char* argv[])
+             s_portWindow = info.window;
+         }
+ 
++        // PORT: after the window and its aspect exist and before the first frame, which is the only
++        // moment a host interface can be placed above a renderer that is not yet presenting.
++        PortHostUIStart(info.window);
++
+         // PORT: Aurora falls back to its preference order when the requested backend will not start.
+         if (wantBackend != BACKEND_AUTO && info.backend != wantBackend)
+         {
+@@ -837,6 +844,9 @@ int main(int argc, char* argv[])
+     {
+         PortPumpAuroraEvents();
+         PortUpdateSyntheticInput(s_portFrame);
++        // PORT: after the port has assembled this frame's pad, before the tasks read it, so a host
++        // interface's touch state and a synthetic press merge in the same place instead of racing.
++        PortHostUIFrame();
+         PortDebugFrame();
+ 
+         if (!aurora_begin_frame())
+@@ -895,6 +905,9 @@ int main(int argc, char* argv[])
+         }
+     }
+     PortBenchReport();
++    // PORT: the loop is over, so a host interface must stop publishing input before the surface it
++    // is drawing over goes away.
++    PortHostUIStop();
+     aurora_shutdown();
+     // PORT: on iOS this main() is not the process entry point. UIKit calls it from the scene
+     // delegate's postFinishLaunch, so returning from it leaves the application alive with no
+diff --git a/smstrikers-port/src/platform/hostui.c b/smstrikers-port/src/platform/hostui.c
+new file mode 100644
+index 0000000..cda21e7
+--- /dev/null
++++ b/smstrikers-port/src/platform/hostui.c
+@@ -0,0 +1,44 @@
++// The default host interface: four no-ops.
++//
++// A host application that draws its own controls over the game defines these instead, and a strong
++// definition beats a weak one. Keeping the defaults here rather than behind an #ifdef means an
++// ordinary desktop build links the same object list as a mobile one, so the absence of a host
++// interface is a property of the host and never of the platform.
++
++#include "port/hostui.h"
++
++// These must lose to a host's own definitions; a strong symbol beats a weak one, and
++// `weak_definition` on Mach-O and `weak` on ELF are the same declaration in clang.
++//
++// Losing is automatic only when the host's definitions are themselves on the link line. A weak
++// definition in this object file already satisfies every reference, so the linker has no reason to
++// search an archive for these symbols and a host that packages its side as a static library is
++// never reached -- the build links, runs, and quietly has no host interface. A host packaging them
++// that way must pull its archive in unconditionally; Ballpad's iOS app pairs a whole-archive pull
++// with an explicit -Wl,-u for each hook.
++#if defined(__GNUC__)
++#define PORT_WEAK __attribute__((weak))
++#else
++#define PORT_WEAK
++#endif
++
++PORT_WEAK void PortHostUIStart(void* sdlWindow)
++{
++    (void)sdlWindow;
++}
++
++PORT_WEAK void PortHostUIFrame(void)
++{
++}
++
++PORT_WEAK void PortHostUIStop(void)
++{
++}
++
++// "No host pad" is the whole answer on a platform with no host interface: the port's own synthetic
++// input is then the only source, exactly as it was before this seam existed.
++PORT_WEAK int PortHostUIPollPad(PortHostPad* out)
++{
++    (void)out;
++    return 0;
++}
+diff --git a/smstrikers-port/src/platform/input.cpp b/smstrikers-port/src/platform/input.cpp
+index b49517a..4237a8f 100644
+--- a/smstrikers-port/src/platform/input.cpp
++++ b/smstrikers-port/src/platform/input.cpp
+@@ -21,8 +21,26 @@ extern "C" void PortUpdateSyntheticInput(unsigned long frame) { (void)frame; }
+ 
+ #include "dolphin/os.h"
+ #include "dolphin/pad.h"
++#include "port/hostui.h"
+ #include "port/input.h"
+ 
++// The pad bits in port/hostui.h are a second spelling of the engine's, so that a host can
++// translate its own layout without including a Dolphin header. These assertions are what keep that
++// spelling honest: if Aurora's pad bits move, this file stops compiling instead of an app silently
++// pressing the wrong button.
++static_assert(PORT_PAD_BUTTON_LEFT == PAD_BUTTON_LEFT, "port host pad: left");
++static_assert(PORT_PAD_BUTTON_RIGHT == PAD_BUTTON_RIGHT, "port host pad: right");
++static_assert(PORT_PAD_BUTTON_DOWN == PAD_BUTTON_DOWN, "port host pad: down");
++static_assert(PORT_PAD_BUTTON_UP == PAD_BUTTON_UP, "port host pad: up");
++static_assert(PORT_PAD_TRIGGER_Z == PAD_TRIGGER_Z, "port host pad: z");
++static_assert(PORT_PAD_TRIGGER_R == PAD_TRIGGER_R, "port host pad: r");
++static_assert(PORT_PAD_TRIGGER_L == PAD_TRIGGER_L, "port host pad: l");
++static_assert(PORT_PAD_BUTTON_A == PAD_BUTTON_A, "port host pad: a");
++static_assert(PORT_PAD_BUTTON_B == PAD_BUTTON_B, "port host pad: b");
++static_assert(PORT_PAD_BUTTON_X == PAD_BUTTON_X, "port host pad: x");
++static_assert(PORT_PAD_BUTTON_Y == PAD_BUTTON_Y, "port host pad: y");
++static_assert(PORT_PAD_BUTTON_START == PAD_BUTTON_START, "port host pad: start");
++
+ namespace
+ {
+ 
+@@ -966,12 +984,30 @@ void record_pad(unsigned long frame)
+     s_haveLastRecorded = true;
+ }
+ 
++// Aurora's own rule for combining a virtual pad with a physical one (merge_virtual_status in
++// extern/aurora/lib/dolphin/pad/pad.cpp): the axis with the larger magnitude wins. Using the same
++// rule here keeps a host's touch stick and the port's synthetic stick from cancelling each other
++// out and centring the stick while both are pushed.
++int dominant_axis(int a, int b)
++{
++    return std::abs(b) > std::abs(a) ? b : a;
++}
++
+ }   // namespace
+ 
+ extern "C" void PortUpdateSyntheticInput(unsigned long frame)
+ {
+     s_currentFrame = frame;
+ 
++    // The host application's own interface is polled here, once per frame, at the top of the frame
++    // in which its input is used. Two consequences are deliberate: the host's pad joins the
++    // synthetic pad below instead of replacing it, and the poll happens even when a recording is
++    // about to take over, because a source whose edges are cleared on read would otherwise carry a
++    // press into a later frame. A recording is still a complete description of the input, so its
++    // result is read and then deliberately dropped.
++    PortHostPad hostPad;
++    const bool haveHostPad = PortHostUIPollPad(&hostPad) != 0;
++
+     // A controller can arrive at any time, and its mapping is Aurora's until the file's is put over
+     // it.
+     poll_controllers(probe_pad());
+@@ -1019,6 +1055,23 @@ extern "C" void PortUpdateSyntheticInput(unsigned long frame)
+     }
+     held |= fake_key_state(frame, &lx, &ly, &rx, &ry, &tl, &tr);
+ 
++    // The host's contribution, merged with Aurora's own virtual-pad rules rather than assigned
++    // over the top of them: buttons are OR'ed, the stronger axis reading wins, a trigger keeps the
++    // larger pressure. The clamps below then hold whatever the two of them produced to the pad's
++    // range.
++    if (haveHostPad)
++    {
++        held |= (PADButton)hostPad.buttons;
++        lx = dominant_axis(lx, hostPad.stickX);
++        ly = dominant_axis(ly, hostPad.stickY);
++        rx = dominant_axis(rx, hostPad.substickX);
++        ry = dominant_axis(ry, hostPad.substickY);
++        if (hostPad.triggerLeft > tl)
++            tl = hostPad.triggerLeft;
++        if (hostPad.triggerRight > tr)
++            tr = hostPad.triggerRight;
++    }
++
+     if (held == 0 && lx == 0 && ly == 0 && rx == 0 && ry == 0 && tl == 0 && tr == 0)
+     {
+         PADClearVirtualStatus(0);

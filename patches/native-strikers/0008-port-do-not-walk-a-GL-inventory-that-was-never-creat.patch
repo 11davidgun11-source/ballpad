@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chris Sotraidis <56282582+chrissotraidis@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 23:41:57 -0500
+Subject: [PATCH] port: do not walk a GL inventory that was never created
+
+Delete() walks the 16 per-level containers, their lists and their AVL
+trees, and Create() is what builds all of them.  The global glInventory is
+constructed as a static object, so its destructor runs on every exit path,
+including the ones that end the process before the renderer exists -- a bad
+STRIKERS_BACKEND= name returning 1 from main, and now the unresolved-disc
+refusal that the entry point reports.  Unguarded, ReleaseLevel() dereferences
+a null m_pFileData[nLevel] and the process dies of SIGSEGV during
+__cxa_finalize instead of exiting with the status it chose.
+
+Measured before the change: STRIKERS_BACKEND=zzz exits 139 with the crash in
+GLInventory::Delete, on the same binary where a valid disc exits 0.  After,
+both exit with their own status and no signal handler runs.
+
+m_bCreated is the flag Create() and Delete() already keep for this question,
+so the guard adds no new state.
+
+// PORT: a crash on the way out of a failed start; no behaviour change to a run
+// that reaches Create().
+---
+ smstrikers-port/src/Game/GL/GLInventory.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/smstrikers-port/src/Game/GL/GLInventory.cpp b/smstrikers-port/src/Game/GL/GLInventory.cpp
+index b478e7e..287e177 100644
+--- a/smstrikers-port/src/Game/GL/GLInventory.cpp
++++ b/smstrikers-port/src/Game/GL/GLInventory.cpp
+@@ -26,7 +26,13 @@ GLInventory glInventory;
+  */
+ GLInventory::~GLInventory()
+ {
+-    Delete();
++    // PORT: Delete() walks the per-level containers and their trees, and Create() is what builds
++    // them. A process that ends before the renderer is up -- no disc, a host whose importer has not
++    // run yet, a bad backend name -- still runs this destructor, and unguarded it segfaults in
++    // ReleaseLevel() on a null container instead of exiting with its own status. m_bCreated is the
++    // flag Create() and Delete() already keep for exactly this question.
++    if (m_bCreated)
++        Delete();
+ }
+ 
+ /**

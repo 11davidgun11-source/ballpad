@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ballpad Native Port <dev@ballpad.local>
+Date: Mon, 14 Sep 2026 04:06:18 -0500
+Subject: [PATCH] ios: do not embed the macOS Info.plist section in an iOS
+ build
+
+An iOS application reads its Info.plist from the .app bundle; the __TEXT,__info_plist section
+is a macOS convention, so guard it with NOT IOS and leave the iOS plist to the app target.
+---
+ smstrikers-port/CMakeLists.txt | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/smstrikers-port/CMakeLists.txt b/smstrikers-port/CMakeLists.txt
+index 1e9fb56..34a17d6 100644
+--- a/smstrikers-port/CMakeLists.txt
++++ b/smstrikers-port/CMakeLists.txt
+@@ -357,8 +357,10 @@ if(WIN32)
+     endif()
+ endif()
+ 
+-# The name macOS shows in the menu bar, from assets/macos/Info.plist.
+-if(APPLE)
++# The name macOS shows in the menu bar, from assets/macos/Info.plist. iOS is not macOS here: an
++# iOS application takes its Info.plist from the .app bundle the host target builds, and a second
++# copy in a __TEXT section would be the one nothing reads.
++if(APPLE AND NOT IOS)
+     target_link_options(strikers PRIVATE
+         "-Wl,-sectcreate,__TEXT,__info_plist,${CMAKE_CURRENT_SOURCE_DIR}/assets/macos/Info.plist")
+     # Relink when the plist changes; a link option is not a dependency.
