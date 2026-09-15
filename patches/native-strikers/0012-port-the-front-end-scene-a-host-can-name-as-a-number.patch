@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chris Sotraidis <56282582+chrissotraidis@users.noreply.github.com>
+Date: Tue, 15 Sep 2026 07:13:59 -0500
+Subject: [PATCH] port: the front-end scene a host can name as a number
+
+The overlay already receives the scene label the front end formats, and
+the label begins with the scene number, so the number was in reach but
+only as text. A host that has to tell "the game moved" apart from "the
+pad carried a bit" needs the engine's own answer to the first question,
+and re-parsing the label outside this file would tie a host to a format
+this file writes.
+
+Parsed where the format lives, and only when the label really begins
+with a digit, because 0 is a scene (SCENE_FRIENDLY_BACKGROUND) and so
+cannot double as "no scene".
+---
+ smstrikers-port/include/port/overlay.h   |  4 ++++
+ smstrikers-port/src/platform/overlay.cpp | 14 +++++++++++++-
+ 2 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/smstrikers-port/include/port/overlay.h b/smstrikers-port/include/port/overlay.h
+index 4f08e1a..906861d 100644
+--- a/smstrikers-port/include/port/overlay.h
++++ b/smstrikers-port/include/port/overlay.h
+@@ -22,6 +22,10 @@ void PortOverlaySetMatch(float clock, int scoreHome, int scoreAway);
+ // The last of those labels, read back; the control channel's heartbeat prints it and has no window
+ // to draw into. Never NULL.
+ const char* PortOverlaySceneName(void);
++// The scene number the label begins with, as the engine recorded it: -1 before the first scene.
++// A host that has to tell "the game moved" apart from "the pad carried a bit" needs the engine's
++// own answer to the first question, and this is it rather than a host re-parsing the label.
++int PortOverlaySceneNumber(void);
+ void PortOverlayToggleMenu(void);
+ int  PortOverlayMenuOpen(void);
+ void PortOverlayHandleKey(int scancode, int down);
+diff --git a/smstrikers-port/src/platform/overlay.cpp b/smstrikers-port/src/platform/overlay.cpp
+index 811eaa4..2ed6037 100644
+--- a/smstrikers-port/src/platform/overlay.cpp
++++ b/smstrikers-port/src/platform/overlay.cpp
+@@ -92,6 +92,9 @@ int s_read;
+ 
+ char s_scene[64] = "-";
+ char s_stadium[64] = "-";
++// PORT: the number inside the label above. -1 before any scene, and the overlay's one place that
++// knows the label's shape, so a host reads the number rather than parsing a string written here.
++int s_sceneNumber = -1;
+ float s_clock;
+ int s_scoreHome, s_scoreAway;
+ 
+@@ -391,8 +394,17 @@ int PortOverlayEnabled(void)
+     return s_enabled;
+ }
+ 
+-void PortOverlaySetScene(const char* name) { copy_into(s_scene, sizeof(s_scene), name); }
++void PortOverlaySetScene(const char* name)
++{
++    copy_into(s_scene, sizeof(s_scene), name);
++    // The label carries the number first (BaseGameSceneManager formats it), and it is parsed with
++    // the format rather than by each reader of it.
++    s_sceneNumber = (name != nullptr && name[0] >= '0' && name[0] <= '9')
++                        ? (int)std::strtol(name, nullptr, 10)
++                        : -1;
++}
+ const char* PortOverlaySceneName(void) { return s_scene; }
++int PortOverlaySceneNumber(void) { return s_sceneNumber; }
+ void PortOverlaySetStadium(const char* name)
+ {
+     copy_into(s_stadium, sizeof(s_stadium), name);
