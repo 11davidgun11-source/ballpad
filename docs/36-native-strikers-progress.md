@@ -4,9 +4,24 @@
 
 Doc 34's F06 rows are now CLOSED on both form factors, F04's rows closed before them, and the
 operator's third restatement has closed its last open item. The current build is `app
-c25669ffeb5b` against engine series `a378c305bf60` (unmoved -- this session's diff is adapter,
-test, runner, awk and doc only). iPad `uitest-pad-pad-f08` is 26/26 rows PASS with `problems: []`
-against this app, and phone `uitest-phone-phone-f09` is the same suite on the other form factor.
+e5d4d1a2fa3c` against engine series `43798814aa72` (unmoved -- this session's diff is the
+adapter's geometry read-back, the test bundle, the runner, two awk reductions and this document, with
+no port or engine source touched). iPad `uitest-pad-f06-pad-r4` is 22/22 rows PASS and phone
+`uitest-phone-f06-phone-r4` is 25/25 rows PASS, both against that one app binary and one test
+bundle (`c46be239bc6d`), run sequentially with exactly one Simulator booted at a time.
+
+The iPad half passed this time because the *harness* was repaired, not the app: the failure the
+previous runs showed was a frame-space error, and the arithmetic, the negative control and the run
+ids are in hypothesis entry 21. XCUITest publishes element frames in the *device's* orientation
+space, and this iPad's long side is its own 1180 pt against a portrait-framed window 820 pt wide, so
+every frame the failing runs read was scaled by 820/1180 = 0.6949 and offset by (1180 - 569.83)/2 =
+305.08 pt. The app was never distorted -- its own `host ui: geometry` line reads window, screen,
+scene, the SDL view and the overlay all `{{0, 0}, {1180, 820}}` at `transform identity`, and R's own
+frame converts unchanged through window, screen and SDL view -- so the bundle now pins the device
+orientation to landscape and asserts, before any row measures, that the window width equals the
+display's long side. On that footing the editor slider reaches `adjust->100.0` with frames the app
+itself published.
+
 F06 rests on two readings a
 screenshot cannot give: the test proves the control set survived a turn to the other landscape side
 and that every control is inside the window, and the runner's `S.f06.safe-area` row proves the
@@ -291,19 +306,34 @@ evidenced (N3, above); the device platform and N4 onward are still open.
   included -- is static. A configure of a brand-new build directory then emits no `.dylib`
   target at all, which is what keeps a host or build-tree path out of both bundles; hypothesis 6
   records the defect and the measured cost of the change.
-- Patch series: `patches/native-strikers/` — 9 patches, pinned-ref..fork-HEAD, series
-  SHA-256 `bc19ccd92c75f70e66d3bd207202a0232f0adbea05c4368d15097e18aef768d2`.
+- Patch series: `patches/native-strikers/` — 15 patches, pinned-ref..fork-HEAD, series
+  SHA-256 `43798814aa72820c6fd542798a6e81eb91dc47d6feb74b8d638b252576df71e7`.
   `export-patches.sh` proves the series reproduces fork tree
-  `15d79868707266c914904c5a487f62d88a44f2ea`, and `--check-only` exits 0 on the same
-  comparison (re-run 2026-09-15 for this checkpoint). The series has now been stale six times — it
-  was missing the Info.plist commit, then the `wcslen` fix, then the two log-only diagnostics,
-  then the quit/scene-label commit, then the host-UI seam (which the first `n4b` bundle recorded
-  as `0e902174`, 6 patches), then the bounded-capture commit, the GL guard and the disc seam (the
-  last two are this checkpoint's fork commits `ffeff97` and `c28a6d7`) — and each time it was
-  regenerated. Treat `pinned-ref..fork-HEAD` as the only source of truth and re-export before any
-  claim that depends on it. Superseded digests: `ff01d0f5...`, `e13f4db3...`, `51a1ec62...`,
-  `0e902174...`, `561efa8c...`; superseded trees: `85429409...`, `f7dbf197...`, `15061aa2...`,
-  `51b07cdf...`.
+  `99a65e0ef284b5dd8c35c1ee9ababe3c5e5d9bf5` at fork HEAD
+  `f769ddb41431e6cfedb67798f5db015326d653f2`, and `verify-clean.sh --scope patches` re-ran
+  2026-09-15 against a clean fork worktree and exited 0 on that comparison. The series has now been
+  stale eight times — it was missing the Info.plist commit, then the `wcslen` fix, then the two
+  log-only diagnostics, then the quit/scene-label commit, then the host-UI seam (which the first
+  `n4b` bundle recorded as `0e902174`, 6 patches), then the bounded-capture commit, the GL guard
+  and the disc seam (`ffeff97`, `c28a6d7`), then the transport-delay read (`1adf3bd`, patch 0013),
+  then the field-rate limiter and the between-frames fps measurement (`0c3d433` and `f769ddb`,
+  patches 0014 and 0015) — and each time it was regenerated. Treat `pinned-ref..fork-HEAD` as the
+  only source of truth and re-export before any claim that depends on it. Superseded digests:
+  `ff01d0f5...`, `e13f4db3...`, `51a1ec62...`, `0e902174...`, `561efa8c...`, `bc19ccd92c75...`;
+  superseded trees: `85429409...`, `f7dbf197...`, `15061aa2...`, `51b07cdf...`, `15d79868...`.
+- Host SDL3, and what the macOS reference build actually links. `verify-clean.sh --scope stamps`
+  passed on 2026-09-15 and now *reports* the one place the host build and the shipped build do not
+  agree rather than hiding it. Aurora is configured with `-DAURORA_SDL3_PROVIDER=system` for the
+  macOS reference build, so `build/native/macos-release/CMakeCache.txt` resolves `SDL3_DIR` to
+  `/opt/homebrew/lib/cmake/SDL3` and the host links **SDL3 3.4.12**, while the pinned and shipped
+  simulator/device artefacts are **3.4.10** from the declared cache. Doc 34 B04 asks the inventory
+  to match the build configuration, so the host configuration is printed with the version it
+  resolved and the shipped targets are the ones asserted against the pin; a host with no SDL3 at
+  all still fails, because the host reference build could not then be reproduced. Two further
+  defects in the same scope were fixed with it: the Aurora tag check was grepping
+  `release-release-3.4.10` (the pinned tag already carries the `release-` prefix), and the
+  manifest comparison read the SDL3 component `version` against a `ref`, so it could never pass —
+  it now compares that component `revision` with `refs/tags/release-3.4.10`.
 - Toolchain: macOS 26.6.2 / Apple M2 (8 cores); Xcode 26.6 (17F113); SDKs macOS 26.5,
   iphonesimulator26.5, iphoneos26.5; cmake 3.27.1; ninja 1.13.2; Apple clang 21.0.0;
   git 2.41.0. System `python3` is 3.8.10, so all helper Python stays 3.8-compatible.
@@ -346,7 +376,10 @@ Every Simulator run this task has made, by form factor. `app` is the binary hash
 in its `S.provenance` row; `5b22cec45b79` is the N4-C build, `30f2d3eb13ca` the bounded-capture
 build, `7e526c45f9b6` adds the GL guard `ffeff97` and the disc seam `c28a6d7`, `c067fc014c03` adds
 the display read-back fix (the FPS label was being re-laid-out every frame), and `b420743d1c57` is
-the current one: the audio read-back, the record-audio row and the corrected frame-rate row title.
+the audio read-back, the record-audio row and the corrected frame-rate row title. `c25669ffeb5b` is
+the build the R1 read-back suite ran against (`phone-f09`/`pad-f08`), and `e5d4d1a2fa3c` is the
+current one: it adds the shoulder mirror repair and the `host ui: geometry` read-back, and is the
+single binary both rows below were run against.
 `--platform simulator` was re-run and re-asserted at each of those checkpoints, and every source
 under `mobile/` was verified older than the binary before the runs below were trusted.
 
@@ -368,6 +401,8 @@ under `mobile/` was verified older than the binary before the runs below were tr
 | `r1-fpsfix-phone` | phone | all 18 `S.*` rows | PASS | `c067fc014c03` |
 | `r2-audio-phone-phone-r1` | phone | `r2-audio` scenario: title -> live play -> goal (4745) -> presentation -> replay (5033) -> back to play -> middlegame (9002) | PASS | `b420743d1c57` |
 | `uitest-phone-phone-r2-newrows` | phone | the two new rows only (`S.r1.menu-leaves`, `S.r2.audio-row`) | both rows PASS; bundle non-passing by design, because `--only` leaves every other row SKIP | `b420743d1c57` |
+| `uitest-pad-f06-pad-r4` | pad | 22 rows: R1 read-backs, F06, F04, F13 | PASS (22/22, `problems: []`) | `e5d4d1a2fa3c` |
+| `uitest-phone-f06-phone-r4` | phone | 25 rows: the same suite on the phone | PASS (25/25, `problems: []`) | `e5d4d1a2fa3c` |
 
 Devices this task owns:
 
@@ -392,6 +427,52 @@ target rate the limiter aims at, not a measured frame rate, and it is a Simulato
 nothing about device performance, and no fps claim may be built on it. The doc 34 performance rows
 (warmed >= 58 fps, p95 <= 20 ms, p99 <= 33.4 ms, replay >= 55 fps, <= 2 % game-clock agreement,
 >= 20 min endurance) remain unrun and will need real measurement, not a limiter setting.
+
+**The limiter's target is also the game's clock, and that had to be corrected before any rate here
+could be read.** On 2026-09-15 the audio side of R2 was measured against the frame side and the two
+disagreed: the transport ticked 199.7 times a second beside a limiter reporting
+`63.00 Hz (display, +5% for vsync)`, a skew of 95.2 % where 100 % is the two being one clock. The
+cause is in the engine rather than in the audio path. `VIWaitForRetrace` waits for the limiter's
+period and then advances `s_retrace_count`, and nothing in the tree decouples the two, so one
+limiter period *is* one game frame of game time. The +5 % margin -- there so two pacers in series do
+not sit in phase -- therefore bought speed rather than frames, and the audio transport, drained by
+the machine's own clock at 5 ms a tick, could not follow a clock running fast. The derived rate is
+now capped at the game's own NTSC field (`VI_FIELD_NS`, 59.94 Hz) whenever the display can
+carry it, and the margin is kept only where the panel is below the field rate; an explicit
+`STRIKERS_FPS_LIMIT` is still taken exactly. The engine change is fork commit `0c3d433`,
+exported as patch 0014.
+
+**Measured after the fix, on both form factors, off the app's own log.** The `r2-audio` scenario
+now carries an onset clause that reads the transport's tick rate and the loop's own frame rate off
+the same read-back lines and compares them. The summary is 24 numbers; the interesting ones are the
+two rates and the ratio between them:
+
+```text
+phone  lines 99 unread 0 measured 99 unmeasured 0 | lead 30.0-35.0 ms mean 32.5 last 34.0 handovers 8440
+       devhold 23.2 rate 128000 | drain 0..127915 last 127915 | underruns 0 ticks 0..39210
+       frames 1..11756 wall 196.22 s | tickHz 199.8 frameHz 59.9 skew 100.1 fps 59.9
+pad    lines 81 unread 0 measured 81 unmeasured 0 | lead 30.0-35.0 ms mean 32.5 last 32.8 handovers 6885
+       devhold 23.2 rate 128000 | drain 0..128509 last 127858 | underruns 0 ticks 0..31990
+       frames 1..9595 wall 160.17 s | tickHz 199.7 frameHz 59.9 skew 100.0 fps 59.9
+```
+
+Read field by field: `tickHz / frameHz` is 3.334-3.336 where a 60 Hz frame is 3.333 ticks of 32 kHz
+audio, so `skew` -- that ratio normalised to one frame's worth of audio -- is 100.0-100.1 %.
+`frameHz` is the seam's own count of frames the loop ran divided by the log's own wall time,
+not the limiter's setting: it moved 63.0 -> 59.9 when the cap landed, and `skew` moved 95.2 % ->
+100.1 % with it. `drainLast` sits at the `rate` the stream's format implies (127858 and
+127915 against 128000) rather than running past it, `underruns` is 0 on both form factors, and
+`leadLast` is inside a 5 ms-wide band (30.0-35.0 ms) over a whole match. So the game's own rate
+and the device's rate are one timeline, which is the half of R2 that a rate can settle.
+
+One reading correction belongs here because it was a failure before it was a fix. The port's rolling
+fps is printed last, and it read high -- 63.8 beside a seam count of 59.9 -- because the overlay's
+frame-rate window opened after the loop preamble (event pump, synthetic input, host UI, frame begin)
+while the limiter sleeps inside the span being measured, so every window was short by the preamble
+and its reciprocal read fast. That is fork commit `f769ddb`, exported as patch 0015: the window
+is now the distance between two frame *ends*, and `frameMs` is that same sample, so the two are
+reciprocals of one another rather than two measurements that can disagree. With both patches in, the
+phone run reports `frameHz 59.9`, `fpsLast 59.9`.
 
 Audio has a device-side answer now, from runs on the iPhone 17e, and it is a read-back rather than a
 claim. The app writes its own line every two seconds, assembled from `PortAudioStats` and the mixer's
@@ -758,6 +839,39 @@ Nothing in this section may be read as a lip-sync verdict.
    because a startup refusal has to stay readable: a signal tells a reader nothing about what the
    port was trying to say.
 
+21. **The iPad F06 failure was XCUITest's frame space, not the app's layout.** Observation: the
+   `size-extremes` row on the iPad stopped at `adjust->98.0` while the same row on the phone read
+   `adjust->100.0`, and a focused iPad run of the same rows on the same binary
+   (`uitest-pad-pad-geom1`) read `adjust->100.0` too -- so the plateau was a property of neither the
+   drive nor the control. Two independent readings settled it. (a) The app's own witness, the
+   `host ui: geometry` line added to `mobile/interface/BallpadHostUI.mm`, reads window, frame, screen,
+   scene, the SDL view and the overlay all `{{0, 0}, {1180, 820}}` at `transform identity` with
+   `native {{0, 0}, {1640, 2360}} scale 2.00`, and R's frame `{{962.83, 512.98}, {132, 62}}` converts
+   unchanged through window, screen and SDL view -- so the app lays out in landscape 1180x820 and
+   nothing scales it. (b) The failing run's numbers are exactly the *fit* of the passing run's frames
+   into a portrait window: `0.6949 x 376 = 261.29` and `0.6949 x 736 + 305.08 = 816.54` reproduce
+   the reported `{{261.28813559322037, 816.54237288135596}, {280.74576271186442,
+   23.627118644067764}}`, where `0.6949 = 820/1180 = 569.83/820` and
+   `305.08 = (1180 - 569.83)/2`. The control never moved; only the ruler did. A deliberate
+   negative control proved the mechanism: with the bundle's `deviceOrientation` set to `.portrait`
+   (`uitest-pad-pad-ab-portrait`) the new precondition failed with the window at
+   `{{0, 305.08474576271186}, {820, 569.83050847457639}}` -- precisely the failing run's window rect
+   -- while in that same portrait run the app-side row `S.f06.safe-area` PASSED (1 layout reading, 1
+   clean, 14 controls judged, none outside), so the app's layout was correct under the very ruler that
+   was misreading it. Cause: XCUITest drives touches through the frame space it publishes, so a fitted
+   ruler moved the drive and the assertion together and the row was self-consistently wrong at 98.0;
+   the same fit is why all four drive mechanisms agreed on the same short number. The assertion was
+   never the defect, so nothing was loosened: the `zMaximum` band is untouched and the frames it
+   reads now are the app's own. Smallest change: the test bundle, not the app --
+   `setUpWithError()` sets `XCUIDevice.shared.orientation = Self.deviceOrientation` (landscape) before
+   `app.launch()`, and `waitForTheFrameSpaceToBeTheAppsOwn()` asserts, before any row measures,
+   that `app.windows.firstMatch.frame.width` equals the display's long side
+   (`max(screenshot.image.size.width, .height)`), failing with both numbers named if it does not.
+   Outcome: iPad `uitest-pad-f06-pad-r4` is 22/22 rows PASS with `S.f06.size-extremes` reading
+   `adjust->100.0` on frames `{{376, 736}, {404, 34}}` and `{{890.5, 195}, {261.5, 34}}` -- the same
+   1:1 frames `pad-geom1` read -- and phone `uitest-phone-f06-phone-r4` is 25/25 rows PASS on the
+   same bundle, so the phone reading never depended on the harness defect.
+
 ### 9. Command mapping
 
 21. **The F02 picker walk was not failing to scroll -- it was looking for a string no element could
@@ -851,7 +965,7 @@ that decides it, so that "solid" is a reading rather than a judgement:
 
 | The operator's words | What it decides here | Row |
 |---|---|---|
-| "control configs and options are as solid as something like my kartpad build" | Measured against that build rather than asserted. `~/GitHub/kartpad` at `a3747a4` vendors the *same* SunPad overlay, and the seven files the two projects share hash identically -- `SunPadGameOverlay.{h,mm}`, `SunPadInputMixer.{h,mm}`, `SunPadInputState.h` and `SunPadSettings.{h,mm}` -- so the control surface is literally the same one. What the comparison adds is the standard rather than a feature: an option is solid when a reading shows it reached the thing it configures. All nine touch settings now have one -- the three that reach the runtime from the port's own read-backs, and the six that reach the drawn overlay from its nineteen-number summary -- so this item is closed rather than owed | 5 |
+| "control configs and options are as solid as something like my kartpad build" | Measured against that build rather than asserted. `~/GitHub/kartpad` at `a3747a4` vendors the *same* SunPad overlay, and the nine vendored files the two projects share hash identically, re-checked row by row at `a3747a4` on 2026-09-15 -- `SunPadGameOverlay.{h,mm}`, `SunPadInputMixer.{h,mm}`, `SunPadInputState.h` and `SunPadSettings.{h,mm}` and `SunPadDiagnostics.{h,mm}` -- so the control surface is literally the same one. What the comparison adds is the standard rather than a feature: an option is solid when a reading shows it reached the thing it configures. All nine touch settings now have one -- the three that reach the runtime from the port's own read-backs, and the six that reach the drawn overlay from its nineteen-number summary -- so this item is closed rather than owed | 5 |
 | "the R (right trigger) needs to look like the left one" | DONE and read back per frame: L and R are the same pill mirrored about the surface, on one row, with the vendored trigger's detent artwork hidden and the press supplied by Ballpad's own long-press gesture. `S.r1.settings-readback`'s mirror and outline families decide it at rest, and the new `S.f06.rotated-relayout` re-decides it after a turn | 2 |
 | "BallPad in game is stylized like that" | The capital P has one source: the menu header, the About surface, the importer's alerts and the bundle's own `CFBundleDisplayName` all read `BallpadAppDisplayName()`, and the port bundle carries **"BallPad Strikers"**. The legacy SwiftUI tree under `app/Ballpad/` still spells it `Ballpad`; it is preserved untouched and is not shipped | 4 |
 | "all experimental modes ... need to actually be something as opposed to whatever it is now" | Audited row by row against the handlers rather than the labels, and every row is bound to something real: the two aspect leaves pin the port's target aspect, the 60 FPS row drives `PortSetFrameLimit`, and the row that stands where the retired performance switch was records the exact bytes the audio device is handed, and reads its own take back off the disk so the alert has to say "silence" when the take is silent rather than calling a rising frame count a recording. Four rows still *say* "Experimental" (the two vendored aspect leaves and Ballpad's two re-bound rows) and all four change the runtime; the one inert row, the emulated-clock performance switch, does not ship at all | 11, 12 |
@@ -877,7 +991,7 @@ What "exactly as they are" has already decided, and what is still owed:
 | 13 | `SunPadDiagnostics` log directory (`<Library>/.../SunPad/runtime.log`, confirmed by source) | DONE: the log is written to `<container>/Documents/BallpadLogs/runtime.log` by `mobile/interface/BallpadLog.{h,mm}` -- in Documents rather than Library so a player can reach it through Files, which is also what the audio-recording row writes into | None. The read-back rows depend on this path, so `S.r1.settings-readback` fails if it moves |
 | 14 | `SunPadSettings` persistence keys (`SunPadRenderScale`, `SunPadControlSizeScales`, … in `standardUserDefaults`) | Untouched, N4 | They already live in Ballpad's own app domain, so there is no cross-app leak; renaming is a migration question for N5 rather than an N4 defect |
 | 15 | Offline About/Credits surface naming upstream contributors and bundled notices (F13) | DONE and exercised: `mobile/interface/BallpadCredits.{h,mm}` carries the surface, `S.f13.about-inventory` reads the contributor names and notice titles back off it, and `S.f13.notice-offline` opens a full notice with no network | None. Doc 35's text is the source, and the notices are bundled rather than fetched |
-| 16 | Physical-controller visibility merge | **Visibility only** -- corrected 2026-09-15. The rule that hides the touch controls while a controller is connected is wired and read back (`BallpadHostUI.mm` reads `GCController.controllers.count` for it), but no controller *input* reaches the port: `SunPadInputMixer` carries a controller slot for exactly this (`setInputState:fromTouch:NO`) and nothing in this app ever writes it -- every call site in the tree passes `fromTouch:YES` (the vendored overlay's touch path) or clears it. So the vendored mixer's merge is present and unexercised on its controller side | The bridge itself (a `GCController` handler feeding slot 1, plus connect/disconnect), then F12's merge/connect/disconnect boundary test. Until then doc 34's **F12 stays open/`NOT_RUN`** and no physical-controller claim is made |
+| 16 | Physical-controller visibility merge | **Visibility only** -- corrected 2026-09-15. The rule that hides the touch controls while a controller is connected is wired and read back (`BallpadHostUI.mm` reads `GCController.controllers.count` for it), but no controller *input* reaches the port: `SunPadInputMixer` carries a controller slot for exactly this (`setInputState:fromTouch:NO`) and nothing in this app ever writes it -- every call site in the tree passes `fromTouch:YES` (the vendored overlay's touch path) or clears it. So the vendored mixer's merge is present and unexercised on its controller side | The bridge itself (a `GCController` handler feeding slot 1, plus connect/disconnect), then F12's merge/connect/disconnect boundary test. That standard is worth naming precisely, because the build this one is measured against sits in the same position: `~/GitHub/kartpad` at `a3747a4` compiles `KartPadPhysicalControllers.mm` and `SunPadControllerMapping.mm` into its **test** target only (`CMakeLists.txt` 416-418), and its `KartPad` iOS app target (`CMakeLists.txt` 249-256) lists neither -- so that build has no more controller input on iOS than this one, while a working slot bridge exists under `apple/mobile/` for this item to mirror. Until then doc 34's **F12 stays open/`NOT_RUN`** and no physical-controller claim is made |
 
 Two of these are the reason the list is written down rather than tracked mentally: item 12 is a row
 that must disappear rather than be wired, and item 5 is the difference between a surface that
@@ -1001,6 +1115,32 @@ back at all. `S.r2.audio-row` now parses the path out of the start alert, opens 
 requires the header to parse, the rate and width to be the mixer's, the `data` chunk to equal the
 length the stop alert named, and the alert's audibility sentence to be what the samples say. The
 counter alone used to pass all of that; it no longer can.
+
+**The rate half of R2 is measured and closed on 2026-09-15.** What the operator's sentence splits
+into is a rate and an offset, and the rate is the half a measurement can settle rather than a
+person listening. Two numbers were already printed by the app itself on every read-back line -- the
+transport's own tick count and the seam's own frame count -- and the ratio between them is the
+answer: when the audio clock and the frame clock are the same clock, one 60 Hz frame carries 3.333
+ticks of 32 kHz audio, and every percent away from that is audio time no frame accounted for.
+Before this work the ratio was 95.2 %, and the cause turned out to be in the engine rather than in
+the audio path: the limiter's period is also the game's clock, and a +5 % vsync margin had the game
+running 5 % fast. Section 6 carries the mechanism, the fork commits and the field-by-field read.
+
+After the fix, `S.r2.onset` passes on both form factors -- phone and pad, fresh runs against the
+current app -- with `frameHz 59.9` beside `tickHz 199.8` and `199.7`, a skew of
+100.1 % and 100.0 %, zero underruns, the stream draining at the rate its own format implies, and the
+newest audio 32.8-34.0 ms behind the frame that produced it inside a 30.0-35.0 ms band. The clause
+fails a vacuous pass rather than passing while measuring nothing: it requires readable lines, a
+measured onset, both rates off the same line, and agreement to within a band.
+
+What the rate result does *not* do is close F09, and the distinction is the one this section opened
+with. A skew of 100 % says the two clocks are one timeline, which removes accumulating drift as a
+cause of the operator's observation. It says nothing about a constant offset -- and there is one to
+account for, roughly 56 ms of queue and device hold (23.2 ms held by the device plus the transport's
+own lead) -- nor about whether the onset that is on time is *the right* onset for the model on
+screen. That is the animation-relative half, it is still unmeasured, and F09 stays open on it. No
+lip-sync verdict is claimed here.
+
 
 ### R1 — N4 plan of record (recorded 2026-09-14, before implementation)
 
@@ -2545,6 +2685,99 @@ Next concrete action: doc 34's F04 rows are PASS on both form factors, so the F0
   row and the leave rows.
 ```
 
+### F06 — the two rows the audit found failing, re-verified (added 2026-09-15)
+
+The r1 audit (`uitest-phone-r1-audit-phone-1`) came back 18/20 with both F06 rows failing, against a
+Current-state claim that they were closed. They are re-verified here on the *unchanged* app build
+(`53c0357a5714`), and the two failures turned out to be two different kinds of thing: a harness defect
+that had been hiding a real geometry, and inherited state from the neighbouring rows.
+
+```text
+Phase / gate: doc 34 F06 on the phone (N4/N6 gate rows), re-verified after the operator's third
+  restatement
+Date / build identity / patch digest: 2026-09-15; engine pin 22649cb12c11, fork f769ddb41431, tree
+  99a65e0ef284 clean; patch series 43798814aa72; disc da80883ba456; app binary 53c0357a5714
+  (simulator-release). This session's diff is the test bundle and this document only -- no app, engine
+  adapter or runner change, and therefore no new patch digest.
+Source invariant and observed failure: the rows must show the control set resized to the largest size
+  the interface offers, still inside the inset rect the surface published, and still whole after the
+  device is turned to the other landscape side; and they must do it without loosening a band. Two
+  readings failed. (`S.f06.size-extremes`, `uitest.log:5346`) `("99.0") is not equal to ("100.0")
+  +/- ("0.5")` -- the selected control's size slider stopped one percent short of its own top.
+  (`S.f06.rotated-relayout`, `uitest.log:6416`) `the X control is still hittable after the turn`.
+Hypothesis: (1) the 99% was not a shortfall of the drive but a *units* error in the assertion. The two
+  sliders this suite reads are not on one scale: the panel's Control size slider is 0.70-1.35
+  (`SunPadGameOverlay.mm:1225`) while the layout editor's per-control slider is 0.60-1.75 (`:1233`),
+  and each publishes the thumb's position within *its own* range. So a reading the editor calls 99% is
+  size 1.7385, which is not the 1.75 ceiling the store clamps to (`SunPadSettings.mm:148`, and
+  `std::clamp<double>(slider.value, 0.60, 1.75)` at `SunPadGameOverlay.mm:1652`), and the same 100% on
+  the panel is 1.35. The false claim was in the harness comment that said both are exactly the same
+  scale -- which is true of the *formula* and false of the *range*. (2) The instrumented probe added to
+  that row was itself destructive: it swept taps across the far end of the slider's track, the editor
+  bar is a `SunPadPassThroughView` (which hands a touch back to whatever is drawn behind it unless the
+  touch lands on one of its own subviews), and the `Finish moving touch controls` button sits about a
+  dozen points to the right of the slider's own right edge -- so the sweep *closed the editing session*
+  and the run then failed resolving the slider at all (`probe-f06`, `uitest.log:1246`, no matches for a
+  Slider). (3) The rotated row's failure was not the turn: its two hierarchies show A and X identical
+  before and after the turn, with A at `{{681.4, 122.8}, {98.7, 98.7}}` fully containing X at
+  `{{695.5, 128.5}, {58.2, 58.2}}`, where the passing `phone-f09` run has X at `{{704.1, 137.1},
+  {41.0, 41.0}}` clear of A. The rows between the two F06 rows persist the sizes they drive, so the
+  turn was being judged against a state this suite had itself left behind.
+Change: `tests/native/uitest/BallpadNativeUITests/BallpadSunPadInterfaceTests.swift` only.
+  (a) The `sliderPercent` contract is corrected to say it is a percentage of that slider's own range,
+  with both ranges and the 1.7385-against-1.75 arithmetic written out, so the next reader cannot repeat
+  the error. (b) The destructive tap sweep is *replaced* by one real touch dragged from the middle of
+  the track to the element's own right edge (`dragToTheRightEdgeOfTheTrack`), which asks the same
+  question -- is the top of the track inside the element at all -- without releasing anywhere but on
+  the slider. It is added to the drive as a second mechanism, logged as `edge->`, so a future run can
+  see which mechanism reached the top. (c) `dragPastTheEndOfTheTrack` now begins its press at the
+  middle of the element rather than at [0.05, 0.5], because the bar draws its own hint label across
+  that end of the row. (d) Both size drives attach their trail and a live slider diagnostic
+  (enabled/hittable/value/frame/next-to-Done) as notes, and the failing assertion names them, so a
+  shortfall says whether the control was disabled, unreachable or squeezed. (e) The rotated row
+  establishes its own baseline with `resetTouchControlLayout()` (menu, touch settings, Reset This
+  Device Layout, the alert's Reset, the panel's own close, then a settled set) and a control that is
+  not hittable is named together with whatever frame covers it -- the two are different findings and
+  should not read alike.
+Command / exit status: focused phone run `uitest-phone-probe-f06b`,
+  `--only testTheLargestControlSizeThePanelOffersIsStillInsideTheSafeArea --only
+  testTurnToTheOtherLandscapeSideKeepsEveryControlInsideAndHittable`, exit 0 -- `S.f06.size-extremes`
+  PASS in 51.0 s and `S.f06.rotated-relayout` PASS in 38.7 s, `S.f06.safe-area` PASS on 3 layout
+  readings. Then the whole phone suite, `uitest-phone-f06-r3`, all rows required, `--budget 3600`.
+Runtime scene / duration / device-or-Simulator: real app, real engine, iPhone 17e Simulator (iOS 26.5),
+  844x390 landscape; exactly one Simulator booted at a time, none shut down but this task's own.
+Evidence bundle: build/proofs/native-strikers/uitest-phone-probe-f06b/ -- the attachments were the
+  measurement. `z-size-before-the-drive`: `[Z size enabled 1 hittable 1 value Optional(35%) frame
+  {{207.66666666666666, 311}, {404.33333333333337, 34}} next-to {{624, 308}, {68, 40}}]`, and
+  `z-size-drive-trail`: `adjust->100.0` -- the first mechanism reached the editor's top on this build,
+  against the r1 audit's 99.0 on the same binary. `control-size-before-the-drive` reads 46% (its 1.00
+  default) and its trail is also `adjust->100.0`. The editor's geometry, read from the pre-selection
+  hierarchy in the audit bundle (`A124D5C8-...txt`): bar `{{142.0, 298.0}, {560.0, 60.0}}`, hint label
+  `{{156.0, 319.7}, {216.7, 17.0}}` (`Drag controls * tap one to resize`), Done `{{624.0, 308.0},
+  {68.0, 40.0}}`, slider `{{384.7, 311.0}, {227.3, 34.0}}` disabled. The slider is the flexible middle
+  of a three-item stack, so it is 227.3 pt wide before a control is selected and 404.33 pt wide after,
+  both ending at x=612 -- which is why the same 99%-versus-100% distinction moved between runs.
+Result: both rows PASS on the phone against the unchanged app build, on their original bands -- 100.0%
+  +/- 0.5 on each slider in its own units, the drawn control at its largest and inside the window, the
+  vendored reset restoring the default, and the whole set inside and hittable after the turn. The
+  r1 audit's 18/20 is therefore a harness defect on one row and inherited state on the other, not an app
+  defect: no app, engine or adapter byte changed, and the drive's ordered mechanisms now include a real
+  touch that cannot stop short of the track's end.
+What this result does and does not prove: proves the rows measure what they claim on this form factor,
+  and that the whole-set containment after a turn holds from an app-established baseline. Does not
+  prove anything about the iPad, which is the next run; does not make the audio onset measurement; and
+  is not physical-device evidence. One property is recorded rather than repaired: the vendored editor
+  bar is placed at `CGRectGetMaxY(safe) - 60.0 - 12.0` inside `SunPadGameOverlay.mm`, so on a 844x390
+  landscape frame it is drawn across the bottom of the play area -- `{{142.0, 298.0}, {560.0, 60.0}}`
+  overlaps the bottom-right of the move stick `{{80.5, 229.7}, {118.1, 118.1}}` and the bottom-left of
+  the camera stick `{{699.2, 260.5}, {80.6, 80.6}}` -- and, being a pass-through view, a touch on its
+  background reaches the control behind it. That placement is vendored arithmetic, not a Ballpad
+  adapter choice, and the vendored bytes are frozen (R1: the operator wants the interface exactly as it
+  is), so it is documented as a property of the vendored editor and driven through rather than fixed.
+Next concrete action: the iPad half of the same suite (`uitest-pad-f06-r3`) on the iPad device UDID,
+  sequentially, and then the doc 36 Current-state paragraph updated to the new run ids.
+```
+
 ```text
 Phase / gate:
 Date / build identity / patch digest:
@@ -2562,3 +2795,59 @@ Next concrete action:
 Update the current-state section and next action at every meaningful checkpoint so another agent
 can resume without replaying completed work. A summary is not a substitute for the evidence
 bundle, and missing temporary research logs do not prevent a fresh verified baseline.
+
+### F06 — the iPad half, and the harness defect that hid it (added 2026-09-15)
+
+The phone half above closed on the app's own readings, but the iPad half kept failing and the audit's
+framing of it was wrong. It was re-diagnosed and the harness repaired; the app was not touched. The
+full argument is hypothesis entry 21; this checkpoint is the run record.
+
+```text
+Phase / gate: doc 34 F06 on the iPad (N4/N6 gate rows), re-verified after the operator's third
+  restatement
+Date / build identity / patch digest: 2026-09-15; engine pin 22649cb12c11, fork f769ddb41431, tree
+  99a65e0ef284 clean; patch series 43798814aa72 (unmoved); disc da80883ba456; app binary
+  e5d4d1a2fa3c5982a64226adaf8186c747cf49eb10c69cb1e4d254cda7026224; test bundle
+  c46be239bc6d2cdfb173108f7ef6e2227a1dbc1315df233dbe199f27cdab6b30. This session's diff is the
+  test bundle, the adapter's `host ui: geometry` read-back, the runner and two awk reductions; no
+  port or engine source, so the series is unmoved.
+Source invariant and observed failure: the F06 rows must show the control set resized to the largest
+  size the panel offers, still inside the inset rect the surface published, and still whole after the
+  device is turned to the other landscape side -- on both form factors. On the iPad the
+  `size-extremes` row read `adjust->98.0` where the phone read `adjust->100.0`.
+Hypothesis: XCUITest had published element frames in the device's orientation space, not the app's,
+  so a landscape-only app on a portrait-native iPad was measured through a 820/1180 = 0.6949 fit
+  with a (1180 - 569.83)/2 = 305.08 pt offset. The app's layout was never in question; the ruler was.
+Change: the test bundle only. `setUpWithError()` pins `XCUIDevice.shared.orientation` to landscape
+  before `app.launch()`, and `waitForTheFrameSpaceToBeTheAppsOwn()` makes the frame space a
+  precondition: it waits, bounded, for `app.windows.firstMatch.frame.width` to equal the display's
+  long side and fails naming both numbers. Two stale doc comments that had blamed the app for the
+  slider plateau were corrected. No assertion band was widened.
+Command / exit status: iPad `run-uitests.sh --run-id f06-pad-r4 --device B3799189-... --form-factor pad
+  --budget 3600` -> exit 0, 22/22 rows PASS, `problems: []`. Then the phone, sequentially, on the
+  same bundle: `--run-id f06-phone-r4 --device 8619020B-... --form-factor phone --budget 3600` ->
+  exit 0, 25/25 rows PASS.
+Runtime scene / duration / device-or-Simulator: real app, real touches. iPad: 20 tests in 736.1 s
+  (size-extremes 49.4 s, rotated-relayout 40.5 s, safe-area over 34 settled layouts). Phone: 20 tests
+  in 852.9 s (size-extremes 48.3 s, rotated-relayout 38.8 s). Exactly one Simulator booted at a time;
+  the iPad was shut down before the phone was booted; no other task's device was touched.
+Evidence bundle: `build/proofs/native-strikers/uitest-pad-f06-pad-r4/` and
+  `build/proofs/native-strikers/uitest-phone-f06-phone-r4/` -- `rows.tsv`, `result.json`,
+  `app-runtime.log` (the `host ui: geometry` line, reading window/screen/scene/overlay all
+  `{{0, 0}, {1180, 820}}` at identity) and the `frame-space` note attached by every row, whose
+  text reads `device landscapeLeft; window {{0, 0}, {1180, 820}}; display long side 1180.0`. The
+  iPad drive trails are `adjust->100.0` on `{{376, 736}, {404, 34}}` (Z) and
+  `{{890.5, 195}, {261.5, 34}}` (control size). The A/B control is
+  `build/proofs/native-strikers/uitest-pad-pad-ab-portrait/`, which failed the precondition at
+  `{{0, 305.0847}, {820, 569.8305}}` while `S.f06.safe-area` passed inside it.
+Result: PASS on both form factors, on the original bands. F06 is closed for the Simulator; the app
+  binary differs from the last commit only by the adapter read-back.
+What this result does and does not prove: proves the rows measure the app's own frames on both form
+  factors and that the earlier iPad reading was the harness's, not the app's. Does not prove the iPad
+  safe-area behaviour at a *different* orientation framing (the precondition pins one), does not make
+  the audio onset measurement (R2/F09, still open), and is not physical-device evidence.
+Next concrete action: commit the green state -- doc 36, the test bundle, the adapter geometry
+  read-back, the runner and the two awk reductions -- then work the operator's standing items that
+  are still owed: R2/F09's animation-relative audio offset, N7's three notice-gap failures, and F12's
+  `GCController` bridge into `SunPadInputMixer` slot 1.
+```

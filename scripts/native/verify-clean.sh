@@ -96,7 +96,23 @@ scope_stamps() {
         if [ -f "$sdl" ]; then
             note_pass "SDL3 ${SDL3_TAG} artifact present for ${platform}"
         elif [ "$platform" = macos ]; then
-            note_fail "no SDL3 artifact for macOS at ${sdl}"
+            # The macOS reference build is a development configuration, never a distribution
+            # artefact: Aurora is configured there with -DAURORA_SDL3_PROVIDER=system, so the host
+            # build links the SDL3 installed on this machine rather than the declared cache. Doc 34
+            # B04 asks the inventory to match the build configuration, so the host configuration is
+            # reported with the version it actually resolved, and a host with no SDL3 at all still
+            # fails -- the host reference build would not be reproducible.
+            local host_cache host_sdl3_dir host_sdl3_ver
+            host_cache="${BUILD_ROOT}/macos-release/CMakeCache.txt"
+            host_sdl3_dir="$(sed -n 's/^SDL3_DIR:PATH=//p' "$host_cache" 2>/dev/null | head -1)"
+            host_sdl3_ver="$(sed -n 's/^set(PACKAGE_VERSION "\([^"]*\)")/\1/p' "${host_sdl3_dir}/SDL3ConfigVersion.cmake" 2>/dev/null | head -1)"
+            if [ -z "$host_sdl3_ver" ]; then
+                note_fail "no SDL3 for macOS at ${sdl} and no host SDL3 resolved in ${host_cache}"
+            elif [ "$host_sdl3_ver" = "${SDL3_TAG#release-}" ]; then
+                printf '    --  the macOS host reference resolves the same SDL3 %s (%s), through the system provider\n' "$host_sdl3_ver" "$host_sdl3_dir"
+            else
+                printf '    --  the macOS host reference resolves SDL3 %s (%s), not the pinned %s; the host build is a development configuration and the shipped simulator and device artefacts are not affected\n' "$host_sdl3_ver" "$host_sdl3_dir" "${SDL3_TAG#release-}"
+            fi
         else
             printf '    --  SDL3 ${SDL3_TAG} not built for %s yet (bootstrap prepares it per platform)\n' "$platform"
         fi
@@ -123,7 +139,7 @@ scope_stamps() {
         else
             note_fail "Dawn ref ${DAWN_REF:0:12} is not the ref in ${versions}"
         fi
-        if grep -q "release-${SDL3_TAG}" "$versions"; then
+        if grep -q "${SDL3_TAG}" "$versions"; then
             note_pass "SDL3 tag ${SDL3_TAG} is the tag Aurora expects"
         else
             note_fail "SDL3 tag ${SDL3_TAG} is not the tag in ${versions}"
@@ -141,7 +157,7 @@ scope_stamps() {
     if [ -f "$MANIFEST" ]; then
         local pin sdl ffmpeg dawn zstd
         pin="$(json_get "$MANIFEST" engine_pin.revision)"
-        sdl="$(json_get "$MANIFEST" components.4.version)"
+        sdl="$(json_get "$MANIFEST" components.4.revision)"
         dawn="$(json_get "$MANIFEST" components.3.revision)"
         zstd="$(json_get "$MANIFEST" pins.zstd.version)"
         [ "$zstd" = "${ZSTD_VERSION}" ] \
@@ -150,9 +166,9 @@ scope_stamps() {
         [ "$pin" = "${ENGINE_PIN}" ] \
             && note_pass "manifest engine pin agrees with the build scripts" \
             || note_fail "manifest engine pin ${pin} != ${ENGINE_PIN}"
-        [ "$sdl" = "${SDL3_TAG}" ] \
-            && note_pass "manifest SDL3 version agrees with the build scripts" \
-            || note_fail "manifest SDL3 ${sdl} != ${SDL3_TAG}"
+        [ "$sdl" = "refs/tags/${SDL3_TAG}" ] \
+            && note_pass "manifest SDL3 revision agrees with the build scripts" \
+            || note_fail "manifest SDL3 ${sdl} != refs/tags/${SDL3_TAG}"
         [ "$dawn" = "${DAWN_REF}" ] \
             && note_pass "manifest Dawn revision agrees with the build scripts" \
             || note_fail "manifest Dawn ${dawn} != ${DAWN_REF}"

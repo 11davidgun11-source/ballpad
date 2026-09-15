@@ -1943,6 +1943,7 @@ static void *s_sdlWindow = nullptr;
 // Both defined with the rest of the host-UI plumbing below, forward-declared here because the
 // lifecycle notification that uses them is part of the bridge.
 static UIWindow *BallpadWindowForSDLWindow(void *sdlWindow);
+static void BallpadLogHostGeometry(UIWindow *window, UIView *container);
 static void BallpadReattachOverlay(NSString *reason);
 
 // SunPadGameOverlay holds its delegate weakly, so the app has to own the receiver.
@@ -2176,6 +2177,12 @@ static void BallpadReattachOverlay(NSString *reason)
     // any inherited setting changes, and a rebuilt button carries no explicit appearance.
     BallpadConfigureMenuButton(BallpadMenuButton(s_overlay));
 
+    // The same windowing read-back the first attach publishes: a resume and a rotation are the two
+    // paths that can hand the overlay a different window from the one it was born on, and both are
+    // cases where the frames a test process reads and the frames the overlay drew with can part
+    // company without either side reporting it.
+    BallpadLogHostGeometry(window, container);
+
     if (moved)
         BallpadLog(@"host ui: overlay re-attached (%@) to %@ %@", reason,
                    NSStringFromClass(container.class), NSStringFromCGRect(container.bounds));
@@ -2293,6 +2300,67 @@ static void BallpadLogConsumptionIfChanged(void)
                scene, PortOverlaySceneName());
 }
 
+// The coordinate space the interface is actually laid out in, in the app's own words.
+//
+// Every row that addresses a control by a point inside its element frame is trusting one
+// assumption -- that the rectangle the test process reads off the accessibility tree and the
+// rectangle the overlay lays itself out against are the same one. On this build those two can
+// disagree: the app is landscape-only (UIRequiresFullScreen, both landscape sides), so a surface
+// that reaches the screen through a window whose logical size is not the interface's leaves the
+// element frames scaled and offset relative to the numbers the overlay drew with -- and a slider
+// addressed by a point inside its own frame then lands short of the end of its own track. That
+// failure reads exactly like a control that will not reach its maximum, so the two have to be
+// told apart from the app, not from the reading.
+//
+// The window, its scene, its screen and the surface the overlay is parented to are published here
+// together with the R button converted out of the overlay's space and into the window's and the
+// screen's, which is the same control the accessibility tree reports for the same launch. A
+// reported frame that agrees with the conversion is a layout that moved; one that disagrees with a
+// window that is not the interface's own size is the adaptation boundary rather than the interface.
+static void BallpadLogHostGeometry(UIWindow *window, UIView *container)
+{
+    if (window == nil)
+        return;
+
+    UIView *probe = nil;
+    if ([s_overlay isKindOfClass:SunPadGameOverlay.class])
+    {
+        for (UIView *control in BallpadTouchControlsInDrawOrder(s_overlay))
+        {
+            if ([control.accessibilityIdentifier isEqualToString:@"R"])
+            {
+                probe = control;
+                break;
+            }
+        }
+    }
+
+    NSString *probeText = @"no R control to convert";
+    if (probe != nil)
+    {
+        const CGRect inWindow = [probe convertRect:probe.bounds toView:nil];
+        const CGRect onScreen = [window convertRect:inWindow toCoordinateSpace:window.screen.coordinateSpace];
+        probeText = [NSString stringWithFormat:@"R own %@ window %@ screen %@",
+                     NSStringFromCGRect(probe.frame), NSStringFromCGRect(inWindow),
+                     NSStringFromCGRect(onScreen)];
+    }
+
+    BallpadLog(@"host ui: geometry window %@ frame %@ transform %@ screen %@ native %@ scale %.2f"
+                " scene %@ interface %ld container %@ %@ overlay %@ %@ | %@",
+               NSStringFromCGRect(window.bounds), NSStringFromCGRect(window.frame),
+               CGAffineTransformIsIdentity(window.transform)
+                   ? @"identity"
+                   : NSStringFromCGAffineTransform(window.transform),
+               NSStringFromCGRect(window.screen.bounds),
+               NSStringFromCGRect(window.screen.nativeBounds),
+               (double)window.screen.scale,
+               NSStringFromCGRect(window.windowScene.coordinateSpace.bounds),
+               (long)window.windowScene.interfaceOrientation,
+               NSStringFromClass(container.class), NSStringFromCGRect(container.frame),
+               NSStringFromClass(s_overlay.class), NSStringFromCGRect(s_overlay.frame),
+               probeText);
+}
+
 extern "C" void PortHostUIStart(void *sdlWindow)
 {
     @autoreleasepool
@@ -2359,6 +2427,7 @@ extern "C" void PortHostUIStart(void *sdlWindow)
 
         BallpadLog(@"host ui: overlay %@ over %@ (%@)",
                    NSStringFromCGRect(s_overlay.frame), host, NSStringFromCGRect(host.bounds));
+        BallpadLogHostGeometry(window, host);
     }
 }
 

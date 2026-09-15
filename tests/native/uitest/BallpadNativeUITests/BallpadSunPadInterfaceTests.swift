@@ -14,6 +14,29 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 
     private static let bundleIdentifier = "com.ballpad.strikers"
 
+    /// The orientation every frame reading below is taken in, and the reason it is set rather than
+    /// inherited from whatever the device happened to be left in.
+    ///
+    /// The app is landscape-only and `UIRequiresFullScreen`, but XCUITest publishes element
+    /// frames in the *device's* orientation space rather than the interface's. With the device left
+    /// in portrait, the accessibility server aspect-fits the app's 1180x820 window into the
+    /// 820x1180 screen: measured on `uitest-pad-f06-pad-r3`, every control came back at exactly
+    /// 0.6949x with a +305.1pt y offset, which is 820/1180 = 0.69492 and (1180-569.8)/2 = 305.1 --
+    /// the window's own 1.439 aspect fitted into the portrait screen, centred. The app was not in
+    /// that state: its own `host ui: geometry` line, copied into the run's `app-runtime.log`,
+    /// reports the window, its screen and its scene all at 1180x820 with an identity transform, and
+    /// the R control's conversion through all three spaces unchanged. The distorted ruler is the
+    /// harness's, so the harness is where it is corrected, and no assertion is loosened to match it.
+    ///
+    /// What the distortion cost, which is why this is worth stating at length: read in the fitted
+    /// space, the layout editor's per-control size slider topped out at 98.0% from all four of the
+    /// drive's mechanisms in one run -- `adjust->98.0 edge->98.0 drag->98.0 tap->98.0` -- and that
+    /// is exactly what `S.f06.size-extremes` failed on, while the panel's own slider reached 100%
+    /// in the same space because its track is short and central and the error stayed inside the
+    /// thumb's own inset. The same row on the same binary reads `adjust->100.0` once the device is
+    /// landscape (`uitest-pad-pad-geom1`).
+    private static let deviceOrientation: UIDeviceOrientation = .landscapeLeft
+
     /// The order the panel actually ships, which is the vendored -buildMenu order with only the
     /// changes doc 36's R1 list sanctions: the experimental performance row does not ship at all
     /// (R1 row 12), so it is absent rather than present-and-inert, and the slot it held carries
@@ -66,6 +89,10 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        // Before the launch rather than after it: the app comes up into whatever orientation the
+        // device is already in, so establishing it here is what keeps every row's frames in the
+        // interface's own space instead of the device's. See -deviceOrientation for the measurement.
+        XCUIDevice.shared.orientation = Self.deviceOrientation
         app = XCUIApplication(bundleIdentifier: Self.bundleIdentifier)
     }
 
@@ -198,6 +225,74 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         app.launch()
         XCTAssertTrue(menuButton.waitForExistence(timeout: timeout),
                       "the SunPad three-dot menu button is on screen")
+        waitForTheFrameSpaceToBeTheAppsOwn()
+    }
+
+    /// The display's long side in points, measured once from a screenshot rather than assumed from a
+    /// device name: the check below has no device-specific number in it, and this is the number that
+    /// makes that possible.
+    private static let displayLongSide: CGFloat = {
+        let display = XCUIScreen.main.screenshot().image.size
+        return max(display.width, display.height)
+    }()
+
+    /// Waits until the frames the rows below will read are in the app's own coordinate space, and
+    /// fails naming both sides if they never are.
+    ///
+    /// The app is landscape-only and full-screen, so its window is the whole display and the window's
+    /// width is the display's *long* side. That is the whole check, and it is exact in both directions:
+    /// in the interface's own space the width is the long side, and in the fitted space described at
+    /// -deviceOrientation it is the short one -- 820 where the display is 1180. The display's own size
+    /// is read from a screenshot so the check carries no device constant, and the screenshot is taken
+    /// the way -attach takes one: a landscape interface on the iPad arrives as a portrait buffer
+    /// carrying a rotation, so the long side is the maximum of the two and not the width.
+    ///
+    /// It is a wait rather than a single read because the orientation set in -setUpWithError is
+    /// applied to a device that may not have finished turning, and a frame read across that turn would
+    /// be a frame from the wrong space -- which is the fault this whole helper exists to keep from
+    /// being reported as a mis-placed control. A launch that never arrives is failed here with the
+    /// hierarchy it judged and both numbers.
+    private func waitForTheFrameSpaceToBeTheAppsOwn(timeout: TimeInterval = 20) {
+        let longSide = Self.displayLongSide
+        let deadline = Date().addingTimeInterval(timeout)
+        var window = app.windows.firstMatch.frame
+        repeat {
+            if app.windows.firstMatch.exists {
+                window = app.windows.firstMatch.frame
+                if abs(window.width - longSide) <= 1.0 {
+                    attachNote("frame-space",
+                               "device " + Self.orientationName(of: Self.deviceOrientation)
+                               + "; window " + NSCoder.string(for: window)
+                               + "; display long side " + String(format: "%.1f", longSide)
+                               + " -- in the interface's own space, so the frames below are read "
+                               + "where the app lays out. The app's own window bounds are the "
+                               + "host ui: geometry line in app-runtime.log.")
+                    return
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        attachHierarchy("frame-space-is-not-the-apps-own")
+        XCTFail("the interface's frames are read in the app's own coordinate space: the window is "
+                + NSCoder.string(for: window) + " where this landscape-only full-screen app's window "
+                + "width is the display's long side, " + String(format: "%.1f", longSide)
+                + " -- a window narrower than that is the accessibility server fitting the "
+                + "interface into the device's orientation rather than the app laying it out there")
+    }
+
+    /// A UIDeviceOrientation as the word the run's notes should carry, for the same reason the
+    /// screenshot orientation is named rather than numbered: a reader of the bundle should not have
+    /// to hold the enum's raw values in their head to read which side the device was on.
+    private static func orientationName(of orientation: UIDeviceOrientation) -> String {
+        switch orientation {
+        case .portrait: return "portrait"
+        case .portraitUpsideDown: return "portraitUpsideDown"
+        case .landscapeLeft: return "landscapeLeft"
+        case .landscapeRight: return "landscapeRight"
+        case .faceUp: return "faceUp"
+        case .faceDown: return "faceDown"
+        default: return "unknown(\\(orientation.rawValue))"
+        }
     }
 
     /// The vendored menu mounts through UIKit's menu machinery, so a row is not guaranteed
@@ -410,6 +505,46 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
             } while Date() < deadline
         }
         XCTFail("the Show FPS Counter row turns the counter " + (on ? "on" : "off"))
+    }
+
+    /// The vendored layout reset, driven through the settings panel and its confirmation alert.
+    ///
+    /// Every row in this suite that changes the layout persists what it changed: the panel's size
+    /// scale, the per-control sizes and the placements all live in NSUserDefaults and survive a
+    /// relaunch, which is exactly what the persistence rows assert. A row whose claim is about the
+    /// *layout* rather than about persistence therefore has to establish the default it is judging,
+    /// or it inherits whatever its neighbour left behind, and the row then reports a property of the
+    /// previous row's state as though the app had produced it during this one.
+    ///
+    /// That is measured rather than hypothetical. In run uitest-phone-r1-audit-phone-1 the rotation
+    /// row inherited a per-control size of 1.73 for Z from the rows before it; at that size the
+    /// containment clamp raises A until it covers X's centre, and the row's hittability claim failed
+    /// on a tree the turn had not touched -- the before and after hierarchies are identical. The
+    /// reset is what makes the claim be about the turn.
+    private func resetTouchControlLayout() {
+        openMenu()
+        openTouchSettings()
+        let reset = app.buttons["Reset This Device Layout"]
+        guard reset.waitForExistence(timeout: 15) else {
+            attachHierarchy("reset-button-missing")
+            XCTFail("the vendored reset button is on the settings panel")
+            return
+        }
+        reset.tap()
+        let alert = app.alerts["Reset Touch Control Layout?"]
+        guard alert.waitForExistence(timeout: 10) else {
+            attachHierarchy("reset-alert-missing")
+            XCTFail("the vendored reset asks for confirmation before it clears the layout")
+            return
+        }
+        alert.buttons["Reset"].tap()
+        XCTAssertFalse(alert.waitForExistence(timeout: 5), "Reset dismisses the alert")
+        // The reset leaves the panel up, and the menu button *toggles* it, so a row that went on to
+        // tap the menu button would close the panel instead of opening the menu. The panel's own
+        // close button is the way back to the overlay.
+        let close = app.buttons["Close touch control settings"]
+        if close.waitForExistence(timeout: 10) { close.tap() }
+        waitForTheControlSetToSettle()
     }
 
     private func framesDiffer(_ a: CGRect, _ b: CGRect, tolerance: CGFloat = 8) -> Bool {
@@ -1134,13 +1269,20 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 
     // MARK: - The touch-control settings that move drawn controls (R1 item 5)
 
-    /// A slider's own reading, as a percentage. These two sliders publish the *thumb's position
-    /// along its track* rather than the setting they hold: the vendored size range is 0.70-1.35 and
-    /// this reads 46% at its 1.00 default, and the opacity range is 0.25-1.0 and reads 76% at its
-    /// 0.82 default. Both are exactly (value - minimum) / (maximum - minimum), which is the same
-    /// scale `adjust(toNormalizedSliderPosition:)` speaks, so a reading and a drag address one
-    /// scale and a value can be put back exactly. Nil rather than zero when the control is absent,
-    /// because "not on screen" and "at the bottom of its track" must not compare equal.
+    /// A slider's own reading, as a percentage of *that slider's own range*.
+    ///
+    /// These sliders publish the thumb's position along their own track rather than the setting they
+    /// hold, and the ranges in play are not the same one: the panel's Control size slider is 0.70-1.35
+    /// and reads 46% at its 1.00 default, the opacity slider is 0.25-1.0 and reads 76% at its 0.82
+    /// default, and the layout editor's per-control slider is 0.60-1.75 (SunPadGameOverlay.mm,
+    /// `_selectedSizeSlider`). Two readings are therefore percentages of two different ranges, and two
+    /// 100%s are not the same gesture: the editor's track tops out at size 1.75 while the panel's tops
+    /// out at 1.35, and a reading the editor calls 99% is size 1.7385, which is *not* the 1.75 ceiling
+    /// the store clamps to (SunPadSettings.mm, `setSizeScale:`). Each is exactly (value - minimum) /
+    /// (maximum - minimum), which is the same scale `adjust(toNormalizedSliderPosition:)` speaks, so a
+    /// reading and a drag address one scale and a value can be put back exactly. Nil rather than zero
+    /// when the control is absent, because "not on screen" and "at the bottom of its track" must not
+    /// compare equal.
     private func sliderPercent(_ label: String) -> Double? {
         let slider = app.sliders[label]
         guard slider.exists, let raw = slider.value as? String else { return nil }
@@ -1154,6 +1296,67 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
             return -1
         }
         return value
+    }
+
+    /// A one-line description of a slider's live state, for a message that has to say *why* a drive
+    /// stopped short rather than only how far it got.
+    ///
+    /// A drive that cannot reach the top of a track has three different causes that read alike from
+    /// the value alone: the control is disabled, the touch is not delivered to it, or its travel is
+    /// shorter than its frame. The neighbouring button is named as well, because a slider whose frame
+    /// shares its right end with another control is the case where a touch aimed at the top of the
+    /// track lands on something else instead.
+    private func sliderDiagnostics(_ label: String) -> String {
+        let slider = app.sliders[label]
+        guard slider.exists else { return "[" + label + " is not on screen]" }
+        let done = app.buttons["Finish moving touch controls"]
+        return "[" + label
+            + " enabled " + (slider.isEnabled ? "1" : "0")
+            + " hittable " + (slider.isHittable ? "1" : "0")
+            + " value " + String(describing: slider.value)
+            + " frame " + NSCoder.string(for: slider.frame)
+            + " next-to " + (done.exists ? NSCoder.string(for: done.frame) : "nothing")
+            + "]"
+    }
+
+    /// Every reading the last drive took, one entry per mechanism per round.
+    ///
+    /// A drive that stops short of the top has three mechanisms that read alike from the single value
+    /// it returns: the assertion can only say where the thumb ended. Recording what each path asked for
+    /// and what came back is what tells a plateau the geometry imposes -- all three agreeing on one
+    /// value -- apart from a mechanism that is simply the wrong one for this control.
+    private var driveTrail: [String] = []
+
+    private func readingText(_ value: Double?) -> String {
+        guard let value = value else { return "unreadable" }
+        return String(format: "%.1f", value)
+    }
+
+    /// One real touch along `label`'s own track, dragged from its middle to the far end of the
+    /// element, and the reading it leaves behind.
+    ///
+    /// The element's own frame is the scale a synthetic touch is expressed in, so a drive that stops
+    /// short leaves one question the value cannot answer: whether the top of the track lies past the
+    /// element's own right edge, or is not reachable by any touch at all. A drag that ends exactly on
+    /// that right edge answers it without touching anything else -- a reading of the maximum afterwards
+    /// means the top is addressable and a plateau is the drive's own fault, while a reading below it
+    /// means the element's last percent is not part of its own track.
+    ///
+    /// Taps *past* the right edge were measured and are deliberately not used here. The editor bar is a
+    /// `SunPadPassThroughView`, whose hitTest hands a touch back to whatever is drawn behind it unless
+    /// the touch lands on one of its own subviews, and the `Finish moving touch controls` button
+    /// neighbours the editor's slider with only about a dozen points between them. A sweep that walked
+    /// past the slider's edge therefore closed the editing session partway -- measured, as a failure to
+    /// resolve the slider at all rather than as a value -- which is a state the rest of the row cannot
+    /// continue from.
+    @discardableResult
+    private func dragToTheRightEdgeOfTheTrack(_ label: String) -> Double? {
+        let slider = app.sliders[label]
+        guard slider.exists else { return nil }
+        let start = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = slider.coordinate(withNormalizedOffset: CGVector(dx: 1.0, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        return settledSliderPercent(label)
     }
 
     /// One real touch along `label`'s track, to `percent` of it, returning what the control reads
@@ -1198,6 +1401,16 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// touch at one point -- and a slider jumps its thumb to the point it is touched, so a tap at the
     /// end of the element's own bounds asks the slider for the top of its track directly.
     ///
+    /// That iPad plateau was since measured to be the *ruler* and not the layout, which is why the
+    /// drive is now preceded by -waitForTheFrameSpaceToBeTheAppsOwn rather than given a fifth
+    /// mechanism: with the device left in portrait the accessibility server reports every control at
+    /// 0.6949x of where the app drew it, so a path computed from a frame in that space ends short of a
+    /// track that is in fact reachable. Measured across the two runs: `uitest-pad-f06-pad-r3` read
+    /// `adjust->98.0` from the editor's slider in the fitted space, and `uitest-pad-pad-geom1`
+    /// read `adjust->100.0` from the same slider in the same binary once the device was landscape.
+    /// The mechanisms below are kept because they are still the four ways a track can be addressed, and
+    /// the trail they leave is what would show a genuine short travel if one appeared.
+    ///
     /// A tap is also the only fallback that cannot disturb the tree if it misses. The drag released
     /// *past* the end of the slider was tried first and does reach the top of the panel's slider, but on
     /// the layout editor's slider it took hold of the surface behind the editor and moved a control with
@@ -1222,7 +1435,9 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// short: UIKit clamps the value at the slider's own maximum rather than at whichever position the
     /// frame's outer hundredth maps to.
     ///
-    /// The press has to be inside the element, and that is the whole of the safety argument. A gesture
+    /// The press has to be inside the element, and that is the whole of the safety argument. It begins
+    /// at the middle rather than at the element's left end, because the editor bar draws its own hint
+    /// label across that end of the row. A gesture
     /// recognizer is handed a touch only when it begins inside the view that owns it, so a drag that
     /// starts on the slider cannot be taken away from it by the editor's control-drag pans even though
     /// its path and its release both leave the slider's bounds -- which is exactly how this differs from
@@ -1233,7 +1448,7 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     private func dragPastTheEndOfTheTrack(_ label: String) -> Double? {
         let slider = app.sliders[label]
         guard slider.exists else { return nil }
-        let start = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5))
+        let start = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         let end = slider.coordinate(withNormalizedOffset: CGVector(dx: 1.10, dy: 0.5))
         start.press(forDuration: 0.1, thenDragTo: end)
         return settledSliderPercent(label)
@@ -1241,13 +1456,17 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 
     /// Drives `label` to the top of its track and returns the reading of the state it leaves behind.
     ///
-    /// Three mechanisms, in the order of how much of the slider's own geometry each one depends on.
+    /// Four mechanisms, in the order of how much of the slider's own geometry each one depends on.
     /// `adjust(toNormalizedSliderPosition:)` is the mechanism a slider answers on its own, and it is
     /// tried first because on one form factor it is the whole of the drive: measured on the iPhone 17e,
     /// the panel's `Control size` slider reads 100% from the first call. The drag that ends past the
-    /// element's far edge is second, because it is the one mechanism the frame's own mapping cannot stop
-    /// short of the maximum. The tap on the end of the track is third, as the cheap second opinion. The
-    /// three are alternated until one of them reports the top or a whole round improves on nothing.
+    /// A single real touch ending on the element's own right edge is second, and it is the mechanism
+    /// that separates "the top of the track is not inside the element" from "the drive chose badly":
+    /// it places exactly the touch the sweep past the edge was meant to place, without the taps beyond
+    /// the edge that closed the editor. The drag that ends *past* the element's far edge is third,
+    /// because it is the one mechanism the frame's own mapping cannot stop short of the maximum. The
+    /// tap on the end of the track is fourth, as the cheap second opinion. They are alternated until
+    /// one of them reports the top or a whole round improves on nothing.
     ///
     /// Every mechanism's reading is taken after it, and what comes back is always the slider's own
     /// current state rather than a high-water mark it has since fallen back from. That distinction is
@@ -1258,7 +1477,15 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// and to say truthfully where it stopped.
     @discardableResult
     private func driveSliderToItsTop(_ label: String, attempts: Int = 3) -> Double? {
+        driveTrail = []
         guard var reading = setSliderTrackPercent(label, to: 100.0) else { return nil }
+        driveTrail.append("adjust->" + readingText(reading))
+        if reading >= 99.5 { return reading }
+        // One real touch ending on the element's own right edge, asked before anything is asked of the
+        // geometry past it: this is the cheapest mechanism that can disagree with `adjust`, and it is
+        // the one that says whether the top of the track is inside the element at all.
+        if let edged = dragToTheRightEdgeOfTheTrack(label) { reading = edged }
+        driveTrail.append("edge->" + readingText(reading))
         if reading >= 99.5 { return reading }
         var previous: Double?
         for _ in 0..<attempts {
@@ -1266,12 +1493,15 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
             // Past the end of the element: the one mechanism whose reading cannot be capped by where
             // the frame's own hundredth points land.
             if let dragged = dragPastTheEndOfTheTrack(label) { reading = dragged }
+            driveTrail.append("drag->" + readingText(reading))
             if reading >= 99.5 { return reading }
             // Then the tap on the end of the track.
             if let tapped = tapTheEndOfTheTrack(label) { reading = tapped }
+            driveTrail.append("tap->" + readingText(reading))
             if reading >= 99.5 { return reading }
             // Then the adjust again, from wherever that left the slider.
             if let again = setSliderTrackPercent(label, to: 100.0) { reading = again }
+            driveTrail.append("adjust->" + readingText(reading))
             if reading >= 99.5 { return reading }
             // A whole round that improved on nothing ends the drive: what comes back is the state the
             // slider is in, never a high-water mark it has since fallen back from.
@@ -1526,6 +1756,10 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// judges those lines rather than taking this process's word for arithmetic it cannot see.
     func testTurnToTheOtherLandscapeSideKeepsEveryControlInsideAndHittable() throws {
         launchAndWaitForOverlay()
+        // Judged against the app's own default layout, established here rather than inherited: the
+        // rows before this one persist the sizes they drive, and the turn is what this row is about.
+        // See -resetTouchControlLayout for the measurement that made this necessary.
+        resetTouchControlLayout()
         // The counter's label is where the port publishes its display read-back, so turning it on is
         // what makes the drawable readable from out here as well as in the app's log.
         setFPSCounter(true)
@@ -1567,8 +1801,16 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
                 continue
             }
             frames[control] = element.frame
+            // A control that is not hittable is named together with whatever covers it, because the
+            // two are different findings and should not read alike: a control the turn misplaced is a
+            // relayout defect, while a control covered by one the tree has drawn over it is a property
+            // of the sizes, which is the neighbour rows' subject and not this one's.
+            let covered = element.isHittable ? "" : " covered-by " + (frames
+                .filter { $0.key != control && $0.value.contains(element.frame) }
+                .keys.sorted().joined(separator: ","))
             XCTAssertTrue(element.isHittable,
-                          "the " + control + " control is still hittable after the turn")
+                          "the " + control + " control is still hittable after the turn; it is drawn at "
+                          + NSCoder.string(for: element.frame) + "." + covered)
         }
         XCTAssertEqual(frames.count, Self.rotationControls.count,
                        "every control in the overlay's set survived the turn")
@@ -1666,10 +1908,14 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         }
 
         // -- The panel's slider, at its maximum: the whole set grows, edge control included -------
+        attachNote("control-size-before-the-drive", sliderDiagnostics("Control size"))
         let panelMaximum = driveSliderToItsTop("Control size")
+        attachNote("control-size-drive-trail",
+                   driveTrail.joined(separator: " ") + " || " + sliderDiagnostics("Control size"))
         XCTAssertEqual(panelMaximum ?? -1.0, 100.0, accuracy: 0.5,
                        "the Control size slider is at its maximum; it stopped at "
-                       + String(format: "%.1f", panelMaximum ?? -1.0) + "%")
+                       + String(format: "%.1f", panelMaximum ?? -1.0) + "% -- "
+                       + driveTrail.joined(separator: " "))
         let atPanelMaximum = waitForDrawnFrame("Z") { $0.width > zAtDefault.width + 1.0 }
         XCTAssertNotNil(atPanelMaximum, "Z is still drawn with the Control size slider at its maximum")
         if let grown = atPanelMaximum {
@@ -1703,10 +1949,14 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         let selectedSize = app.sliders["Z size"]
         XCTAssertTrue(selectedSize.waitForExistence(timeout: 10),
                       "tapping Z selects it and the editor sizes that control")
+        attachNote("z-size-before-the-drive", sliderDiagnostics("Z size"))
         let zMaximum = driveSliderToItsTop("Z size")
+        let zTrail = driveTrail.joined(separator: " ")
+        attachNote("z-size-drive-trail", zTrail + " || " + sliderDiagnostics("Z size"))
         XCTAssertEqual(zMaximum ?? -1.0, 100.0, accuracy: 0.5,
                        "the selected control's size slider is at its maximum; it stopped at "
-                       + String(format: "%.1f", zMaximum ?? -1.0) + "%")
+                       + String(format: "%.1f", zMaximum ?? -1.0) + "% -- " + zTrail
+                       + " || " + sliderDiagnostics("Z size"))
         let atLargest = waitForDrawnFrame("Z") { $0.width > (atPanelMaximum?.width ?? 0) + 1.0 }
         XCTAssertNotNil(atLargest, "Z is still drawn with its own size slider at its maximum")
         if let grown = atLargest, let previous = atPanelMaximum {

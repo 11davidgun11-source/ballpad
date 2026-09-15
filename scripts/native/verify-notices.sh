@@ -48,7 +48,23 @@ require_cmd python3
 [ -f "${BALLPAD_ROOT}/scripts/native/lib/notices_check.py" ] \
     || die "missing scripts/native/lib/notices_check.py"
 
-BUNDLE="$(platform_build_dir "$PLATFORM")/BallpadStrikers.app"
+# The app target belongs to the port's own add_subdirectory(), so its bundle lands in the port's
+# binary directory and not at the top of the build tree. mobile/CMakeLists.txt publishes the
+# authoritative path at configure time, and build.sh, run-scenario.sh and run-uitests.sh all read
+# it from that file. Reading it here too is what keeps this gate pointed at the bundle the build
+# actually produced: a path no build ever writes to would let the final notice check report on an
+# app that is not there, which is a check that cannot fail for the reason it claims to test.
+BUNDLE=""
+BUNDLE_FILE="$(platform_build_dir "$PLATFORM")/ballpad-bundles.txt"
+if [ -f "$BUNDLE_FILE" ]; then
+    BUNDLE="$(sed -n 's/^strikers=//p' "$BUNDLE_FILE" | head -1)"
+fi
+if [ -z "$BUNDLE" ] || [ ! -d "$BUNDLE" ]; then
+    BUNDLE="$(platform_build_dir "$PLATFORM")/BallpadStrikers.app"
+fi
+if [ ! -d "$BUNDLE" ]; then
+    BUNDLE="$(find "$(platform_build_dir "$PLATFORM")" -maxdepth 3 -type d -name 'BallpadStrikers.app' -print -quit 2>/dev/null)"
+fi
 
 args=(
     --repo-root "$BALLPAD_ROOT"
@@ -72,4 +88,3 @@ if [ "$status" -ne 0 ]; then
     die "notices verification failed"
 fi
 log "notices verification passed"
-
