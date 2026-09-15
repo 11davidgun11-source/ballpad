@@ -219,7 +219,10 @@ target_link_libraries(ballpad_interface PUBLIC
 # once, through a target that names it, instead of twice.
 add_library(ballpad_hostui STATIC
   interface/BallpadHostUI.mm
-  interface/BallpadGameData.mm)
+  interface/BallpadGameData.mm
+  interface/BallpadLog.mm
+  interface/BallpadCredits.mm
+  interface/BallpadControllerMapping.mm)
 set_target_properties(ballpad_hostui PROPERTIES
   CXX_STANDARD 17
   OBJCXX_STANDARD 17
@@ -322,7 +325,7 @@ endfunction()
 
 # The bundle identifier is the one the existing Ballpad target already uses, so the ported app
 # keeps the project identity.
-ballpad_ios_bundle(strikers "${BALLPAD_APP_NAME}" "com.ballpad.strikers" "Ballpad Strikers")
+ballpad_ios_bundle(strikers "${BALLPAD_APP_NAME}" "com.ballpad.strikers" "BallPad Strikers")
 ballpad_bundle_notices(strikers)
 
 # ── The dependency probe ──────────────────────────────────────────────────────

@@ -31,6 +31,7 @@
 #include "port/hostui.h"
 
 #include "BallpadGameData.h"
+#include "BallpadLog.h"
 #include "SunPadDiagnostics.h"
 
 // The one file that is on every copy of this disc and on nothing else a person is likely to point
@@ -414,7 +415,7 @@ static BOOL BallpadStageAndActivate(NSURL* source, NSString** refusal)
                   error.localizedDescription);
         if (refusal != NULL)
             *refusal = [NSString stringWithFormat:
-                @"That file could not be copied into Ballpad's own folder:\n\n%@\n\nThe disc "
+                @"That file could not be copied into BallPad's own folder:\n\n%@\n\nThe disc "
                 "image itself was not changed.",
                 error.localizedDescription ?: @"unknown error"];
         return NO;
@@ -436,7 +437,7 @@ static BOOL BallpadStageAndActivate(NSURL* source, NSString** refusal)
         [fileManager removeItemAtPath:stagingDir error:NULL];
         SunPadLog(@"game data: could not record the import; the store is unchanged");
         if (refusal != NULL)
-            *refusal = @"Ballpad could not record the import in its own folder, so nothing "
+            *refusal = @"BallPad could not record the import in its own folder, so nothing "
                        "changed. The disc that already works is still in place.";
         return NO;
     }
@@ -565,7 +566,7 @@ static UIButton* BallpadPlainButton(NSString* title, NSString* identifier, id ta
 
     _chooseButton = BallpadFilledButton(@"Choose ISO or GCM", @"BallpadGameDataImportChoose", self,
                                         @selector(chooseFilesTapped));
-    _folderButton = BallpadPlainButton(@"Import from Ballpad Folder",
+    _folderButton = BallpadPlainButton(@"Import from BallPad Folder",
                                        @"BallpadGameDataImportFolder", self,
                                        @selector(chooseFolderTapped));
     _cancelButton = BallpadPlainButton(@"Not now", @"BallpadGameDataImportCancel", self,
@@ -814,10 +815,11 @@ static void BallpadRunFolderImport(UIViewController* presenter,
     NSArray<NSURL*>* images = BallpadImagesInDocuments();
     if (images.count == 0)
     {
-        BallpadPresentAlert(presenter, @"No Disc Image in the Ballpad Folder",
-                            @"Put an .iso or .gcm disc image into this app's folder in Files -- "
-                            "On My iPhone (or iPad), Ballpad Strikers -- and try again. Nothing "
-                            "was changed.",
+        BallpadPresentAlert(presenter, @"No Disc Image in the BallPad Folder",
+                            [NSString stringWithFormat:
+                                @"Put an .iso or .gcm disc image into this app's folder in Files -- "
+                                "On My iPhone (or iPad), %@ -- and try again. Nothing was changed.",
+                                BallpadAppDisplayName()],
                             @"OK", nil);
         completion(nil, nil);
         return;
@@ -831,7 +833,7 @@ static void BallpadRunFolderImport(UIViewController* presenter,
     UIAlertController* choice =
         [UIAlertController alertControllerWithTitle:@"Choose a Disc Image"
                                            message:@"More than one disc image is in the "
-                                                   @"Ballpad folder."
+                                                   @"BallPad folder."
                                     preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSURL* image in images)
     {
@@ -879,8 +881,9 @@ static void BallpadReportMenuImport(UIViewController* presenter, NSURL* url, NSS
         BallpadPresentAlert(presenter, @"Game Data Imported",
                             [NSString stringWithFormat:
                                 @"%@ is in place.\n\nThe game keeps running on the disc it already "
-                                "loaded. Quit and open Ballpad Strikers again to play the new one.",
-                                BallpadStringFromC(BallpadGameDataSummary())],
+                                "loaded. Quit and open %@ again to play the new one.",
+                                BallpadStringFromC(BallpadGameDataSummary()),
+                                BallpadAppDisplayName()],
                             @"OK", nil);
         return;
     }
@@ -989,7 +992,8 @@ extern "C" int PortHostUIRunGameDataImport(const char* title, const char* messag
 
         NSString* heading = title != NULL && title[0] != 0
             ? BallpadStringFromC(title)
-            : @"Ballpad Strikers: game data not found";
+            : [NSString stringWithFormat:@"%@: game data not found",
+                                         BallpadAppDisplayName()];
         NSString* body = message != NULL && message[0] != 0
             ? BallpadStringFromC(message)
             : @"The game data was not found, and the disc has not been resolved yet.";
@@ -1032,10 +1036,10 @@ extern "C" int PortHostUIRunGameDataImport(const char* title, const char* messag
             imported = YES;
             [strongScreen setRefusal:nil busy:NO];
             BallpadPresentAlert(strongScreen, @"Game Data Ready",
-                                [NSString stringWithFormat:@"%@ is in place. Ballpad Strikers "
-                                                           @"will start now.",
+                                [NSString stringWithFormat:@"%@ is in place. %@ will start now.",
                                                            BallpadStringFromC(
-                                                               BallpadGameDataSummary())],
+                                                               BallpadGameDataSummary()),
+                                                           BallpadAppDisplayName()],
                                 @"Start the Game", ^{
                 finished = YES;
             });
