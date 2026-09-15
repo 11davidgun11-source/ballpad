@@ -211,6 +211,12 @@ scope_app() {
     log="${LOG_DIR}/verify-clean-${platform}.log"
     log_new "$log"
 
+    # The declared Dawn cache args are part of what "the declared dependency cache"
+    # means (doc 34 B03). Without them the fresh tree reconfigures Dawn with its own
+    # defaults -- notably DAWN_BUILD_PROTOBUF=ON -- and trips Dawn's cross-compiling
+    # protoc guard on a flag the real build never passes. That is the gate diverging
+    # from the build it is supposed to reproduce, not the build being unreproducible,
+    # so the fresh configure is handed the same args build.sh hands the normal one.
     if ! run_logged "$log" cmake -G Ninja -S "${BALLPAD_ROOT}/mobile" -B "$build_dir" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_SYSTEM_NAME=iOS \
@@ -224,7 +230,8 @@ scope_app() {
         -DBALLPAD_PLATFORM="$platform" \
         -DAURORA_DAWN_PROVIDER=vendor \
         -DAURORA_SDL3_PROVIDER=system \
-        -DFETCHCONTENT_SOURCE_DIR_DAWN="${DAWN_SRC}"; then
+        -DFETCHCONTENT_SOURCE_DIR_DAWN="${DAWN_SRC}" \
+        "${DAWN_CACHE_ARGS[@]}"; then
         note_fail "fresh configure failed; see ${log}"
         return
     fi

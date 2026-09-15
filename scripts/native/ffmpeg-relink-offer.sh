@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# Package the LGPL-2.1-or-later material set for the FFmpeg the shipped app links.
+#
+# FFmpeg is statically linked into BallpadStrikers. Doc 35's FFmpeg clause and
+# notices/ffmpeg/README.ballpad.md record what that costs: LGPL 2.1 section 6
+# lets a work link the library statically only when the recipient can also
+# modify the library and relink the application, and shipping COPYING.LGPLv2.1
+# together with a configure line does not carry that. So the obligation cannot
+# be closed by writing a better paragraph -- it needs the material itself.
+#
+# This script assembles that material for one platform out of the build that
+# actually exists, so the set describes the shipped link rather than a
+# remembered one:
+#
+#   CORRESPONDING-SOURCE.md  which FFmpeg, from where, with which hash, and the
+#                            exact configure line. FFmpeg is unmodified, so the
+#                            pinned upstream archive plus that line is its
+#                            complete corresponding source.
+#   LINK-COMMAND.txt         the link command ninja itself prints for the app
+#                            target, captured rather than reconstructed.
+#   LINK-INPUTS.tsv          every object, archive and SDK stub on that command
+#                            with its SHA-256 and size: the machine-readable
+#                            inventory a recipient can check.
+#   ffmpeg-relink.sh         relinks the app against a substitute libavcodec.a
+#   offer.env                the four values that relinker reads
+#
+# --exercise runs the packaged relinker against the pinned archives and checks
+# the result is a Mach-O executable for the right platform. That is what makes
+# the set evidence: a recipe that has never relinked is a promise.
+#
+# Scope: this packages material; it distributes nothing. This is a local
+# development build, and the task's authorization boundary leaves distribution a
+# separate decision that docs/native-strikers-release-readiness.md tracks.
+#
+# Use: scripts/native/ffmpeg-relink-offer.sh [--platform simulator|device] [--exercise]
+
+# shellcheck source=common.sh
+source "$(cd "$(dirname "$BASH_SOURCE")" && pwd)/common.sh"
+
+PLATFORM=simulator
+EXERCISE=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --platform) [ "$#" -ge 2 ] || die "missing value for $1"; PLATFORM="$2"; shift 2 ;;
+        --exercise) EXERCISE=1; shift ;;
+        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+        *) die "unknown argument: $1" ;;
+    esac
+done
+
+case "$PLATFORM" in
+    simulator|device) ;;
+    macos) die "macOS is a development host, not a shipped artifact; use --platform simulator" ;;
+    *) die "unknown platform: $PLATFORM" ;;
+esac
+
+require_cmd ninja
+require_cmd python3
+
+BUILD_DIR="$(platform_build_dir "$PLATFORM")"
+[ -d "$BUILD_DIR" ] || die "no $PLATFORM build at $BUILD_DIR; build it first"
+
+# The bundle path comes from the same file the other native scripts read, so this
+# packaging step and the notice gate always describe the same app.
+BUNDLE_FILE="$BUILD_DIR/ballpad-bundles.txt"
+APP=""
+if [ -f "$BUNDLE_FILE" ]; then
+    APP="$(sed -n 's/^strikers=//p' "$BUNDLE_FILE" | head -1)"
+fi
+if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+    APP="$(find "$BUILD_DIR" -maxdepth 3 -type d -name 'BallpadStrikers.app' -print -quit)"
+fi
+[ -n "$APP" ] || die "no BallpadStrikers.app under $BUILD_DIR"
+
+BINARY="$APP/BallpadStrikers"
+[ -f "$BINARY" ] || die "no executable at $BINARY"
+
+TARGET_BIN="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$BINARY" "$BUILD_DIR")"
+[ -f "$BUILD_DIR/$TARGET_BIN" ] || die "$TARGET_BIN is not inside $BUILD_DIR"
+
+PINNED_AVCODEC="$DEPS_ROOT/ffmpeg/$PLATFORM/lib/libavcodec.a"
+PINNED_AVUTIL="$DEPS_ROOT/ffmpeg/$PLATFORM/lib/libavutil.a"
+[ -f "$PINNED_AVCODEC" ] || die "no pinned libavcodec.a at $PINNED_AVCODEC"
+[ -f "$PINNED_AVUTIL" ] || die "no pinned libavutil.a at $PINNED_AVUTIL"
+
+OUT="$BUILD_ROOT/n7/ffmpeg-relink-offer/$PLATFORM"
+mkdir -p "$OUT"
+
+# Capture the command the build would run rather than retyping it, so the packaged
+# relink step cannot drift from the link the app actually shipped with.
+LINK_COMMAND_FILE="$OUT/LINK-COMMAND.txt"
+ninja -C "$BUILD_DIR" -t commands "$TARGET_BIN" | tail -1 > "$LINK_COMMAND_FILE"
+[ -s "$LINK_COMMAND_FILE" ] || die "ninja printed no link command for $TARGET_BIN"
+grep -q -F -- "$PINNED_AVCODEC" "$LINK_COMMAND_FILE" \
+    || die "the link command for $TARGET_BIN does not name $PINNED_AVCODEC; refusing to package a relink offer for a link that does not carry the library"
+grep -q -F -- "$PINNED_AVUTIL" "$LINK_COMMAND_FILE" \
+    || die "the link command for $TARGET_BIN does not name $PINNED_AVUTIL"
+
+for value in "$BUILD_DIR" "$TARGET_BIN" "$PINNED_AVCODEC" "$PINNED_AVUTIL"; do
+    case "$value" in
+        *"'"*) die "a path contains a single quote, which offer.env cannot carry: $value" ;;
+    esac
+done
+
+{
+    printf '# Generated by scripts/native/ffmpeg-relink-offer.sh for %s.\n' "$PLATFORM"
+    printf '# Read by scripts/native/lib/ffmpeg-relink.sh; do not hand-edit.\n'
+    printf "BUILD_DIR='%s'\n" "$BUILD_DIR"
+    printf "TARGET_BIN='%s'\n" "$TARGET_BIN"
+    printf "PINNED_AVCODEC='%s'\n" "$PINNED_AVCODEC"
+    printf "PINNED_AVUTIL='%s'\n" "$PINNED_AVUTIL"
+} > "$OUT/offer.env"
+
+cp "$BALLPAD_ROOT/scripts/native/lib/ffmpeg-relink.sh" "$OUT/ffmpeg-relink.sh"
+
+python3 - "$LINK_COMMAND_FILE" "$BUILD_DIR" "$PINNED_AVCODEC" "$PINNED_AVUTIL" > "$OUT/LINK-INPUTS.tsv" <<'PY'
+import hashlib
+import os
+import sys
+
+command_file, build_dir, avcodec, avutil = sys.argv[1:5]
+tokens = open(command_file).read().split()
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+rows = []
+for token in tokens:
+    if not token.endswith(('.a', '.o', '.tbd', '.dylib', '.so')):
+        continue
+    path = token if os.path.isabs(token) else os.path.join(build_dir, token)
+    path = os.path.normpath(path)
+    if not os.path.isfile(path):
+        continue
+    if path in (avcodec, avutil):
+        kind = 'ffmpeg-static'
+    elif token.endswith('.o'):
+        kind = 'object'
+    elif token.endswith('.tbd'):
+        kind = 'sdk-stub'
+    else:
+        kind = 'archive'
+    rows.append((kind, sha256(path), os.path.getsize(path), path))
+
+rows.sort(key=lambda row: (row[0], row[3]))
+print('# ballpad-link-inputs/1: every object, archive and SDK stub on the captured link command')
+print('# kind\tsha256\tbytes\tpath')
+for kind, digest, size, path in rows:
+    print('{0}\t{1}\t{2}\t{3}'.format(kind, digest, size, path))
+PY
+
+{
+    printf '# FFmpeg corresponding source for the %s link\n\n' "$PLATFORM"
+    cat <<'EOF'
+This is the FFmpeg half of the LGPL-2.1-or-later material set for Ballpad's
+native iOS/iPadOS app. It is generated by scripts/native/ffmpeg-relink-offer.sh
+from the build that exists, so the paths in LINK-INPUTS.tsv and the command in
+LINK-COMMAND.txt are the ones the shipped executable was in fact linked with.
+
+## The library, and why its source is the upstream archive
+
+Ballpad does not patch FFmpeg. The port calls one decoder -- the THP video
+decoder, found with avcodec_find_decoder(AV_CODEC_ID_THP) -- and the THP
+container parser and DSP-ADPCM audio decoder are the port's own code. So the
+complete corresponding source of the linked library is the pinned upstream
+release, configured exactly as below and otherwise untouched.
+
+| Field | Value |
+| --- | --- |
+| Upstream | https://ffmpeg.org/ |
+| Release | 9.0.1 |
+| Archive | https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz |
+| Archive SHA-256 | cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635 |
+| Patches applied | none |
+| License of this configuration | LGPL-2.1-or-later, verbatim text at notices/ffmpeg/COPYING.LGPLv2.1 |
+
+## The configure line, exactly as it was run
+
+scripts/native/bootstrap.sh (prepare_ffmpeg) runs the following for an iOS
+target. TARGET is arm64-apple-ios17.0-simulator for the Simulator and
+arm64-apple-ios17.0 for device; SDK is the platform SDK path.
+
+    ./configure \
+        --prefix="$OUT" --cc="$(xcrun --find clang)" \
+        --enable-cross-compile --target-os=darwin --arch=arm64 \
+        --enable-static --disable-shared --enable-pic --disable-asm \
+        --disable-autodetect --disable-programs --disable-doc --disable-network \
+        --disable-avformat --disable-avfilter --disable-avdevice \
+        --disable-swscale --disable-swresample \
+        --disable-everything --enable-decoder=thp \
+        --extra-cflags="-arch arm64 -isysroot $SDK -O2 -fPIC $TARGET" \
+        --extra-ldflags="-arch arm64 -isysroot $SDK -O2 -fPIC $TARGET"
+
+No --enable-gpl and no --enable-nonfree are passed, and --disable-autodetect
+with --disable-everything leaves no optional external library enabled. The
+result is FFmpeg core, libavutil and libavcodec with a single decoder.
+
+## How to relink against a modified library
+
+1. Fetch the archive above and check its SHA-256.
+2. Configure and build it with the line above into a prefix of your choosing.
+3. Run the packaged relinker against your build:
+
+    scripts/native/lib/ffmpeg-relink.sh \
+        --offer-dir <this directory> \
+        --avcodec <your prefix>/lib/libavcodec.a \
+        --avutil  <your prefix>/lib/libavutil.a \
+        --out     <where the relinked executable should go>
+
+   The relinker re-runs the captured link command with those two archives
+   substituted, so no other input has to be reconstructed by hand. It refuses to
+   write over the shipped executable, and it stops if the packaged command does
+   not name the archives it was told to substitute.
+
+LINK-INPUTS.tsv lists every other object, archive and SDK stub on that command
+with its SHA-256, which is what lets a relink be checked rather than trusted.
+The Ballpad-authored inputs among them (libballpad_interface.a,
+libballpad_hostui.a and this application's own sources) are in this repository
+under their own licenses; the pinned third-party inputs are reproducible from
+the revisions in docs/native-strikers-dependency-manifest.json.
+
+## Scope
+
+This material set exists so the obligation is discharged by something a
+recipient can use, not by a paragraph. It does not itself distribute a binary,
+and nothing here claims that shipping a license file completes compliance. The
+macOS Homebrew libavcodec used for desktop reference runs is a separate question
+and is not part of this set.
+EOF
+} > "$OUT/CORRESPONDING-SOURCE.md"
+
+if [ "$EXERCISE" = 1 ]; then
+    RELINKED="$OUT/relinked/BallpadStrikers"
+    bash "$BALLPAD_ROOT/scripts/native/lib/ffmpeg-relink.sh" --offer-dir "$OUT" --out "$RELINKED"
+    case "$PLATFORM" in
+        simulator) WANT=iossimulator ;;
+        device)    WANT=ios ;;
+    esac
+    assert_macho_platform "$RELINKED" "$WANT"
+    relinked_sha="$(sha256_of "$RELINKED")"
+    shipped_sha="$(sha256_of "$BINARY")"
+    if [ "$relinked_sha" = "$shipped_sha" ]; then
+        log "the packaged set relinked byte-identically to the shipped executable ($relinked_sha)"
+    else
+        log "the packaged set relinked to $relinked_sha against the shipped $shipped_sha"
+    fi
+fi
+
+(
+    cd "$OUT"
+    shasum -a 256 LINK-COMMAND.txt offer.env ffmpeg-relink.sh LINK-INPUTS.tsv CORRESPONDING-SOURCE.md > SHA256SUMS
+)
+
+log "ffmpeg relink offer -> $OUT"
+log "link inputs: $(grep -c -v '^#' "$OUT/LINK-INPUTS.tsv") row(s), $(grep -c 'ffmpeg-static' "$OUT/LINK-INPUTS.tsv") of them FFmpeg"

@@ -22,12 +22,15 @@ these copies is a failure of `scripts/native/verify-notices.sh`.
 | `musyx` | `musyx/LICENSE` |
 | `ode` | `ode/LICENSE` |
 | `ffmpeg` | `ffmpeg/COPYING.LGPLv2.1`, `ffmpeg/README.ballpad.md` |
-| `aurora-vendored-libs` | `aurora-vendored-libs/README.md` |
+| `aurora-vendored-libs` | `aurora-vendored-libs/README.md`, `aurora-vendored-libs/abseil/LICENSE`, `aurora-vendored-libs/fmt/LICENSE`, `aurora-vendored-libs/freetype/LICENSE.TXT`, `aurora-vendored-libs/freetype/FTL.TXT`, `aurora-vendored-libs/freetype/GPLv2.TXT`, `aurora-vendored-libs/imgui/LICENSE.txt`, `aurora-vendored-libs/libpng/LICENSE`, `aurora-vendored-libs/tracy/LICENSE`, `aurora-vendored-libs/xxhash/LICENSE`, `aurora-vendored-libs/zstd/LICENSE` |
 | `googletest` | none: it is a test-only dependency and is not shipped |
 
 The texts were copied byte-for-byte from the pinned sources rather than retyped.
 `scripts/native/verify-notices.sh` compares the shipped copies against these files by
-SHA-256, so an edit here that is not mirrored in the bundle is caught.
+SHA-256, so an edit here that is not mirrored in the bundle is caught. For the one bundle
+entry, the set above is the libraries that actually reach the shipped binary rather than
+Aurora's whole vendored list; the reduction and the symbol evidence behind it are in
+`notices/aurora-vendored-libs/README.md`.
 
 Nothing in this directory resolves an ownership question. A notice attached to
 reconstructed game code does not establish that the licensor holds every underlying

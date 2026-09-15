@@ -28,13 +28,19 @@ It is a local engineering record, not legal advice and not a distribution approv
 1. **Reconstructed game code.** No upstream license grants redistribution rights and the
    status is unresolved. Ballpad claims no rights in it and does not treat attribution as a
    clearance.
-2. **FFmpeg static linkage.** LGPL-2.1-or-later in the mobile configuration. A relinking
-   offer and corresponding-source availability are still required for any binary
-   distribution; publishing the pinned archive and configure line is not a full discharge.
-   Recorded as a `notice_gap` on the `ffmpeg` component.
-3. **Aurora's vendored libraries.** The manifest entry is a checklist, not a collected notice
-   set. It must be reduced to the libraries actually linked into the shipped app, each with
-   its verbatim license text. Recorded as a `notice_gap` on `aurora-vendored-libs`.
+2. **FFmpeg static linkage.** LGPL-2.1-or-later in the mobile configuration. The relinking
+   and corresponding-source material is now packaged per platform by
+   `scripts/native/ffmpeg-relink-offer.sh` and was exercised by relinking the app to a
+   byte-identical executable, so this component no longer carries a `notice_gap`. What
+   remains open is distribution itself: material sitting in a build directory does not
+   accompany a binary that leaves this machine, and off-machine availability stays a
+   separate decision (item 5).
+3. **Aurora's vendored libraries.** Reduced from Aurora's vendored list to the eight
+   libraries actually on the app's link edge, and checked against the binary's symbol table
+   rather than assumed. Each linked library's verbatim text ships under
+   `notices/aurora-vendored-libs/`, with RmlUi excluded by configuration and zlib-ng and
+   SQLite satisfied from the SDK. This component no longer carries a `notice_gap`. A future
+   configuration that links RmlUi, zlib-ng or the vendored SQLite would have to revisit it.
 4. **MusyX and ODE.** Their preserved notices do not establish that their licensors hold all
    rights in reconstructed or game-specific modifications.
 5. **Public source publication.** This task does not publish, push or distribute anything.
@@ -57,4 +63,3 @@ attempted by this work.
 
 Label for the delivered result: **"Simulator-verified development build; hardware validation
 pending."**
-

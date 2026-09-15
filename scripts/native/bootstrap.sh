@@ -68,9 +68,37 @@ fetch_engine() {
 }
 
 # ── 2. Patch series ───────────────────────────────────────────────────────────
-# Applied with git apply so an already-applied patch is detected rather than
-# failing the second bootstrap. The series is the source of truth: a change that
-# only exists in the ignored fork is a bug that this function surfaces.
+# The series is the source of truth: a change that only exists in the ignored fork
+# is a bug this function surfaces. An up-to-date fork is recognised by undoing the
+# series, not by testing one patch at a time.
+#
+# Undoing the whole series in a scratch index and comparing the result with the
+# pin's tree is "pin + series is what is checked out", read backwards: patch N's
+# post-image is the tree patch N+1 starts from, so reversing in reverse order
+# always lines up. Testing each patch on its own does not survive a mature series
+# -- patch 0005's post-image stops being in the tree once a later patch touches the
+# same include block -- so a per-patch reverse check calls an applied patch
+# unapplied and the build stops on a fork that is already correct. Keeping the
+# result in a scratch index is what keeps this a check: the worktree is untouched.
+series_undoes_to_pin() {
+    local series="$1" scratch pin_tree applied
+    # A dirty worktree is not this function's question. Fall through to the
+    # per-patch path, which reports it, rather than calling a dirty tree applied.
+    git -C "${ENGINE_DIR}" diff --quiet || return 1
+    git -C "${ENGINE_DIR}" diff --cached --quiet || return 1
+    pin_tree="$(git -C "${ENGINE_DIR}" rev-parse "${ENGINE_PIN}^{tree}" 2>/dev/null)" || return 1
+    [ -n "$pin_tree" ] || return 1
+
+    mkdir -p "${BUILD_ROOT}/tmp"
+    scratch="${BUILD_ROOT}/tmp/patch-series-index.$$"
+    GIT_INDEX_FILE="$scratch" git -C "${ENGINE_DIR}" read-tree HEAD 2>/dev/null || return 1
+    for applied in $(echo "$series" | LC_ALL=C sort -r); do
+        GIT_INDEX_FILE="$scratch" git -C "${ENGINE_DIR}" apply --cached -R "$applied" \
+            >/dev/null 2>&1 || return 1
+    done
+    [ "$(GIT_INDEX_FILE="$scratch" git -C "${ENGINE_DIR}" write-tree)" = "$pin_tree" ]
+}
+
 apply_patches() {
     local series
     series="$(find "${PATCH_DIR}" -name '*.patch' -o -name '*.diff' 2>/dev/null | LC_ALL=C sort)"
@@ -78,6 +106,12 @@ apply_patches() {
         warn "no patch series in ${PATCH_DIR}; the fork must already match the pin"
         return 0
     fi
+
+    if series_undoes_to_pin "$series"; then
+        log "patch series: the checkout is already pin + series ($(echo "$series" | wc -l | tr -d ' ') patch(es), each undone to the pin's tree)"
+        return 0
+    fi
+
     local p applied=0 skipped=0
     for p in $series; do
         local rel="${p#${PATCH_DIR}/}"
@@ -89,7 +123,7 @@ apply_patches() {
             log "applied: $rel"
             applied=$((applied + 1))
         else
-            die "patch does not apply cleanly and is not already applied: $rel"
+            die "patch does not apply cleanly and is not already applied: $rel (the fork has edits that are not in the series, or the series is out of order)"
         fi
     done
     log "patch series: $applied applied, $skipped already present"

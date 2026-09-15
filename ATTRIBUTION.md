@@ -26,7 +26,7 @@ manifest bundled inside the application.
 | Platform layer, Metal presentation, graphics abstraction | [encounter/aurora](https://github.com/encounter/aurora) and contributors | Vendored inside the pinned engine tree. Ballpad carries upstream patches and its own iOS build fixes. |
 | WebGPU backend underneath Aurora | [encounter/dawn](https://github.com/encounter/dawn) | Built from a pinned source revision, because no iOS Simulator prebuilt slice exists upstream. |
 | Window/input/haptics plumbing | [SDL3](https://github.com/libsdl-org/SDL) | Built from a pinned release tag for each platform. |
-| THP movie decode | [FFmpeg](https://ffmpeg.org/) | A static, THP-only mobile build. See `notices/ffmpeg/README.ballpad.md` for the exact configuration and its open obligations. |
+| THP movie decode | [FFmpeg](https://ffmpeg.org/) | A static, THP-only mobile build. See `notices/ffmpeg/README.ballpad.md` for the exact configuration and the relink material packaged alongside it. |
 | iOS/iPadOS application, touch interface, Files importer, mobile build and test surface | Ballpad | This is the boundary: everything Ballpad authored is in the application shell, the build scripts, the test tooling and the patch series - not in the game logic or the platform libraries. |
 
 The bullet-list credit text in the upstream README names the same three projects above it:
@@ -66,9 +66,14 @@ third-party rights:
   `notices/ode/LICENSE`. That license does not by itself establish the status of
   independently copyrightable game-specific modifications.
 - **Aurora and its vendored libraries.** MIT and per-library licenses, reproduced under
-  `notices/`. They were not relicensed by Ballpad.
-- **FFmpeg.** LGPL-2.1-or-later in the mobile configuration, with the static-linkage
-  relinking obligation still open. Not resolved by the presence of the license text.
+  `notices/` for the eight libraries that reach the shipped binary. They were not
+  relicensed by Ballpad, and the reduction is recorded rather than implied: see
+  `notices/aurora-vendored-libs/README.md`.
+- **FFmpeg.** LGPL-2.1-or-later in the mobile configuration. The static-linkage relinking
+  and corresponding-source material is packaged per platform by
+  `scripts/native/ffmpeg-relink-offer.sh` and was exercised by relinking the app to a
+  byte-identical executable, so it is no longer merely documented. Distributing any binary
+  remains a separate, still-open decision.
 - **Game assets and branding.** No game data is distributed. The application bundle
   deliberately excludes game-derived icons and artwork; original simple artwork is used
   instead. Game assets needed during play are loaded from the user's own imported data.
@@ -79,4 +84,3 @@ third-party rights:
 
 See `docs/native-strikers-release-readiness.md` for what is complete, what remains
 unresolved, and what is explicitly out of scope for this development build.
-

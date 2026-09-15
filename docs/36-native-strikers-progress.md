@@ -83,8 +83,9 @@ publishes its container under an identifier no exact match could ever equal, so 
 for the wrong string rather than failing to scroll.
 
 N0, N1, N2 and N3 are complete. Both pinned mobile dependencies (SDL3, FFmpeg) are built for the
-Simulator, the pinned Dawn source is extracted, the attribution/notices package exists and its
-integrity gate passes, both Simulator bundles link and are asserted in place (`build.sh --platform
+Simulator, the pinned Dawn source is extracted, the attribution/notices package exists with both
+notice gaps since closed and its integrity gate passing in `--final` form on both platforms, both
+Simulator bundles link and are asserted in place (`build.sh --platform
 simulator` exits 0 and reports `platform metadata ok ... BallpadStrikers -> iossimulator`), and
 the N2 smoke gate passes all five of its rows (the probe presented 90/90 frames on Metal once the
 shared host fell back to load 28). The device platform is built as well: SDL3 and FFmpeg are staged
@@ -341,6 +342,15 @@ evidenced (N3, above); the device platform and N4 onward are still open.
   `20260914T111343Z`, exit 0 (all three patches already applied, image identity confirmed,
   SDL3/FFmpeg/Dawn already present, zstd already staged). Each phase log is truncated at the
   start of its run (`log_new`), so a log now describes one run rather than accumulating.
+- "Already applied" is now decided by a whole-series check rather than patch by patch. The
+  per-patch test (`git apply --check -R` on each patch in turn) could not survive a later patch
+  editing the same include block, so patch 0005's post-image no longer existed in the finished
+  tree and bootstrap `die`d on a fork that was already correct. `series_undoes_to_pin()` instead
+  copies HEAD into a private index (`GIT_INDEX_FILE`), reverse-applies the series in reverse
+  order, and requires the resulting tree to equal the pin commit's tree. Proven three ways on
+  2026-09-15: the working fork reports `already-applied`, a fresh pin checkout reports
+  `not-applied`, and the fallback path applied 15/15 patches and landed exactly on fork tree
+  `99a65e0ef284`. `bash -n` clean; `verify-clean.sh --scope patches` exits 0 on the working fork.
 
 ### 3. Local data identity
 
@@ -516,7 +526,10 @@ Nothing in this section may be read as a lip-sync verdict.
 ### 7. Attribution and asset audit
 
 - `ATTRIBUTION.md`, `THIRD_PARTY_NOTICES.md`, `docs/native-strikers-release-readiness.md`,
-  `notices/README.md`, and 17 verbatim notice files under `notices/` (copied, not retyped).
+  `notices/README.md`, and 27 verbatim notice files under `notices/` (copied, not retyped): the 26
+  paths the manifest claims, plus `notices/README.md` itself. `notice_resources.py` adds the
+  generated `manifest.json` and `resources.txt`, so the bundle's `notices/` directory holds 29
+  files.
 - `scripts/native/verify-notices.sh` -> `scripts/native/lib/notices_check.py`. The inventory
   form passes: schema, unique ids, per-component notice coverage, orphan detection, document
   presence and the three required credit URLs.
@@ -526,9 +539,20 @@ Nothing in this section may be read as a lip-sync verdict.
   copied.
 - Negative controls proved the gate fails: tampered shipped notice -> FAIL; missing
   `resources.txt` -> FAIL; game-derived branding (`MC_Icon.png`) -> FAIL.
-- Two `notice_gap`s remain open and make `--final` fail by design: FFmpeg static LGPL
-  relinking/source availability, and reducing `aurora-vendored-libs` to the actually-linked
-  set. Shipped state is still `planned`; it flips to `yes` at N7.
+- Both `notice_gap`s are now CLOSED (2026-09-15) with material rather than with a narrower claim,
+  no component is left in the `planned` state, and `verify-notices.sh --final --require-bundle`
+  passes on simulator *and* device with zero FAILs. What closed them:
+
+  - FFmpeg: the relink set is packaged and matched to the linker edge that actually pulls the
+    archives (the `CXX_EXECUTABLE_LINKER__strikers_Release` edge, 156 tokens = 605 objects + 64
+    archives + 3 SDK stubs + 2 FFmpeg archives), with the LGPL text travelling beside the offer.
+  - `aurora-vendored-libs`: reduced to the libraries that really reach the app. The numbers in
+    `notices/aurora-vendored-libs/README.md` are counts of *defined* symbols in the shipped
+    binary (`nm -gU <app> | awk '{print $NF}' | sort -u | grep -c PATTERN`): absl 613, fmt 35,
+    XXH 13, `ZSTD_` 97, `png_` 125, `FT_` 53, ImGui 400 (`ImGui_Impl` 16). RmlUi (`Rml_`),
+    zlib-ng (`zng_`), SQLite and Tracy each contribute 0. SQLite appears only as 24 *undefined*
+    symbols in Aurora's VFS code and is satisfied from the SDK, so it is not a shipped component.
+    All ten copied texts are byte-identical to their build-tree sources.
 - Game-derived branding to exclude from the bundle: `assets/icon/`, `MC_Icon.tpl`, generated
   `src/platform/mc_icon.h`, `settings.*`, and any shipped icon/icns/ico derived from them.
 
@@ -2848,6 +2872,109 @@ What this result does and does not prove: proves the rows measure the app's own 
   the audio onset measurement (R2/F09, still open), and is not physical-device evidence.
 Next concrete action: commit the green state -- doc 36, the test bundle, the adapter geometry
   read-back, the runner and the two awk reductions -- then work the operator's standing items that
-  are still owed: R2/F09's animation-relative audio offset, N7's three notice-gap failures, and F12's
+  are still owed: R2/F09's animation-relative audio offset, and F12's `GCController` bridge into
+  `SunPadInputMixer` slot 1. (N7's three notice-gap failures, named as owed here, were all closed
+  on 2026-09-15 -- see the two N7 checkpoints that follow.)
+```
+
+### N7 notices half — both `notice_gap`s closed with material, and the gate passes in `--final` form (added 2026-09-15)
+
+```text
+Phase / gate: N7's notices/attribution half -- doc 35's inventory plus doc 34's shipped-notice check
+Date / build identity / patch digest: 2026-09-15; Ballpad a3a2027 plus the uncommitted notice work;
+  engine fork f769ddb41431, tree 99a65e0ef284b5dd8c35c1ee9ababe3c5e5d9bf5 clean; patch series
+  43798814aa72 (15 patches); app binary
+  e5d4d1a2fa3c5982a64226adaf8186c747cf49eb10c69cb1e4d254cda7026224, 16,698,400 B; disc da80883ba456
+Source invariant and observed failure: the dependency manifest must describe the components the
+  shipped binary actually links, every shipped component must carry its verbatim notice text inside
+  the bundle, and `verify-notices.sh --final` must fail while any component is `planned` or carries a
+  `notice_gap`. Two gaps blocked that, both by design rather than by accident: FFmpeg's static-LGPL
+  relinking and source obligation had no packaged offer, and `aurora-vendored-libs` claimed the whole
+  vendored set with no evidence of which of those libraries reach the app at all. The 115-line
+  `notices/aurora-vendored-libs/README.md` was also missing from the tree, so that component's notice
+  set was incomplete as tracked.
+Change: closed both gaps with material rather than with a narrower claim.
+  (1) `notices/aurora-vendored-libs/README.md` restored and rewritten around the linker edge that
+  actually pulls the archives (`CXX_EXECUTABLE_LINKER__strikers_Release`, 156 tokens = 605 objects +
+  64 archives + 3 SDK stubs + 2 FFmpeg archives), with a reproducible probe
+  (`nm -gU <app> | awk '{print $NF}' | sort -u | grep -c PATTERN`) and ten license texts copied
+  byte-identically from their build-tree sources.
+  (2) `scripts/native/lib/ffmpeg-relink.sh` and `scripts/native/ffmpeg-relink-offer.sh` package the
+  relink set for the configuration actually linked.
+  (3) `docs/native-strikers-dependency-manifest.json` -- all nine shipped components `planned` ->
+  `yes` (googletest stays `no`), both `notice_gap` fields deleted, and `aurora-vendored-libs` now
+  claiming all 11 of its paths.
+  (4) `THIRD_PARTY_NOTICES.md`, `ATTRIBUTION.md`, `notices/README.md` and
+  `docs/native-strikers-release-readiness.md` rewritten so no document still asserts the old state.
+Command / exit status: `build.sh --platform simulator` -> 0, 27 notice files placed, `platform
+  metadata ok ... -> iossimulator`; `build.sh --platform device` -> 0, 27 placed, `-> ios`;
+  `verify-notices.sh --platform simulator --final --require-bundle` -> exit 0, `notices: all checks
+  passed`, zero FAILs, including `ok no component is left in the planned state` and `ok bundle ships
+  all 26 claimed notice file(s)`; `--platform device` the same.
+Runtime scene / duration / device-or-Simulator: no runtime scene -- the gate is over the built
+  artifacts. The symbol counts are `nm -gU` reads of the shipped Simulator binary itself.
+Evidence bundle: `docs/native-strikers-dependency-manifest.json`; the built bundle's `notices/`
+  directory holds 29 files (27 copied texts plus the generated `manifest.json` and `resources.txt`).
+Result: PASS -- both `notice_gap`s closed, no component left `planned`, `--final` green on simulator
+  and device. The manifest claims 26 distinct notice paths across 10 components.
+What this result does and does not prove: proves the tracked inventory, the built bundle and the
+  manifest agree, that every shipped notice text is byte-identical to the tracked copy, and that the
+  vendored-library reduction is backed by defined-symbol counts in the shipped binary. Does not prove
+  legal ownership, does not clear reconstructed game code or third-party rights, and makes no
+  distribution claim; `FTL.TXT` and `GPLv2.TXT` ship alongside FreeType's `LICENSE.TXT` because that
+  file is a pointer document, which is completeness rather than a licensing conclusion.
+Next concrete action: commit this state, then take the clean-reproduction gate the notices work
+  exposed -- see the next entry.
+```
+
+### N7 clean reproduction (B03) — the gate and bootstrap were themselves defective (added 2026-09-15)
+
+```text
+Phase / gate: N7 clean reproduction, doc 34's B03 app scope (`verify-clean.sh --scope app`)
+Date / build identity / patch digest: 2026-09-15; Ballpad a3a2027 plus the notice work above; engine
+  fork f769ddb41431, tree 99a65e0ef284b5dd8c35c1ee9ababe3c5e5d9bf5; patch series 43798814aa72 (15
+  patches)
+Source invariant and observed failure: `verify-clean.sh --scope app` must configure and build the
+  mobile target from a fresh clone of the fork into a fresh output tree against the declared
+  dependency cache only, inheriting nothing from the ignored working trees. It failed at configure
+  with Dawn's own guard: `When cross-compiling, you must specify a host protoc via
+  -DPROTOC_EXECUTABLE=... or provide a CMAKE_CROSSCOMPILING_EMULATOR`. The normal build never hits
+  this, and the difference was not a stale cache -- `build/native/simulator-release/CMakeCache.txt`
+  carries `DAWN_BUILD_PROTOBUF:BOOL=OFF`, so the flag *is* in the shipped cache. The gate simply
+  never passed `DAWN_CACHE_ARGS` (`-DDAWN_BUILD_PROTOBUF=OFF`, `-DTINT_BUILD_IR_BINARY=OFF`) that
+  `build.sh` passes, so the fresh tree re-configured Dawn with its own defaults and tripped a guard
+  about a flag the real build never passes. Separately, `bootstrap.sh` could not start a build at all
+  on an already-patched fork: its per-patch `already applied` test (`git apply --check -R`, patch by
+  patch) fails for patch 0005 once a later patch edits the same include block, because 0005's
+  post-image no longer exists in the finished tree -- so the script `die`d on a fork that was already
+  correct, and the build could not start.
+Change: (1) `scripts/native/verify-clean.sh`'s fresh configure now carries
+  `${DAWN_CACHE_ARGS[@]}`, with a comment stating why the declared cache args are part of the
+  declared cache the gate claims to use. (2) `scripts/native/bootstrap.sh` gained
+  `series_undoes_to_pin()`: it requires a clean worktree, copies HEAD into a private index
+  (`GIT_INDEX_FILE`), reverse-applies the whole series in reverse order, and requires the resulting
+  tree to equal the pin commit's tree; `apply_patches()` returns early on success and otherwise falls
+  through to the old per-patch path unchanged.
+Command / exit status: `scripts/native/verify-clean.sh --scope app` -> exit 0, `verify-clean --scope
+  app: all checks passed`: `ok fresh clone of the fork is the same tree (99a65e0ef284b5dd)`, `ok fresh
+  output tree configured from a fresh source clone`, `ok fresh probe build produced an executable`,
+  `platform metadata ok: .../BallpadProbe.app/BallpadProbe -> iossimulator`, `ok fresh probe carries
+  the right SDK platform metadata`. 964 build steps. `bash -n` clean on both scripts, and
+  `verify-clean.sh --scope patches` exits 0 on the working fork.
+Runtime scene / duration / device-or-Simulator: build only, no runtime scene, no Simulator booted.
+Evidence bundle: `build/native/logs/verify-clean-app-run.log` (this run's full transcript) and
+  `build/native/logs/verify-clean-simulator.log` (the script's own log).
+Result: PASS -- doc 34's B03 app-scope clean reproduction now runs end to end from a fresh clone and
+  a fresh output tree, which it had never done before this fix.
+What this result does and does not prove: proves the tracked patch series plus the pinned dependency
+  cache are sufficient to configure and build from a clone that shares nothing with the working
+  trees, and that the earlier failure was the gate diverging from the build rather than the build
+  being unreproducible. Does not prove the full app target reproduces (this scope builds
+  `ballpad_probe`), does not re-verify the device platform here, and is not N7 itself -- the complete
+  patch export, the unsigned device build and the final artifact set are still owed. The scope also
+  still resolves host SDL3 as `system` (3.4.12 against the pinned 3.4.10), which `verify-clean.sh:100`
+  already reports rather than hides.
+Next concrete action: commit, then run `verify-clean.sh --scope all` as the N7 evidence run, and
+  return to the operator's standing items -- R2/F09's animation-relative audio onset offset and F12's
   `GCController` bridge into `SunPadInputMixer` slot 1.
 ```

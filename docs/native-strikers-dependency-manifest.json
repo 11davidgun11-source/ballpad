@@ -36,7 +36,7 @@
       "license_files": ["README.md", "smstrikers-port/LICENSE-BSD.TXT", "smstrikers-port/LICENSE-CC0.txt", "smstrikers-port/LICENSE-GPL-2.0.txt", "smstrikers-port/LICENSE-LGPL-2.1.txt"],
       "local_modifications": "Authored port fixes only until N7; the exported patch series records every change with original authorship preserved.",
       "notices": ["strikers/README.upstream.md", "strikers/LICENSE-BSD.TXT", "strikers/LICENSE-CC0.txt", "strikers/LICENSE-GPL-2.0.txt", "strikers/LICENSE-LGPL-2.1.txt"],
-      "shipped": "planned",
+      "shipped": "yes",
       "shipped_targets": ["macos", "simulator", "device"]
     },
     {
@@ -49,7 +49,7 @@
       "license_files": ["smstrikers-port/LICENSE-GPL-2.0.txt", "smstrikers-port/LICENSE-LGPL-2.1.txt"],
       "local_modifications": "none",
       "notices": ["smstrikers-decomp/README.md", "smstrikers-decomp/LICENSE-GPL-2.0.txt", "smstrikers-decomp/LICENSE-LGPL-2.1.txt"],
-      "shipped": "planned",
+      "shipped": "yes",
       "shipped_targets": ["macos", "simulator", "device"]
     },
     {
@@ -62,7 +62,7 @@
       "license_files": ["smstrikers-port/extern/aurora/LICENSE"],
       "local_modifications": "Vendored upstream patches plus Ballpad-authored fixes (patch series).",
       "notices": ["aurora/LICENSE"],
-      "shipped": "planned",
+      "shipped": "yes",
       "shipped_targets": ["macos", "simulator", "device"]
     },
     {
@@ -76,7 +76,7 @@
       "license_files": ["LICENSE (in the pinned Dawn source tree)"],
       "local_modifications": "none; built from the pinned ref",
       "notices": ["dawn/LICENSE"],
-      "shipped": "planned",
+      "shipped": "yes",
       "shipped_targets": ["macos", "simulator", "device"],
       "platform_note": "The Aurora provider regex maps an iOS Simulator arm64 configure onto the device prebuilt archive, so Simulator builds must use AURORA_DAWN_PROVIDER=vendor and build from source."
     },
@@ -91,7 +91,7 @@
       "license_files": ["LICENSE.txt (in the pinned SDL3 source tree)"],
       "local_modifications": "none",
       "notices": ["sdl3/LICENSE.txt"],
-      "shipped": "planned",
+      "shipped": "yes",
       "shipped_targets": ["macos", "simulator", "device"]
     },
     {
@@ -104,7 +104,7 @@
       "license_files": ["smstrikers-port/extern/musyx/LICENSE"],
       "local_modifications": "none",
       "notices": ["musyx/LICENSE"],
-      "shipped": "planned",
+      "shipped": "yes",
       "shipped_targets": ["macos", "simulator", "device"]
     },
     {
@@ -117,7 +117,7 @@
       "license_files": ["smstrikers-port/LICENSE-BSD.TXT", "smstrikers-port/src/ode/LICENSE"],
       "local_modifications": "none",
       "notices": ["ode/LICENSE"],
-      "shipped": "planned",
+      "shipped": "yes",
       "shipped_targets": ["macos", "simulator", "device"]
     },
     {
@@ -130,10 +130,9 @@
       "license_files": ["notices/ffmpeg/COPYING.LGPLv2.1", "notices/ffmpeg/README.ballpad.md"],
       "local_modifications": "mobile build uses a documented static THP-capable configuration; the exact configure line is recorded in notices/ffmpeg/README.ballpad.md",
       "notices": ["ffmpeg/COPYING.LGPLv2.1", "ffmpeg/README.ballpad.md"],
-      "shipped": "planned",
+      "shipped": "yes",
       "shipped_targets": ["simulator", "device"],
-      "distribution_note": "Static linkage triggers LGPL relinking/source-availability obligations; tracked as unresolved distribution work.",
-      "notice_gap": "static LGPL-2.1-or-later linkage leaves a relinking and corresponding-source obligation open; no written offer or relinkable object set is packaged with a binary yet"
+      "distribution_note": "Static linkage triggers LGPL relinking and corresponding-source obligations. The material that satisfies them for one platform is packaged by scripts/native/ffmpeg-relink-offer.sh into build/native/n7/ffmpeg-relink-offer/<platform>/: the exact link command, every link input with its SHA-256, the corresponding-source note (FFmpeg is unmodified, so the pinned archive plus the recorded configure line is its source), and ffmpeg-relink.sh, which re-runs that command against a substituted libavcodec.a/libavutil.a. Exercising it reproduced a byte-identical executable. That packages material for a future binary; it distributes nothing, and whether to distribute at all remains a separate, still-open decision."
     },
     {
       "id": "googletest",
@@ -153,15 +152,26 @@
       "name": "Aurora vendored third-party libraries",
       "kind": "bundle",
       "upstream": "see smstrikers-port/extern/aurora/extern/CMakeLists.txt",
-      "revision": "abseil 20240722.0, xxHash v0.8.3, fmt 12.1.0, zlib-ng 2.3.3, libpng v1.6.58, freetype 2.14.3, imgui v1.91.9b-docking, sqlite 3510300, zstd 1.5.7, RmlUi 0ae381e00d7426762bb5ed897973366358b16642, tracy 6789e7d6f9a65ec98926b602097a33a9676d2606",
-      "license": "Per-library (Apache-2.0, BSD-2/3, MIT, Zlib, libpng-2.0, FTL/GPLv2, public domain); collected at N7",
-      "license_files": ["per-library texts, collected under notices/ at N7"],
+      "revision": "reduced to the libraries the app actually links: abseil-cpp 20240722.0 (via Dawn), fmt 12.1.0, FreeType 2.14.3, Dear ImGui v1.91.9b-docking, libpng v1.6.58, xxHash v0.8.3, zstd 1.5.7, Tracy 6789e7d6f9a65ec98926b602097a33a9676d2606",
+      "license": "Per-library: Apache-2.0 (abseil-cpp), MIT (fmt, Dear ImGui), FTL or GPLv2 (FreeType), libpng-2.0 (libpng), BSD-2-Clause (xxHash), BSD-3-Clause (zstd, Tracy)",
+      "license_files": ["copies of the vendored sources' own texts, listed per library in notices/aurora-vendored-libs/README.md"],
       "local_modifications": "none",
-      "notices": ["aurora-vendored-libs/README.md"],
-      "shipped": "planned",
+      "notices": [
+        "aurora-vendored-libs/README.md",
+        "aurora-vendored-libs/abseil/LICENSE",
+        "aurora-vendored-libs/fmt/LICENSE",
+        "aurora-vendored-libs/freetype/FTL.TXT",
+        "aurora-vendored-libs/freetype/GPLv2.TXT",
+        "aurora-vendored-libs/freetype/LICENSE.TXT",
+        "aurora-vendored-libs/imgui/LICENSE.txt",
+        "aurora-vendored-libs/libpng/LICENSE",
+        "aurora-vendored-libs/tracy/LICENSE",
+        "aurora-vendored-libs/xxhash/LICENSE",
+        "aurora-vendored-libs/zstd/LICENSE"
+      ],
+      "shipped": "yes",
       "shipped_targets": ["macos", "simulator", "device"],
-      "verification": "verify-notices.sh must reduce this bundle to the libraries actually linked into the shipped app.",
-      "notice_gap": "the bundle must still be reduced to the libraries actually linked into BallpadStrikers, each with its verbatim license text"
+      "verification": "Reduced from Aurora's vendored list to the libraries on the app's own link edge in build/native/simulator-release/build.ninja (605 objects, 64 archives, 3 SDK stubs, 2 FFmpeg archives), then checked against the binary with nm -gU on the app piped through awk, sort -u and grep: absl 613, fmt 35, XXH 13, ZSTD_ 97, png_ 125, FT_ 53, ImGui 400 (ImGui_Impl 16), and zero for zng_, sqlite3_, Rml_ and tracy. RmlUi is off in this configuration (AURORA_ENABLE_RMLUI=OFF); zlib-ng and SQLite are satisfied by the SDK's libz.tbd and libsqlite3.tbd, so their vendored copies are unreachable. Tracy is on the link line but its archive is a 2,656-byte stub that contributes no symbol to the app; its text ships because the archive is linked. Each shipped text was copied byte-for-byte from the build tree that produced the binary and its source path is recorded in notices/aurora-vendored-libs/README.md. verify-notices.sh confirms the bundle carries exactly these files, unchanged."
     }
   ]
 }

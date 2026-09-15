@@ -18,23 +18,28 @@ The identifiers in the first column are the component ids in that manifest.
 | `musyx` | MusyX audio middleware, vendored from the decompilation | MIT notice preserved; does not establish ownership of the reconstructed middleware | `notices/musyx/LICENSE` |
 | `ode` | Open Dynamics Engine 0.5, vendored, with reconstructed changes | Historical ODE BSD-style for upstream portions; reconstructed changes unresolved | `notices/ode/LICENSE` |
 | `ffmpeg` | FFmpeg, used only for THP video decode | LGPL-2.1-or-later in the mobile configuration; GPL and nonfree parts disabled | `notices/ffmpeg/COPYING.LGPLv2.1`, `notices/ffmpeg/README.ballpad.md` |
-| `aurora-vendored-libs` | The third-party libraries Aurora vendors (abseil, xxHash, fmt, zlib-ng, libpng, freetype, Dear ImGui, SQLite, zstd, RmlUi, Tracy) | Per-library; collected and reduced to the actually-linked set before release | `notices/aurora-vendored-libs/README.md` |
+| `aurora-vendored-libs` | The third-party libraries Aurora vendors that this app actually links: abseil-cpp 20240722.0 (reaching the app through Dawn), fmt 12.1.0, FreeType 2.14.3, Dear ImGui v1.91.9b-docking, libpng v1.6.58, xxHash v0.8.3, zstd 1.5.7, and Tracy 6789e7d6, whose archive is on the link line but contributes no symbol to the app. RmlUi is off in this configuration; zlib-ng and SQLite are resolved from the SDK, so those vendored copies are not linked | Per-library: Apache-2.0, MIT, FTL or GPLv2, libpng-2.0, BSD-2-Clause, BSD-3-Clause. Reduced from Aurora's vendored list against the app's own link edge and the binary's symbol table rather than assumed | `notices/aurora-vendored-libs/README.md` and the ten per-library texts beside it |
 | `googletest` | GoogleTest, used by the engine's unit tests | BSD-3-Clause; not linked into the shipped app, so no notice is bundled | none - not shipped |
 
 ## Reading these notices honestly
 
 Where the manifest records a `notice_gap`, the notice set is knowingly incomplete and
-`verify-notices.sh --final` fails until it is closed. Two gaps were open when this document
-was written:
+`verify-notices.sh --final` fails until it is closed. No component carries a `notice_gap`
+now. The two that did were closed with material rather than wording:
 
-- `ffmpeg`: the LGPL-2.1 static-linkage relinking and corresponding-source obligation is
-  documented in `notices/ffmpeg/README.ballpad.md` but not yet discharged by a packaged
-  offer or object set.
-- `aurora-vendored-libs`: the bundle still has to be reduced to the libraries the shipped
-  binary actually links, each with its own verbatim license text.
+- `ffmpeg`: `scripts/native/ffmpeg-relink-offer.sh` packages the app's own captured link
+  command, every link input with its SHA-256, the corresponding-source note, and a relinker
+  that re-runs that command against a substituted `libavcodec.a`/`libavutil.a`. Running it
+  reproduced the shipped executable byte for byte. That discharges the obligation for a
+  binary shipped with this set alongside it; the details are in
+  `notices/ffmpeg/README.ballpad.md`.
+- `aurora-vendored-libs`: the bundle is reduced to the eight libraries on the app's link
+  edge, confirmed against the binary's symbol table, with RmlUi excluded by configuration
+  and zlib-ng and SQLite resolved from the SDK. Each linked library's text was copied
+  byte-for-byte out of the build tree that produced the binary, and the mapping is in
+  `notices/aurora-vendored-libs/README.md`.
 
 Nothing in this directory proves that a licensor holds every underlying right in
 reconstructed material, and a license file attached to a statically linked library does not
 by itself discharge that library's distribution obligations. See `ATTRIBUTION.md` and
 `docs/native-strikers-release-readiness.md`.
-
