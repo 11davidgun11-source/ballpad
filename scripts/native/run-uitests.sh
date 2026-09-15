@@ -34,8 +34,9 @@ CONFIGURATION="Debug"
 # game, drive real touches and relaunch for a persistence read-back measured 1,145 s in run
 # f01f02-phone-r2 with two rows still to go, so a 1,200 s budget was terminating a suite that was
 # making progress -- and a SIGKILL leaves the result bundle unfinished, which reports every row as
-# missing. 2,400 s is roughly twice the longest measured run.
-BUDGET="2400"
+# missing. The F13 and FPS rows below added four more launches to that shape, so 2,400 s stopped
+# leaving room; 3,600 s is roughly twice the longest measured run at the current row count.
+BUDGET="3600"
 FORCE=0
 DO_BUILD=1
 ONLY=()
@@ -170,6 +171,16 @@ TEST_ROW_SPECS=(
     "S.uitest.render-scale-persistence=testRenderScaleSelectionPersistsAcrossRelaunch"
     "S.uitest.layout-move-reset-persistence=testMovedControlPersistsAndResetRestoresTheDefault"
     "S.uitest.lifecycle-surface=testBackgroundAndForegroundKeepTheOverlay"
+    "S.r1.fps-row=testFrameStatisticsRowDrivesTheCountersItClaims"
+    "S.r1.display-readback=testDisplayRowsReachTheRenderer"
+    "S.r1.touch-settings-drawn=testTouchSettingsReachTheDrawnOverlay"
+    "S.r1.shoulder-press=testShoulderPressDrawsOnOneShoulderOnly"
+    "S.r1.frame-limit-row=testFrameRateLimitRowReachesThePortsLimiter"
+    "S.r1.menu-leaves=testEverySubmenuPublishesItsLabelledLeaves"
+    "S.r2.audio-row=testAudioRecordingRowReportsTheMixersOwnState"
+    "S.f13.about-inventory=testAboutScreenNamesUpstreamContributorsAndTheirNotices"
+    "S.f13.notice-offline=testAboutNoticeOpensInFullOffline"
+    "S.f13.mapping-panel=testControllerMappingPanelReportsThePortsOwnMap"
     "S.f01.import-through-files=testFreshInstallShowsImportScreenAndActivatesAPickedImage"
     "S.f02.refusal-keeps-previous=testRefusedImportKeepsThePreviousInstallationUsable"
 )
@@ -180,6 +191,10 @@ done
 # F01's "staged" and F02's "original image unchanged" are properties of the container after the
 # run, not of anything the app says about itself, so the reward is a row of its own below.
 EXPECTED="${EXPECTED},S.f01f02.store-bytes"
+# The app's own log is the same kind of row: it is written by the app rather than read off the
+# screen, and the check below is that the read-backs the display and shoulder work depends on are
+# actually in it.
+EXPECTED="${EXPECTED},S.r1.settings-readback"
 
 # -- Own the device ----------------------------------------------------------
 sim_lock_acquire
@@ -449,6 +464,118 @@ if [ -z "${STORE_FAIL}" ]; then
     printf "S.f01f02.store-bytes\tPASS\tstaged %s as %s, byte-identical to the fixture the picker offered; the three chosen files are unchanged\tstore-inventory.txt\n" "${STAGED_SHA:0:12}" "${STAGED_RECORD}" >> "$ROWS"
 else
     printf "S.f01f02.store-bytes\tFAIL\t%s\tstore-inventory.txt\n" "${STORE_FAIL}" >> "$ROWS"
+fi
+
+# -- The app's own log -------------------------------------------------------
+# The rows above decide what the app did on screen; this is the app's own record of the same work,
+# copied out of the container while it is still this run's container. It is what turns "the row
+# reached the store" into "the row reached the renderer": the settings read-back -- display (the
+# port's own target size, scale and shape), settings (the store's values and which keys hold them)
+# and shoulder (L's and R's live geometry side by side) -- is written by the app, once per change, so
+# the row below fails when any of the three is missing rather than when a screenshot was missed.
+RUNTIME_LOG="${FILES_DIR}/BallpadLogs/runtime.log"
+LOG_COPY="${PROOF_DIR}/app-runtime.log"
+READBACK_LINES="${PROOF_DIR}/app-readbacks.txt"
+READBACK_FAIL=""
+DISPLAY_LINES=0
+SETTINGS_LINES=0
+SHOULDER_LINES=0
+AUDIO_LINES=0
+AUDIO_MIX_LINES=0
+OVERLAY_LINES=0
+CSTICK_LINES=0
+OVERLAY_ALPHAS=0
+CSTICK_SUMMARY="0 0 0 0 0"
+OUTLINE_SUMMARY="0 0 0 0 0"
+log_new "$READBACK_LINES"
+if [ ! -f "$RUNTIME_LOG" ]; then
+    READBACK_FAIL="the app left no log at ${RUNTIME_LOG}"
+else
+    cp "$RUNTIME_LOG" "$LOG_COPY"
+    DISPLAY_LINES="$(grep -cE ' display: ' "$LOG_COPY" || true)"
+    SETTINGS_LINES="$(grep -cE ' settings: ' "$LOG_COPY" || true)"
+    SHOULDER_LINES="$(grep -cE ' shoulder: ' "$LOG_COPY" || true)"
+    AUDIO_LINES="$(grep -cE ' audio: ' "$LOG_COPY" || true)"
+    # The bare ' audio: ' count also catches the port's own one-off device line, so the row below
+    # needs the second reading: the app's read-back of the mixer's own fields. A run where the
+    # device opened but the mixer never ran writes the first kind and not the second, which is a
+    # different fault and is why they are counted apart.
+    AUDIO_MIX_LINES="$(grep -cE ' audio: .*\| studios [0-9]+ voices ' "$LOG_COPY" || true)"
+    # The overlay read-back and the C-stick read-back, both written by the app rather than read off
+    # the screen. They are counted apart from the rest because each answers a question the settings
+    # store cannot: a slider holds a number, the overlay's line holds the control that was drawn
+    # with it, and the switch holds a preference while the port's pad holds what it was handed.
+    OVERLAY_LINES="$(grep -cE ' overlay: ' "$LOG_COPY" || true)"
+    CSTICK_LINES="$(grep -cE ' c-stick: ' "$LOG_COPY" || true)"
+    # The C-stick lines judged as a relation rather than as a count: with the modern convention off
+    # the port must have been handed the mixer's own value, and with it on the port's value must be
+    # the mixer's negated. "off N agree, on M flipped, K unreadable" is the whole reading.
+    # The convention token is the last word of the line and carries the closing paren, so it is
+    # matched by prefix: comparing it whole would read every line as the "on" case.
+    # Both readings below scan the log with awk alone rather than through a leading grep, and the
+    # reason is the shell rather than the log: this script runs under `set -euo pipefail`, so a
+    # pipeline whose first grep matches nothing fails, and under `set -e` that failure ends the
+    # script. A read-back family that never reached the log therefore has to land as a FAIL row
+    # below; the first run of this block against an app built before the read-back existed ended
+    # the script instead, and took the store inventory and the row with it. awk reads the same
+    # file, exits 0 whatever it finds, and prints the same summary when it finds nothing.
+    # The alpha the overlay read-back gives the A control, deduplicated. The opacity row's claim is
+    # that the drawn control changed, and one alpha for the whole run would mean the drag reached
+    # the store and never the view.
+    OVERLAY_ALPHAS="$(awk '/ overlay: / { prev = ""; for (i = 1; i <= NF; i++) { if ($i == "A" && prev == "|" && $(i + 1) ~ /^[0-9]+\.[0-9]+$/) { alphas[$(i + 1)] = 1 } prev = $i } } END { n = 0; for (a in alphas) { n++ } print n }' "$LOG_COPY")"
+    CSTICK_SUMMARY="$(awk '/ c-stick: / { raw = ""; pub = ""; modern = "?"; for (i = 1; i <= NF; i++) { if ($i == "X" && $(i + 2) == "reached") raw = $(i + 1); if ($i == "as" && $(i + 2) ~ /^\(modern/) pub = $(i + 1); if ($i == "(modern") modern = $(i + 2) } if (raw == "" || pub == "" || modern == "?") { unread++; next } if (modern ~ /^off/) { off++; if (raw == pub) offok++ } else { on++; if ((raw + pub) == 0) onok++ } } END { printf "%d %d %d %d %d\n", off + 0, offok + 0, on + 0, onok + 0, unread + 0 }' "$LOG_COPY")"
+    # The shoulders' press outlines, the one family the per-frame sampler in the app exists to
+    # produce. A press does not re-lay the overlay out, so the geometry line above never sees one and
+    # this family is the only place a press is visible as a value.
+    #
+    # Everything here is read from the two flags the app prints beside the two widths, because the
+    # width alone does not name a press: L is a plain button, which the vendored pass presses by
+    # scaling it, and R is the vendored trigger, the one shoulder that draws a press as a wider
+    # outline. A width read as "pressed" is therefore wrong for L in general and wrong for *both*
+    # shoulders while the layout editor is open, whose own pass paints 3.0 on every control. The
+    # editor's lines are counted apart from the rest and are not judged.
+    #
+    # Read with awk alone rather than through a leading grep, for the reason recorded above: this
+    # script runs under `set -euo pipefail`, and a pipeline whose grep matches nothing would end the
+    # script here and take every row after it with it.
+    OUTLINE_SUMMARY="$(awk '/ shoulder outline: / { editing = ""; lheld = ""; rheld = ""; lw = ""; rw = ""; for (i = 1; i <= NF; i++) { if ($i == "editing") editing = $(i + 1); if ($i == "L" && $(i + 1) == "held") { lheld = $(i + 2); lw = $(i + 4) } if ($i == "R" && $(i + 1) == "held") { rheld = $(i + 2); rw = $(i + 4) } } if (editing == "" || lheld == "" || rheld == "" || lw == "" || rw == "") { unread++; next } total++; if (editing == "1") { editor++; next } presses++; if ((lw + 0) > 2.0) lthick++; if ((rw + 0) > 2.0) { if (rheld == "0") rthick++; else rdetent++ } if (lheld == "1" && (lw + 0) <= 2.0) lpress++ } END { printf "%d %d %d %d %d %d %d\n", total + 0, presses + 0, lpress + 0, rdetent + 0, lthick + 0, rthick + 0, unread + 0 }' "$LOG_COPY")"
+    # One outline field, by number, so the checks below read as the sentences they are.
+    outline_field() { printf '%s' "$OUTLINE_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
+    {
+        printf 'source: %s\n' "$RUNTIME_LOG"
+        printf 'whole log: %s lines, copied to %s\n\n' "$(wc -l < "$LOG_COPY" | tr -d ' ')" "$LOG_COPY"
+        grep -E ' (display|settings|shoulder|shoulder outline|audio|overlay|c-stick): ' "$LOG_COPY" \
+            || printf 'no display, settings, shoulder, shoulder-outline, audio, overlay or c-stick line is in the log\n'
+    } >> "$READBACK_LINES"
+    [ "$DISPLAY_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no display: line, so no display row was read back from the port"
+    [ "$SETTINGS_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no settings: line, so no setting was read back from the store"
+    [ "$SHOULDER_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no shoulder: line, so the right shoulder was never compared with the left"
+    [ "$AUDIO_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no audio: line, so the audio path never reported itself"
+    [ "$AUDIO_MIX_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the audio: lines name no mixer fields, so the audio read-back never saw the mixer run"
+    [ "$OVERLAY_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no overlay: line, so the touch controls were never read back from the overlay the app drew"
+    [ "$CSTICK_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no c-stick: line, so the camera stick's axis was never read back where the port was handed it"
+    [ "$OVERLAY_ALPHAS" -ge 2 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the overlay: lines name ${OVERLAY_ALPHAS} alpha for the A control, so no opacity a row moved reached the drawn control"
+    [ "$(printf '%s' "$CSTICK_SUMMARY" | awk '{print ($1 > 0 && $1 == $2) ? 1 : 0}')" = "1" ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }no c-stick: line shows the port handed the mixer's own value with the modern convention off (off/agree/on/flipped/unreadable: ${CSTICK_SUMMARY})"
+   [ "$(printf '%s' "$CSTICK_SUMMARY" | awk '{print ($3 > 0 && $3 == $4) ? 1 : 0}')" = "1" ] \
+       || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }no c-stick: line shows the port handed the negated value with the modern convention on (off/agree/on/flipped/unreadable: ${CSTICK_SUMMARY})"
+    [ "$(outline_field 1)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no shoulder outline: line, so neither shoulder's press state was ever sampled while it was drawn"
+    [ "$(outline_field 2)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }every shoulder outline: line was written with the layout editor open, whose pass outlines every control, so no line states a shoulder's press outside the editor (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable: ${OUTLINE_SUMMARY})"
+    [ "$(outline_field 3)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }no shoulder outline: line shows the left shoulder held while it keeps the at-rest outline, which is a left press drawn as a plain button draws one (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable: ${OUTLINE_SUMMARY})"
+    [ "$(outline_field 4)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }no shoulder outline: line shows the right trigger held past its detent, so no right press was seen to reach the pad (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable: ${OUTLINE_SUMMARY})"
+    [ "$(outline_field 5)" -eq 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }a shoulder outline: line outside the editor draws L at the right trigger's press width, which is one shoulder's state painted onto the other (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable: ${OUTLINE_SUMMARY})"
+    [ "$(outline_field 6)" -eq 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }a shoulder outline: line outside the editor draws R at the press width while R is not held, which is the right trigger left looking pressed at rest (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable: ${OUTLINE_SUMMARY})"
+fi
+if [ -z "$READBACK_FAIL" ]; then
+    printf "S.r1.settings-readback\tPASS\t%s display, %s settings, %s shoulder, %s audio (of which %s name the mixer's own fields) and %s overlay lines (over %s alpha for the A control) plus %s c-stick lines and %s shoulder-outline lines (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable), written by the app itself\tapp-readbacks.txt\n" "$DISPLAY_LINES" "$SETTINGS_LINES" "$SHOULDER_LINES" "$AUDIO_LINES" "$AUDIO_MIX_LINES" "$OVERLAY_LINES" "$OVERLAY_ALPHAS" "$CSTICK_LINES" "$OUTLINE_SUMMARY" >> "$ROWS"
+else
+    printf "S.r1.settings-readback\tFAIL\t%s\tapp-readbacks.txt\n" "$READBACK_FAIL" >> "$ROWS"
 fi
 
 # -- Screenshots -------------------------------------------------------------

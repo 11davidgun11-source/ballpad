@@ -13,18 +13,23 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 
     private static let bundleIdentifier = "com.ballpad.strikers"
 
-    /// SunPadGameOverlay -buildMenu order, verbatim. The order is part of the fidelity
-    /// claim (R1: adopted "exactly as they are"), so it is asserted rather than assumed.
+    /// The order the panel actually ships, which is the vendored -buildMenu order with only the
+    /// changes doc 36's R1 list sanctions: the experimental performance row does not ship at all
+    /// (R1 row 12), so it is absent rather than present-and-inert, and the slot it held carries
+    /// Ballpad's audio recording row instead (R2); the frame-rate row keeps its place and gets
+    /// Ballpad's own title (R1 row 11); and About & Credits closes the panel as a Ballpad addition
+    /// (R1 row 15). Every other row is the vendored row, untouched, in place.
     private static let vendoredMenuRows = [
         "Render Resolution",
         "Aspect Ratio",
         "Show FPS Counter",
-        "Experimental Performance Mode (Restart Required)",
-        "Experimental 60 FPS (Restart Required)",
+        "Record Audio (Experimental)",
+        "Experimental 60 FPS (BallPad's frame rate limit)",
         "Controller Button Mapping…",
         "Touch Control Settings…",
         "Game Data & Saves",
         "Report a Problem…",
+        "About & Credits…",
     ]
 
     /// The touch-control settings surface, by its vendored accessibility labels.
@@ -195,6 +200,138 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         return nil
     }
 
+    /// The port's own display read-back, parsed out of the FPS counter's text. The counter is
+    /// Ballpad's label (the vendored component has none of its own) and its first field is
+    /// `WxH @scale aspect value window|pinned logical N blend T`, built from the same port accessors
+    /// the display bridge writes through; the frame statistics follow it after a separator, so only
+    /// the first field is read here. Parsing rather than comparing the string verbatim is what lets a
+    /// row compare two readings: the numbers move with the window, and the claims below are about
+    /// their relations.
+    private struct DisplayReadBack: CustomStringConvertible {
+        var width: Int
+        var height: Int
+        var scale: Double
+        var aspect: Double
+        var followsWindow: Bool
+        /// The width of the game's own logical frame, straight from the port: the coordinate space its
+        /// viewport, scissor and 2D projections are set from, and the field that says an aspect change
+        /// actually reached the renderer. The target above is scaled to the *window*, so it reads the
+        /// same at every aspect and cannot answer that question -- which is why it is not asked.
+        var logicalWidth: Int
+        /// How far the gameplay camera has been carried from its 4:3 tuning toward its widescreen one:
+        /// 0 at 4:3, 1 at 16:9, and continuing linearly past it on a window wider than 16:9.
+        var blend: Double
+
+        /// The shape of the target the port presents into, derived rather than reported. It is the
+        /// surface's shape at the render scale, so the claim this is here for is that the aspect rows
+        /// leave it alone rather than that it matches the shape they pin.
+        var renderedAspect: Double { height > 0 ? Double(width) / Double(height) : 0 }
+
+        var description: String {
+            "\(width)x\(height) @\(scale)x aspect \(aspect) \(followsWindow ? "window" : "pinned")"
+                + " logical \(logicalWidth) blend \(blend)"
+        }
+    }
+
+    private func displayReadBack() -> DisplayReadBack? {
+        guard let element = identifierElement("BallpadFPSCounter") else { return nil }
+        let text = element.label
+        let pattern = #"(\d+)x(\d+) @([0-9.]+)x aspect ([0-9.]+) (window|pinned) logical (\d+) blend ([0-9.]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+        else { return nil }
+        func group(_ index: Int) -> String? {
+            guard let range = Range(match.range(at: index), in: text) else { return nil }
+            return String(text[range])
+        }
+        guard let width = group(1).flatMap(Int.init),
+              let height = group(2).flatMap(Int.init),
+              let scale = group(3).flatMap(Double.init),
+              let aspect = group(4).flatMap(Double.init),
+              let marker = group(5),
+              let logicalWidth = group(6).flatMap(Int.init),
+              let blend = group(7).flatMap(Double.init)
+        else { return nil }
+        return DisplayReadBack(width: width, height: height, scale: scale, aspect: aspect,
+                               followsWindow: marker == "window", logicalWidth: logicalWidth,
+                               blend: blend)
+    }
+
+    /// Waits for a reading that satisfies `predicate`, because the counter is refreshed once a frame
+    /// and a pin applied by a menu row lands on the frame after the tap. A reading that never
+    /// arrives fails the row and attaches the tree, so a mismatch is diagnosable from the bundle.
+    @discardableResult
+    private func waitForDisplay(_ what: String, timeout: TimeInterval = 20,
+                                where predicate: (DisplayReadBack) -> Bool) -> DisplayReadBack? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var last: DisplayReadBack?
+        repeat {
+            if let reading = displayReadBack() {
+                last = reading
+                if predicate(reading) { return reading }
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        attachHierarchy("display-readback-missing-" + what)
+        XCTFail("the port's display read-back did not reach " + what + "; last reading: "
+                + (last.map { String(describing: $0) } ?? "none"))
+        return nil
+    }
+
+    /// Opens the menu when it is not already open. Tapping the three-dot button while the menu is up
+    /// dismisses it, so the state is read first -- the first page's own headings are the answer -- and
+    /// the loop is bounded: the one case that needs a second tap is a menu left open with a submenu in
+    /// front of it, where the first tap closes everything.
+    private func ensureMenuOpen() {
+        for _ in 0..<3 {
+            if overlayElement("Render Resolution") != nil { return }
+            menuButton.tap()
+            if waitForOverlayElement("Render Resolution", timeout: 15) != nil { return }
+        }
+        attachHierarchy("menu-would-not-open")
+        XCTFail("the three-dot menu opens")
+    }
+
+    /// One top-level row, opened and tapped by label. A missed tap is a missing row rather than a
+    /// failure somewhere further down.
+    private func tapMenuRow(_ row: String) {
+        ensureMenuOpen()
+        guard let element = scrollMenuForElement(row, timeout: 20) else {
+            attachHierarchy("missing-menu-row")
+            XCTFail("the " + row + " row is in the menu")
+            return
+        }
+        element.tap()
+    }
+
+    /// One leaf row, reached through the submenu that holds it. The submenu is opened by the same
+    /// label-addressed tap, so the whole walk is the player's own walk.
+    private func chooseMenuRow(_ row: String, from submenu: String) {
+        tapMenuRow(submenu)
+        guard let leaf = scrollMenuForElement(row, timeout: 20) else {
+            attachHierarchy("missing-submenu-row")
+            XCTFail("the " + row + " row is in the " + submenu + " submenu")
+            return
+        }
+        leaf.tap()
+    }
+
+    /// The FPS counter's setting, which the display read-back is carried by. It is a toggle rather
+    /// than a switch, so "on" is read back from the label itself and a tap that did not land is
+    /// retried once -- the same idiom the layout row uses for a switch XCUITest had to scroll to.
+    private func setFPSCounter(_ on: Bool) {
+        for _ in 0..<2 {
+            if (identifierElement("BallpadFPSCounter") != nil) == on { return }
+            tapMenuRow("Show FPS Counter")
+            let deadline = Date().addingTimeInterval(12)
+            repeat {
+                if (identifierElement("BallpadFPSCounter") != nil) == on { return }
+                Thread.sleep(forTimeInterval: 0.25)
+            } while Date() < deadline
+        }
+        XCTFail("the Show FPS Counter row turns the counter " + (on ? "on" : "off"))
+    }
+
     private func framesDiffer(_ a: CGRect, _ b: CGRect, tolerance: CGFloat = 8) -> Bool {
         abs(a.minX - b.minX) > tolerance || abs(a.minY - b.minY) > tolerance
     }
@@ -217,6 +354,12 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 
 		attachHierarchy("menu-hierarchy-top")
 		attach("menu-open")
+
+		// R1 row 12: the experimental performance row does not ship at all. "Show FPS Counter"
+		// and the frame-rate row are both on this first page, so the vendored row that sat
+		// between them being absent here is a real reading rather than an off-screen artefact.
+		XCTAssertNil(overlayElement("Experimental Performance Mode (Restart Required)"),
+		             "the experimental performance row is not shipped (R1 row 12)")
 
 		// Walk the menu one panel-page at a time. A sighting is the first pass in which a row is
 		// published, together with where it sat; the walking order is what the order claim is
@@ -410,6 +553,957 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         attach("after-resume")
     }
 
+    // MARK: - About & Credits and the surfaces it opens (doc 34 F13; doc 35)
+
+    /// The manifest components whose About row carries an http(s) destination, in manifest order.
+    /// The last manifest component is deliberately absent: its `upstream` field names a file inside
+    /// the port rather than a URL, and the screen publishes a link only where there is somewhere to
+    /// go, so `aurora-vendored-libs` must not have a row. Asserting identifiers rather than display
+    /// names is the point: the names are prose that may be reworded, the identifiers are the
+    /// inventory.
+    private static let aboutLinkComponentIDs = [
+        "strikers", "smstrikers-decomp", "aurora", "dawn", "sdl3",
+        "musyx", "ode", "ffmpeg", "googletest",
+    ]
+
+    /// The engine revision the shipped inventory pins. The About screen quotes the pin out of
+    /// `notices/manifest.json` instead of carrying a typed string, so this constant is the upstream
+    /// commit the app was built from and a build made from any other revision fails here.
+    private static let enginePinRevision = "22649cb12c112454a34217429296c95bb181af8a"
+
+    /// The first data row of the generated `notices/resources.txt`, and the notice the notice test
+    /// opens. Pinned by name because "the bundled notices are readable offline" needs an actual
+    /// notice file, not just a heading that claims one exists.
+    private static let firstNoticePath = "strikers/README.upstream.md"
+
+    /// Sentences the About paragraph must not contain. Doc 35 forbids the claims this app is not
+    /// entitled to make on a contributor's behalf, so the check runs in the direction that cannot
+    /// be satisfied by a substring accident: an unsupported claim appearing anywhere is a failure.
+    /// Each phrase is chosen so the correct paragraph cannot contain it -- the disclaimer's own
+    /// "unaffiliated with and not endorsed by Nintendo" must not trip a check like "endorsed by
+    /// nintendo", which is why these name the claim rather than the noun.
+    private static let unsupportedCreditClaims = [
+        "all code is cc0", "public domain", "no rights reserved",
+        "affiliation with nintendo", "endorsement from nintendo",
+    ]
+
+    /// The disclaimer the paragraph has to carry, verbatim from doc 35's text. Without this the
+    /// "does not claim" checks above would also pass for a paragraph that says nothing at all.
+    private static let requiredCreditDisclaimer =
+        "unaffiliated with and not endorsed by Nintendo or Next Level Games"
+
+    /// An identifier-addressed surface element. About mixes labels, buttons and a text view, and the
+    /// accessibility type each one publishes is not uniform, so the type is discovered here rather
+    /// than assumed by the caller.
+    private func identifierElement(_ identifier: String) -> XCUIElement? {
+        let candidates = [app.staticTexts[identifier], app.buttons[identifier],
+                          app.textViews[identifier], app.otherElements[identifier],
+                          app.scrollViews[identifier], app.cells[identifier]]
+        for candidate in candidates where candidate.exists { return candidate }
+        return nil
+    }
+
+    @discardableResult
+    private func waitForIdentifier(_ identifier: String,
+                                   timeout: TimeInterval = 20) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let element = identifierElement(identifier) { return element }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        return nil
+    }
+
+    /// The text an element publishes. A label carries its text in `label`; a text view carries it in
+    /// `value` and a button's published destination is its `value` too. Reads whichever one has
+    /// content, so a claim about text does not depend on which UIKit class renders it.
+    private func publishedText(_ element: XCUIElement) -> String {
+        if !element.label.isEmpty { return element.label }
+        return (element.value as? String) ?? ""
+    }
+
+    private func identifierQuery(_ prefix: String) -> XCUIElementQuery {
+        let predicate = NSPredicate(format: "identifier BEGINSWITH %@", prefix)
+        return app.descendants(matching: .any).matching(predicate)
+    }
+
+    /// Opens About & Credits from the three-dot menu. The row is last, so on the phone it is on the
+    /// menu's second page and the bounded scroll is what reaches it; on the iPad it publishes at once.
+    private func openAbout() {
+        openMenu()
+        guard let row = scrollMenuForElement("About & Credits…", timeout: 25) else {
+            attachHierarchy("about-row-missing")
+            XCTFail("the About & Credits row is present in the menu")
+            return
+        }
+        row.tap()
+        XCTAssertNotNil(waitForIdentifier("BallpadAboutTitle", timeout: 30),
+                        "the About & Credits screen opens")
+    }
+
+    /// Scrolls the About stack down. Bounded by the caller, because a row that is genuinely absent
+    /// has to fail rather than scroll forever.
+    private func scrollAboutDown() {
+        let scroll = app.scrollViews["BallpadAboutScroll"]
+        guard scroll.exists else { return }
+        scroll.swipeUp()
+    }
+
+    @discardableResult
+    private func revealNotice(_ relative: String, maxScrolls: Int = 8) -> XCUIElement? {
+        let identifier = "BallpadNotice." + relative
+        for pass in 0...maxScrolls {
+            if let element = waitForIdentifier(identifier, timeout: 3) { return element }
+            if pass == maxScrolls { break }
+            scrollAboutDown()
+        }
+        return nil
+    }
+
+    /// F13. The About screen has to name upstream in the words doc 35 fixes, quote the revision
+    /// this build was actually made from, offer a destination for every component that has one,
+    /// and list the notices the bundle really carries. Every claim below is read back out of the
+    /// app's own text; nothing here leaves the app, because tapping a link would open Safari and
+    /// the destination is published as the row's value precisely so it can be read without that.
+    func testAboutScreenNamesUpstreamContributorsAndTheirNotices() throws {
+        launchAndWaitForOverlay()
+        openAbout()
+        attachHierarchy("about-hierarchy-top")
+
+        guard let bodyElement = waitForIdentifier("BallpadAboutBody", timeout: 20) else {
+            attachHierarchy("about-body-missing")
+            XCTFail("the About screen carries the credit paragraph")
+            return
+        }
+        let body = publishedText(bodyElement)
+        XCTAssertGreaterThan(body.count, 200, "the credit paragraph is real prose")
+        for required in ["new-coke/strikers", "Yannick Suter", "Aurora", Self.requiredCreditDisclaimer,
+                         "The project grants no rights to redistribute game assets or disc images",
+                         "unofficial", "Supply your own lawfully obtained game data"] {
+            XCTAssertTrue(body.contains(required),
+                          "the credit paragraph names " + required + "; saw: " + body)
+        }
+        let lowered = body.lowercased()
+        for claim in Self.unsupportedCreditClaims {
+            XCTAssertFalse(lowered.contains(claim),
+                           "the credit paragraph does not claim " + claim + "; saw: " + body)
+        }
+
+        // The pin is quoted from the shipped manifest, so this is also the assertion that the
+        // interface and the provenance inventory agree about which upstream commit is running.
+        guard let pin = waitForIdentifier("BallpadAboutEnginePin", timeout: 20) else {
+            XCTFail("the About screen quotes the engine pin")
+            return
+        }
+        let pinText = publishedText(pin)
+        XCTAssertTrue(pinText.contains(Self.enginePinRevision),
+                      "the engine pin carries the upstream revision; saw: " + pinText)
+        XCTAssertTrue(pinText.contains("v1.1.1"),
+                      "the engine pin carries the upstream version; saw: " + pinText)
+
+        XCTAssertNotNil(waitForIdentifier("BallpadAboutRevisions", timeout: 10),
+                        "the About screen lists the pinned revisions")
+
+        // One row per component with a destination, and the row says where it goes.
+        for component in Self.aboutLinkComponentIDs {
+            let identifier = "BallpadAboutLink." + component
+            guard let link = waitForIdentifier(identifier, timeout: 5) else {
+                attachHierarchy("about-link-missing-" + component)
+                XCTFail("the About screen offers a destination for " + component)
+                continue
+            }
+            let destination = (link.value as? String) ?? ""
+            XCTAssertTrue(destination.hasPrefix("http"),
+                          "the " + component + " row publishes its destination; saw: " + destination)
+        }
+        XCTAssertNil(identifierElement("BallpadAboutLink.aurora-vendored-libs"),
+                     "a component whose upstream is not a URL does not get a link row")
+
+        // The notice inventory is the bundle's inventory: the heading's own count has to be the
+        // real number, no row may name a file the bundle does not carry, and every row that is
+        // published has to name a path inside the notices folder.
+        let heading = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Bundled notices (")).firstMatch
+        XCTAssertTrue(heading.waitForExistence(timeout: 10), "the About screen lists bundled notices")
+        let headingText = heading.label
+        let declared = Int(headingText.dropFirst("Bundled notices (".count).prefix(while: \.isNumber)) ?? 0
+        XCTAssertGreaterThanOrEqual(declared, 17,
+                                    "the bundled notices are counted, not summarised; saw: " + headingText)
+
+        let noticeRows = identifierQuery("BallpadNotice.")
+        XCTAssertGreaterThan(noticeRows.count, 0, "the About screen lists at least one notice")
+        XCTAssertLessThanOrEqual(noticeRows.count, declared,
+                                 "the screen never lists more notices than it declares")
+        XCTAssertNil(identifierElement("BallpadNotice.path"),
+                     "the generated list's column header is not rendered as a notice")
+        for index in 0..<noticeRows.count {
+            let identifier = noticeRows.element(boundBy: index).identifier
+            let relative = String(identifier.dropFirst("BallpadNotice.".count))
+            XCTAssertTrue(relative.contains("/") || relative == "README.md",
+                          "every notice row names a file in the notices folder; saw: " + relative)
+        }
+
+        // The row the notice test opens has to exist after scrolling, or "the notices are
+        // readable" would be a claim about a heading rather than about a file.
+        XCTAssertNotNil(revealNotice(Self.firstNoticePath),
+                        "the first bundled notice is present in the list")
+        attachHierarchy("about-hierarchy-walked")
+    }
+
+    /// F13. A notice opens in full, offline, with the file's own text: the row's title is the path
+    /// it stands for, the body is the notice rather than a placeholder, and closing it leaves About
+    /// where it was. The body assertion is a token that exists in the notice itself, so a screen
+    /// that rendered "could not be read" would fail here.
+    func testAboutNoticeOpensInFullOffline() throws {
+        launchAndWaitForOverlay()
+        openAbout()
+
+        guard let row = revealNotice(Self.firstNoticePath) else {
+            attachHierarchy("notice-row-missing")
+            XCTFail("the notice " + Self.firstNoticePath + " is listed")
+            return
+        }
+        row.tap()
+
+        guard let title = waitForIdentifier("BallpadNoticeTitle", timeout: 20) else {
+            attachHierarchy("notice-would-not-open")
+            XCTFail("tapping a notice opens it")
+            return
+        }
+        XCTAssertEqual(title.label, Self.firstNoticePath,
+                       "the opened notice names the file it is showing")
+
+        guard let bodyElement = waitForIdentifier("BallpadNoticeBody", timeout: 20) else {
+            XCTFail("the notice shows its body")
+            return
+        }
+        let body = publishedText(bodyElement)
+        XCTAssertGreaterThan(body.count, 500,
+                             "the notice is the file's text, not a one-line placeholder")
+        for required in ["Super Mario Strikers", "Yannick Suter", "Licensing"] {
+            XCTAssertTrue(body.contains(required),
+                          "the notice carries its own words (" + required + ")")
+        }
+        attach("notice-" + Self.firstNoticePath.replacingOccurrences(of: "/", with: "-"))
+
+        let close = app.buttons["BallpadNoticeClose"]
+        XCTAssertTrue(close.waitForExistence(timeout: 15), "the notice offers a way back")
+        close.tap()
+        XCTAssertFalse(app.staticTexts["BallpadNoticeTitle"].waitForExistence(timeout: 5),
+                       "closing the notice dismisses it")
+        XCTAssertNotNil(identifierElement("BallpadAboutTitle"),
+                        "closing a notice leaves About where it was")
+
+        app.buttons["BallpadAboutClose"].tap()
+        XCTAssertFalse(app.staticTexts["BallpadAboutTitle"].waitForExistence(timeout: 5),
+                       "closing About dismisses it")
+        // The overlay is what was under the sheet, and the three-dot button is how the overlay
+        // says so: the menu rows are inside the menu, so looking for one of those here would be
+        // asking the wrong surface whether it came back.
+        XCTAssertTrue(menuButton.waitForExistence(timeout: 15),
+                      "the overlay is underneath again")
+    }
+
+    /// F13/item 7. The Controller Button Mapping row opens a panel that reports the port's own map
+    /// for its port, or the port's own reason there is none. The panel is read-only on purpose, so
+    /// what is judged is that the reading is the port's and that Refresh re-reads it rather than
+    /// that a row edits anything. Returns a description of the failure, or nil when the reading is
+    /// one of the two honest ones.
+    private func mappingReadingIsHonest() -> String? {
+        guard let device = waitForIdentifier("BallpadMappingDevice", timeout: 10) else {
+            return "the panel says which device it asked about"
+        }
+        let deviceText = publishedText(device)
+        let rows = identifierQuery("BallpadMappingRow.")
+        let noMap = deviceText.range(of: "reports no pad map for port [0-9]+",
+                                     options: .regularExpression) != nil
+        if noMap {
+            return rows.count == 0
+                ? nil
+                : "a port with no map reports no rows, not " + String(rows.count)
+        }
+        guard rows.count > 0 else {
+            return "a named device comes with the rows it maps; saw only: " + deviceText
+        }
+        for index in 0..<rows.count {
+            let text = publishedText(rows.element(boundBy: index))
+            if !text.contains("→") {
+                return "every row maps a GameCube control to something; saw: " + text
+            }
+        }
+        return nil
+    }
+
+    func testControllerMappingPanelReportsThePortsOwnMap() throws {
+        launchAndWaitForOverlay()
+        openMenu()
+        guard let row = scrollMenuForElement("Controller Button Mapping…", timeout: 25) else {
+            attachHierarchy("mapping-row-missing")
+            XCTFail("the Controller Button Mapping row is present in the menu")
+            return
+        }
+        row.tap()
+
+        XCTAssertNotNil(waitForIdentifier("BallpadMappingTitle", timeout: 30),
+                        "the mapping panel opens")
+        XCTAssertNotNil(identifierElement("BallpadMappingHeading"),
+                        "the panel states what its rows map from")
+        XCTAssertNotNil(identifierElement("BallpadMappingNote"),
+                        "the panel states that it only reports")
+
+        let first = mappingReadingIsHonest()
+        attachHierarchy("mapping-panel-hierarchy")
+        XCTAssertNil(first, first ?? "")
+
+        // Refresh re-asks the port. Nothing about the panel is cached across a re-read, so the same
+        // reading has to survive it -- which is what makes the panel a read of the port's table
+        // rather than a snapshot taken once when the view loaded.
+        let refresh = app.buttons["BallpadMappingRefresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 15), "the panel offers a re-read")
+        refresh.tap()
+        let second = mappingReadingIsHonest()
+        attachHierarchy("mapping-panel-after-refresh")
+        XCTAssertNil(second, second ?? "")
+
+        app.buttons["BallpadMappingClose"].tap()
+        XCTAssertFalse(app.staticTexts["BallpadMappingTitle"].waitForExistence(timeout: 5),
+                       "closing the panel dismisses it")
+        XCTAssertTrue(menuButton.waitForExistence(timeout: 15),
+                      "the overlay is underneath again")
+    }
+
+    /// R1 item 5, the FPS row. The vendored row persists a setting and nothing else; the numbers on
+    /// screen are Ballpad's own, filled once a frame from the port's benchmark. So the row is proved
+    /// by the label appearing when it is on and going away when it is off -- the label's text is not
+    /// asserted, because on a title screen the rate is not the claim, existence is.
+    func testFrameStatisticsRowDrivesTheCountersItClaims() throws {
+        launchAndWaitForOverlay()
+        openMenu()
+        XCTAssertNil(identifierElement("BallpadFPSCounter"),
+                     "the counter is not on screen while the setting is off")
+        guard let row = scrollMenuForElement("Show FPS Counter", timeout: 15) else {
+            attachHierarchy("fps-row-missing")
+            XCTFail("the Show FPS Counter row is present in the menu")
+            return
+        }
+        row.tap()
+        XCTAssertNotNil(waitForIdentifier("BallpadFPSCounter", timeout: 30),
+                        "turning the row on puts the port's own counters on screen")
+        attach("fps-counter-on")
+
+        // The menu stays open across a re-read of the panel on the iPad, so closing it is what this
+        // waits on rather than assuming a tap dismissed it.
+        openMenu()
+        guard let again = scrollMenuForElement("Show FPS Counter", timeout: 15) else {
+            XCTFail("the Show FPS Counter row is present when the menu reopens")
+            return
+        }
+        again.tap()
+        var gone = false
+        let deadline = Date().addingTimeInterval(20)
+        repeat {
+            if identifierElement("BallpadFPSCounter") == nil { gone = true; break }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        XCTAssertTrue(gone, "turning the row off takes the counters away again")
+    }
+
+    // MARK: - The frame-rate row (R1 item 11)
+
+    /// Taps the frame-rate row and returns the alert's own message: the limiter the port says it now
+    /// has, its display rate, and whether vsync is pacing as well, all read by the row's handler
+    /// immediately after it calls PortSetFrameLimit.
+    private func tapFrameRateRow() -> String {
+        tapMenuRow("Experimental 60 FPS (BallPad's frame rate limit)")
+        let alert = app.alerts["Frame Rate Limit"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 30), "the frame-rate row raises its alert")
+        let message = alert.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " ")
+        alert.buttons["OK"].tap()
+        XCTAssertFalse(alert.waitForExistence(timeout: 5), "OK dismisses the alert")
+        return message
+    }
+
+    /// R1 item 11's row stands where the vendored "Experimental 60 FPS (Restart Required)" row was.
+    /// A native port has no emulated clock to speed up and no boot mode to change, so what the row
+    /// does is tell the port's own limiter what to cap to, and the alert it raises reports the limiter
+    /// the port says it now has rather than restating the row's title. The two taps below are read off
+    /// that live period -- "uncapped" and "capped to N Hz" are opposite answers derived from
+    /// PortFrameLimitInfo -- so a row that changed nothing could not produce both. The relaunch proves
+    /// the other half: the choice is stored under Ballpad's own key and re-applied by PortHostUIStart,
+    /// so a value that did not survive the fresh process would make the second tap uncapped again.
+    func testFrameRateLimitRowReachesThePortsLimiter() throws {
+        launchAndWaitForOverlay()
+        let first = tapFrameRateRow()
+        XCTAssertTrue(first.contains("uncapped"),
+                      "the first tap lifts the cap, and the port says so: " + first)
+        attach("frame-limit-uncapped")
+
+        app.terminate()
+        launchAndWaitForOverlay()
+        let second = tapFrameRateRow()
+        XCTAssertTrue(second.contains("capped to"),
+                      "one more tap after a relaunch caps again, so the choice survived and was "
+                      + "re-applied at start: " + second)
+        attach("frame-limit-capped")
+    }
+
+    // MARK: - The display rows, read back from the renderer
+
+    /// R1 item 5's other half. The menu's Render Resolution and Aspect Ratio rows are the vendored
+    /// rows re-bound to Ballpad handlers in -buildMenu, and this row is what says they reach the port
+    /// rather than only the settings store: every number below is read out of the renderer's own
+    /// read-back. It is asserted relationally on purpose -- the window's size belongs to the
+    /// Simulator, so the claims are that 4× is four times the height of 1× at the same shape, that a
+    /// pinned shape survives that change, that the three aspect rows end at three different
+    /// destinations, and that the frame the port draws the game into is the 480 design height times
+    /// the shape it reports. The absolutes are 4:3's 640 and the two ratios themselves, within the
+    /// port's own rounding.
+    ///
+    /// The render target is deliberately not one of the things an aspect row is allowed to move: the
+    /// port presents one buffer scaled to the surface and fits the picture inside it by moving the
+    /// game's logical frame and the gameplay camera. So the aspect rows are checked through those two
+    /// fields, and the target's shape is checked to stay put.
+    func testDisplayRowsReachTheRenderer() throws {
+        launchAndWaitForOverlay()
+        setFPSCounter(true)
+        guard let baseline = waitForDisplay("at launch", where: { $0.scale > 0 }) else { return }
+        XCTAssertTrue(baseline.followsWindow,
+                      "a fresh install has no stored aspect, so the port follows the window's shape")
+        attach("display-baseline")
+
+        chooseMenuRow("1× (Native)", from: "Render Resolution")
+        guard let native = waitForDisplay("at 1×", where: { abs($0.scale - 1.0) < 0.01 }) else { return }
+        chooseMenuRow("4×", from: "Render Resolution")
+        guard let four = waitForDisplay("at 4×", where: { abs($0.scale - 4.0) < 0.01 }) else { return }
+        XCTAssertEqual(four.height, native.height * 4,
+                       "4× is four times 1× in the target's height (" + String(describing: native)
+                       + " then " + String(describing: four) + ")")
+        XCTAssertGreaterThan(four.width, native.width, "4× is wider than 1×")
+        XCTAssertEqual(four.aspect, native.aspect, accuracy: 0.01,
+                       "the resolution row leaves the shape alone")
+        XCTAssertEqual(four.followsWindow, native.followsWindow,
+                       "the resolution row leaves the shape's owner alone")
+        attach("display-4x")
+
+        // The aspect row moves the shape and nothing else: same height, pinned, and 4:3 exactly.
+        chooseMenuRow("Original 4:3", from: "Aspect Ratio")
+        guard let fourThree = waitForDisplay("at 4:3", where: { !$0.followsWindow }) else { return }
+        XCTAssertEqual(fourThree.height, four.height,
+                       "the aspect row leaves the target's height alone")
+        XCTAssertEqual(fourThree.aspect, 4.0 / 3.0, accuracy: 0.01, "the 4:3 row pins 4:3")
+        XCTAssertEqual(Double(fourThree.logicalWidth), 640.0, accuracy: 1.0,
+                       "and the renderer draws the game into the console's own 640-unit frame ("
+                       + String(describing: fourThree) + ")")
+        XCTAssertEqual(fourThree.blend, 0.0, accuracy: 0.02,
+                       "with the gameplay camera left at its 4:3 tuning")
+        attach("display-43")
+
+        chooseMenuRow("16:9 (Experimental)", from: "Aspect Ratio")
+        guard let wide = waitForDisplay("at 16:9", where: { abs($0.aspect - 16.0 / 9.0) < 0.01 })
+        else { return }
+        XCTAssertFalse(wide.followsWindow, "16:9 is a pinned shape too")
+        XCTAssertGreaterThan(wide.aspect, fourThree.aspect, "16:9 is wider than 4:3")
+        XCTAssertGreaterThan(wide.logicalWidth, fourThree.logicalWidth,
+                             "and the frame the renderer draws the game into is wider at that height")
+        // The relation the port keeps by construction, and why the number is not a constant: the width
+        // is 480 * aspect, dropped to even because GXSetFogRangeAdj and friends take a half-width.
+        // 16:9 is 853.33 and so lands on 852, which is what the accuracy leaves room for.
+        XCTAssertEqual(Double(wide.logicalWidth), 480.0 * wide.aspect, accuracy: 2.0,
+                       "the logical frame is the design height times the pinned shape ("
+                       + String(describing: wide) + ")")
+        XCTAssertEqual(wide.blend, 1.0, accuracy: 0.02,
+                       "16:9 is where the camera blend reaches its widescreen knot")
+        XCTAssertEqual(wide.height, four.height, "still the height the resolution row asked for")
+        attach("display-169")
+
+        // Fill Screen hands the shape back to the window, which is what it means on a device whose
+        // window is not 16:9: the read-back has to name the window again, and the ratio has to be the
+        // one the run started with, whatever that is on this form factor.
+        chooseMenuRow("Fill Screen (Experimental)", from: "Aspect Ratio")
+        guard let filled = waitForDisplay("at Fill Screen", where: { $0.followsWindow }) else { return }
+        XCTAssertEqual(filled.aspect, baseline.aspect, accuracy: 0.01,
+                       "Fill Screen is the window's shape, which is where the run started")
+        XCTAssertEqual(filled.blend, baseline.blend, accuracy: 0.02,
+                       "so the camera blend is the one the run started with")
+        XCTAssertEqual(Double(filled.logicalWidth), Double(baseline.logicalWidth), accuracy: 1.0,
+                       "and so is the frame the renderer draws the game into")
+        attach("display-fill")
+
+        let readings = [("launch", baseline), ("1×", native), ("4×", four),
+                        ("4:3", fourThree), ("16:9", wide), ("Fill Screen", filled)]
+
+        // What the aspect rows are not allowed to touch: the target is scaled to the surface, and the
+        // surface did not move. A port that letterboxed by shrinking its buffer would fail here, and
+        // that is the point -- the picture is fitted by the game's own frame, not by the buffer's.
+        for reading in [fourThree, wide, filled] {
+            XCTAssertEqual(reading.renderedAspect, four.renderedAspect, accuracy: 0.01,
+                           "the aspect rows leave the presented target's shape alone ("
+                           + String(describing: reading) + ")")
+        }
+        for (name, reading) in readings {
+            XCTAssertEqual(Double(reading.logicalWidth), 480.0 * reading.aspect, accuracy: 2.0,
+                           "the logical frame is the design height times the shape the port reports, "
+                           + "at " + name + " (" + String(describing: reading) + ")")
+        }
+
+        // The counter goes back off because the row that owns it reads its absence first; this row is
+        // a guest on that setting, and it is the only reason the setting is touched here at all.
+        setFPSCounter(false)
+        XCTAssertNil(identifierElement("BallpadFPSCounter"), "the counter is off again")
+    }
+
+    // MARK: - The touch-control settings that move drawn controls (R1 item 5)
+
+    /// A slider's own reading, as a percentage. These two sliders publish the *thumb's position
+    /// along its track* rather than the setting they hold: the vendored size range is 0.70-1.35 and
+    /// this reads 46% at its 1.00 default, and the opacity range is 0.25-1.0 and reads 76% at its
+    /// 0.82 default. Both are exactly (value - minimum) / (maximum - minimum), which is the same
+    /// scale `adjust(toNormalizedSliderPosition:)` speaks, so a reading and a drag address one
+    /// scale and a value can be put back exactly. Nil rather than zero when the control is absent,
+    /// because "not on screen" and "at the bottom of its track" must not compare equal.
+    private func sliderPercent(_ label: String) -> Double? {
+        let slider = app.sliders[label]
+        guard slider.exists, let raw = slider.value as? String else { return nil }
+        return Double(raw.trimmingCharacters(in: CharacterSet(charactersIn: "% ")))
+    }
+
+    private func requireSliderPercent(_ label: String, _ what: String) -> Double {
+        guard let value = sliderPercent(label) else {
+            attachHierarchy("slider-not-readable")
+            XCTFail("the " + label + " slider reads back its own value " + what)
+            return -1
+        }
+        return value
+    }
+
+    /// One real touch along `label`'s track, to `percent` of it, returning what the control reads
+    /// afterwards. The drag is the vendored control's own gesture path: the sliders are the bytes
+    /// this project does not touch, so a value that arrives is a value UIKit delivered to them.
+    @discardableResult
+    private func setSliderTrackPercent(_ label: String, to percent: Double) -> Double? {
+        let slider = app.sliders[label]
+        guard slider.exists else { return nil }
+        let normalized = CGFloat(min(max(percent / 100.0, 0.0), 1.0))
+        slider.adjust(toNormalizedSliderPosition: normalized)
+        let deadline = Date().addingTimeInterval(10)
+        repeat {
+            if let now = sliderPercent(label) { return now }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        return sliderPercent(label)
+    }
+
+    /// Waits for the drawn A button's frame to satisfy `predicate`. A slider applies on the next
+    /// layout pass rather than inside the touch, so the reading has to be waited for; a frame that
+    /// never arrives is attached and failed rather than compared in silence.
+    @discardableResult
+    private func waitForDrawnAFrame(_ what: String, timeout: TimeInterval = 20,
+                                    where predicate: (CGRect) -> Bool) -> CGRect? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var last = app.buttons["A"].frame
+        repeat {
+            last = app.buttons["A"].frame
+            if predicate(last) { return last }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        attachHierarchy("a-frame-never-changed")
+        XCTFail("the drawn A button did not change " + what + "; it stayed at "
+                + NSCoder.string(for: last))
+        return nil
+    }
+
+    /// A real touch on the overlay's camera stick: a sustained press at its centre, dragged to its
+    /// right edge. The vendored stick view reads `touchesBegan`/`touchesMoved`, so a press that
+    /// moves is what produces a nonzero axis, and the press is held long enough that the port's
+    /// per-frame poll sees it rather than only the frames around a tap.
+    private func dragCameraStickRight() {
+        let stick = app.otherElements["c"]
+        guard stick.exists else {
+            attachHierarchy("camera-stick-missing")
+            XCTFail("the overlay's camera stick is on screen to be dragged")
+            return
+        }
+        let start = stick.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = stick.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5))
+        start.press(forDuration: 0.8, thenDragTo: end)
+    }
+
+    /// R1 item 5, for the three settings whose only honest proof is a control that was drawn or a
+    /// pad the port was handed, rather than a value in the store.
+    ///
+    /// Control size is decided here and now: the on-screen A button is measured before and after
+    /// the drag, so a slider that reached only the store would leave the frame where it was, and a
+    /// button that changed size is a button drawn at the new size. The direction is chosen from the
+    /// reading rather than assumed, and the sequence is the panel's low end then its high end, so
+    /// the two frames are compared with each other as well as with the resting one.
+    ///
+    /// Control opacity cannot move a frame -- it is a paint property -- so the half this row can
+    /// decide is the negative one, that the geometry stays put; the positive half is the app's own
+    /// read-back of the overlay it drew, which the run's settings row requires (an `overlay:` line
+    /// per settled state, naming every control's alpha as drawn), and the alpha it names is the one
+    /// this drag produced.
+    ///
+    /// The C-stick switch is the third: the drag makes the axis nonzero, and the app's `c-stick:`
+    /// read-back prints the mixer's own value beside the value the port's pad was handed, so the run
+    /// can require that the two agree with the switch off and disagree with it on.
+    ///
+    /// Both stored values are then read out of a fresh process, because in-process state cannot
+    /// survive `app.terminate()` and a setting that came back would have had to be written down.
+    func testTouchSettingsReachTheDrawnOverlay() throws {
+        launchAndWaitForOverlay()
+        openMenu()
+        openTouchSettings()
+
+        let aButton = overlayATitle()
+        XCTAssertTrue(aButton.waitForExistence(timeout: 30), "the overlay A button is on screen")
+        let resting = aButton.frame
+        XCTAssertGreaterThan(resting.width, 0, "the A button is drawn with a real size")
+        attach("touch-controls-at-rest")
+
+        // -- Control size: the drawn control follows the track -----------------------------------
+        let sizeAtRest = requireSliderPercent("Control size", "before anything is dragged")
+        let smallFirst = sizeAtRest < 50.0
+        setSliderTrackPercent("Control size", to: smallFirst ? 100.0 : 0.0)
+        let sizeAfter = requireSliderPercent("Control size", "after the drag")
+        XCTAssertNotEqual(sizeAfter, sizeAtRest, accuracy: 0.5,
+                          "the size drag landed on the vendored slider")
+        let resized = waitForDrawnAFrame("with the Control size slider") { frame in
+            smallFirst ? frame.width > resting.width + 1.0 : frame.width < resting.width - 1.0
+        }
+        if let resized {
+            XCTAssertNotEqual(resized.width, resting.width, accuracy: 0.5,
+                              "the drawn A button is a different width at the new size ("
+                              + NSCoder.string(for: resting) + " then "
+                              + NSCoder.string(for: resized) + ")")
+        }
+        attach("control-size-changed")
+
+        // -- Control opacity: the drawn control keeps its geometry -------------------------------
+        let opacityAtRest = requireSliderPercent("Control opacity", "before anything is dragged")
+        let frameBeforeOpacity = app.buttons["A"].frame
+        setSliderTrackPercent("Control opacity", to: 0.0)
+        let opacityAfter = requireSliderPercent("Control opacity", "after the drag")
+        XCTAssertNotEqual(opacityAfter, opacityAtRest, accuracy: 0.5,
+                          "the opacity drag landed on the vendored slider")
+        assertFrameClose(app.buttons["A"].frame, frameBeforeOpacity, accuracy: 1.0,
+                         "opacity is a paint setting, so the drawn A button stays put")
+        attach("control-opacity-changed")
+
+        // -- The camera stick's own axis, turned under both conventions ---------------------------
+        let modernSwitch = app.switches["Modern C-stick left and right"]
+        XCTAssertTrue(modernSwitch.waitForExistence(timeout: 10),
+                      "the Modern C-stick left and right switch is present")
+        if (modernSwitch.value as? String) != "0" { modernSwitch.tap() }
+        dragCameraStickRight()
+        if (modernSwitch.value as? String) != "1" { modernSwitch.tap() }
+        dragCameraStickRight()
+        attach("c-stick-both-conventions")
+        if (modernSwitch.value as? String) != "0" { modernSwitch.tap() }
+
+        // -- Both stored values survive a fresh process -------------------------------------------
+        app.terminate()
+        launchAndWaitForOverlay()
+        openMenu()
+        openTouchSettings()
+        XCTAssertEqual(requireSliderPercent("Control size", "after a relaunch"), sizeAfter,
+                       accuracy: 1.0,
+                       "the size the drag chose survived a termination and a fresh launch")
+        XCTAssertEqual(requireSliderPercent("Control opacity", "after a relaunch"), opacityAfter,
+                       accuracy: 1.0, "and so did the opacity")
+        attach("touch-settings-after-relaunch")
+
+        // Put back what this row moved. The suite's other rows read these controls, so the panel is
+        // left where the earlier rows found it.
+        setSliderTrackPercent("Control size", to: sizeAtRest)
+        setSliderTrackPercent("Control opacity", to: opacityAtRest)
+    }
+
+    // MARK: - Each shoulder draws its own press (R1 item 5, the L/R half of the interface gate)
+
+    /// The claim this row decides is the one a screenshot alone leaves ambiguous: pressing one
+    /// shoulder draws that shoulder's own outline and nothing on the other. The overlay paints the
+    /// vendored trigger's *detent* as a thicker border (3.0 against 2.0 below the detent), so "which
+    /// shoulder is drawn at its detent" is a value the app can print, and the run's
+    /// `shoulder outline:` lines are where it prints it.
+    ///
+    /// The press lands near the control's edge rather than at its centre, and that is the vendored
+    /// behaviour rather than a convenience: `SunPadTriggerButton -updateFromTouch:` decides `_fullPress`
+    /// from the touch's *position* across the control's width (the detent starts at 0.75 of the width,
+    /// `SunPadTriggerDetentEnter`), and "position >= detent" is exactly the state the thicker border
+    /// draws. A press at the centre therefore renders no press indicator at all, and a row that pressed
+    /// there would be measuring nothing. 0.95 of the width clears the detent with margin.
+    ///
+    /// What the test itself reads is the other half: a press is a paint property, so neither shoulder
+    /// may move, and both must be on screen and hittable for the press to have landed on them at all.
+    /// The screenshots are the human-readable side of the same claim, and the run fails its read-back
+    /// row if the log never shows a pair that differs, or shows a pair where both shoulders carry the
+    /// press width at once -- the fault this row exists to catch.
+    func testShoulderPressDrawsOnOneShoulderOnly() throws {
+        launchAndWaitForOverlay()
+
+        let left = app.buttons["L"]
+        let right = app.buttons["R"]
+        XCTAssertTrue(left.waitForExistence(timeout: 30), "the overlay's L shoulder is on screen")
+        XCTAssertTrue(right.waitForExistence(timeout: 30), "the overlay's R shoulder is on screen")
+        XCTAssertTrue(left.isHittable, "L is hittable, so the press below reaches it")
+        XCTAssertTrue(right.isHittable, "R is hittable, so the press below reaches it")
+
+        let leftAtRest = left.frame
+        let rightAtRest = right.frame
+        XCTAssertGreaterThan(leftAtRest.width, 0, "L is drawn with a real width")
+        XCTAssertEqual(leftAtRest.width, rightAtRest.width, accuracy: 1.0,
+                       "the two shoulders are drawn the same width at rest ("
+                       + NSCoder.string(for: leftAtRest) + " and "
+                       + NSCoder.string(for: rightAtRest) + ")")
+        attach("shoulders-at-rest")
+
+        left.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).press(forDuration: 0.5)
+        attach("left-shoulder-pressed")
+        Thread.sleep(forTimeInterval: 0.5)
+        assertFrameClose(left.frame, leftAtRest, accuracy: 1.0,
+                         "a press is paint, so L stays where it was")
+        assertFrameClose(right.frame, rightAtRest, accuracy: 1.0,
+                         "and pressing L leaves R where it was")
+
+        right.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).press(forDuration: 0.5)
+        attach("right-shoulder-pressed")
+        Thread.sleep(forTimeInterval: 0.5)
+        assertFrameClose(left.frame, leftAtRest, accuracy: 1.0,
+                         "and pressing R leaves L where it was")
+        assertFrameClose(right.frame, rightAtRest, accuracy: 1.0,
+                         "R keeps its own frame through its own press too")
+
+        // Both presses have been made, and the run reads the app's own outline lines from them. The
+        // pause lets the overlay settle back to rest, so the last state the log records is the
+        // resting one and the differing pair the run requires is not buried under a later frame.
+        Thread.sleep(forTimeInterval: 1.0)
+        attach("shoulders-after-both-presses")
+    }
+
+    // MARK: - Every row of the panel is a row that does something (R1 rows 5, 11, 12; R2)
+
+    /// The three submenus, in the vendored order, with every leaf each of them must publish. The
+    /// list is the audit's whole expectation, and it is written as an equality rather than a
+    /// membership test for one reason: a menu row that ships with no label, or a placeholder row
+    /// left where a removed one was, is a row a player cannot read and cannot use, and both of
+    /// those are what an exact match catches and a subset check does not.
+    ///
+    /// What this row does *not* claim is that each leaf works. That is what the leaves' own rows
+    /// are for, and each one has one: the two aspect rows and the resolution rows are driven and
+    /// read back in testDisplayRowsReachTheRenderer, the frame-rate row in
+    /// testFrameRateLimitRowReachesThePortsLimiter, and the audio row, which is the one that
+    /// replaced the vendored performance row, in testAudioRecordingRowReportsTheMixersOwnState.
+    /// The render scale leaves come from the one constant the scale row already owns, so the label
+    /// spelling is not repeated here.
+    private static let vendoredSubmenuLeaves: [(submenu: String, leaves: [String])] = [
+        ("Render Resolution", [BallpadSunPadInterfaceTests.renderScaleSegments[0] + " (Native)",
+                               BallpadSunPadInterfaceTests.renderScaleSegments[1],
+                               BallpadSunPadInterfaceTests.renderScaleSegments[2],
+                               BallpadSunPadInterfaceTests.renderScaleSegments[3]]),
+        ("Aspect Ratio", ["Original 4:3", "16:9 (Experimental)", "Fill Screen (Experimental)"]),
+        ("Game Data & Saves", ["Import or Reimport Game Data", "Import from BallPad Folder",
+                               "Remove Stored Game Data"]),
+    ]
+
+    /// Every row the open panel publishes, in the order it publishes them, taken from the label the
+    /// row actually carries. A row with no label contributes an empty string rather than dropping
+    /// out of the list, and that is the reason this is built from the cells themselves instead of
+    /// from a query for labelled buttons: a query for labelled rows answers "every row is labelled"
+    /// by finding nothing at all.
+    private func publishedMenuRows() -> [String] {
+        var rows: [String] = []
+        for cell in app.collectionViews.firstMatch.cells.allElementsBoundByIndex {
+            let button = cell.buttons.firstMatch
+            rows.append(button.exists ? button.label : cell.label)
+        }
+        return rows
+    }
+
+    /// Whether a menu panel is on screen at all: the vendored panel is a collection view, so a
+    /// published cell is the reading, and a panel that has been put away has neither.
+    private func menuIsPresented() -> Bool {
+        app.collectionViews.firstMatch.cells.firstMatch.exists
+    }
+
+    /// Closes the panel the way a player closes it: the three-dot button raised it, and tapping that
+    /// button again puts it away. The loop is bounded and re-reads the tree between passes; the
+    /// fallback aims at the top-left corner, which is neither the button nor any row of a panel
+    /// anchored to it. No leaf is ever tapped here -- leaving the menu without choosing anything is
+    /// the whole point of the callers.
+    private func dismissMenu() {
+        for round in 0..<3 {
+            guard menuIsPresented() else { return }
+            if round == 0 {
+                menuButton.tap()
+            } else {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.02)).tap()
+            }
+            let deadline = Date().addingTimeInterval(5)
+            repeat {
+                if !menuIsPresented() { return }
+                Thread.sleep(forTimeInterval: 0.25)
+            } while Date() < deadline
+        }
+        attachHierarchy("menu-would-not-close")
+    }
+
+    /// R1 rows 5, 6, 7 and 9, read from the menu's own side: every submenu publishes exactly the
+    /// leaves it is supposed to publish, spelled the way the vendored interface spells them. The
+    /// comparison is an equality rather than a membership test for one reason -- a row that ships
+    /// without a label, or a placeholder left in a removed row's place, is a row a player cannot
+    /// read and cannot use, and both of those survive a membership test and fail this one.
+    ///
+    /// What this row does not claim is that each leaf works; each leaf has a row of its own for
+    /// that. The resolution and aspect leaves are driven and read back in
+    /// testDisplayRowsReachTheRenderer, the frame-rate row in
+    /// testFrameRateLimitRowReachesThePortsLimiter, the audio row that took the retired row's slot
+    /// in testAudioRecordingRowReportsTheMixersOwnState, and the three game-data leaves are driven,
+    /// refused and confirmed in the Files importer rows below. The retired performance row's absence
+    /// is re-read here, so the slot it left is checked from both sides.
+    func testEverySubmenuPublishesItsLabelledLeaves() throws {
+        launchAndWaitForOverlay()
+
+        for submenu in Self.vendoredSubmenuLeaves {
+            ensureMenuOpen()
+            guard let row = scrollMenuForElement(submenu.submenu, timeout: 20) else {
+                attachHierarchy("submenu-row-missing")
+                XCTFail("the " + submenu.submenu + " row is in the menu")
+                continue
+            }
+            row.tap()
+
+            guard waitForOverlayElement(submenu.leaves[0], timeout: 20) != nil else {
+                attachHierarchy("submenu-would-not-open")
+                XCTFail("the " + submenu.submenu + " submenu opens")
+                continue
+            }
+
+            // The cells arrive with the panel, so this waits for the list to reach its final
+            // length before reading it: a reading taken mid-presentation would compare a half-built
+            // list against a whole one. The assertion below is still an equality, so a wrong list
+            // cannot pass by being waited for.
+            var rows = publishedMenuRows()
+            let deadline = Date().addingTimeInterval(15)
+            repeat {
+                rows = publishedMenuRows()
+                if rows.count == submenu.leaves.count { break }
+                Thread.sleep(forTimeInterval: 0.25)
+            } while Date() < deadline
+
+            attach("submenu-leaves-" + submenu.submenu)
+            attachHierarchy("submenu-leaves-" + submenu.submenu)
+            XCTAssertEqual(rows, submenu.leaves,
+                           "the " + submenu.submenu + " submenu publishes exactly its own leaves")
+            XCTAssertNil(overlayElement("Experimental Performance Mode (Restart Required)"),
+                         "no panel publishes the retired performance row (R1 row 12)")
+            dismissMenu()
+        }
+    }
+
+    /// The first run of digits in `text` that is followed by a space and `suffix`, or nil. This is
+    /// how the stop alert's frame count is read without depending on the alert's wording: a number
+    /// sitting next to its unit is the number, and a sentence that names none yields nil.
+    private func firstInteger(in text: String, before suffix: String) -> Int? {
+        let characters = Array(text)
+        var index = 0
+        while index < characters.count {
+            guard characters[index].isNumber else {
+                index += 1
+                continue
+            }
+            var end = index
+            while end < characters.count, characters[end].isNumber { end += 1 }
+            let digits = String(characters[index..<end])
+            let rest = String(characters[end...])
+            if rest.hasPrefix(" " + suffix), let value = Int(digits) { return value }
+            index = end
+        }
+        return nil
+    }
+
+    /// Taps the audio recording row and returns the alert it raised as its title and its body. The
+    /// row is looked up again on every tap because the menu is rebuilt after each one -- the handler
+    /// calls -refreshMenuButton, which re-reads the mixer and re-composes the row's checkmark -- so
+    /// an element held across two taps would be describing a menu that no longer exists.
+    @discardableResult
+    private func tapAudioRow(_ what: String) -> (title: String, message: String) {
+        ensureMenuOpen()
+        guard let row = scrollMenuForElement("Record Audio (Experimental)", timeout: 20) else {
+            attachHierarchy("audio-row-missing")
+            XCTFail("the audio recording row is in the menu (" + what + ")")
+            return (title: "", message: "")
+        }
+        row.tap()
+
+        let alert = app.alerts.firstMatch
+        guard alert.waitForExistence(timeout: 30) else {
+            attachHierarchy("audio-alert-missing")
+            XCTFail("the audio row raises an alert (" + what + ")")
+            return (title: "", message: "")
+        }
+        // iOS publishes the title as the alert's own label and the body beneath it. Some versions
+        // repeat the title as the first static text; a repeat is dropped so the body is the body.
+        var labels = alert.staticTexts.allElementsBoundByIndex.map(\.label)
+        let title = alert.label.isEmpty ? (labels.first ?? "") : alert.label
+        if labels.first == title { labels.removeFirst() }
+        let message = labels.joined(separator: " ")
+
+        attach("audio-alert-" + what)
+        alert.buttons["OK"].tap()
+        XCTAssertFalse(alert.waitForExistence(timeout: 5), "OK dismisses the audio alert")
+        return (title: title, message: message)
+    }
+
+    /// R2, the audio row. The vendored slot held a switch that slowed an emulated CPU by ten per
+    /// cent, and this runtime has no emulated clock to slow -- shipping that switch would be the
+    /// inert row doc 33 forbids, and rebuilding it under a nicer name would be the same switch with
+    /// a better label. The port does have its own mixer and its own transport, though, and the
+    /// honest experimental thing to expose from them is the one operation a player can check for
+    /// themselves: record exactly the bytes the audio device is handed, which is what turns "the
+    /// game is making a sound" and "the sound is the one the models on screen are making" into two
+    /// questions instead of one.
+    ///
+    /// The row's claim is that it reports the mixer rather than remembering what the last tap asked
+    /// for, and this is built so that a device-less run and a live one prove it in opposite
+    /// directions. With a device open the two taps are the two halves of one take: the first says it
+    /// started, and the second says it stopped and names the frames it wrote, read out of the alert
+    /// and required to be positive, together with the mixer's own rate. Without a device both taps
+    /// give the same reading, and that equality is exactly the claim -- a row that had toggled a
+    /// remembered flag would answer the second tap differently from the first.
+    func testAudioRecordingRowReportsTheMixersOwnState() throws {
+        launchAndWaitForOverlay()
+
+        let started = tapAudioRow("start")
+        XCTAssertFalse(started.title.isEmpty, "the audio row names what it did")
+
+        if started.title == "Recording" {
+            // The take needs mixer time before it has a length: the recorder is stopped by a tap,
+            // and the count belongs to whatever the mixer handed over in between. This waits that
+            // out instead of asserting on a race, and the number below is still the mixer's own.
+            Thread.sleep(forTimeInterval: 3)
+
+            let stopped = tapAudioRow("stop")
+            XCTAssertEqual(stopped.title, "Recording Stopped",
+                           "the second tap stops the take the first one started")
+            let frames = firstInteger(in: stopped.message, before: "frames,")
+            XCTAssertNotNil(frames, "the stop alert names the frames it wrote: " + stopped.message)
+            XCTAssertGreaterThan(frames ?? 0, 0,
+                                 "the take is a recording and not an empty file: " + stopped.message)
+            XCTAssertTrue(stopped.message.contains("32000 Hz"),
+                          "the stop alert names the mixer's own rate: " + stopped.message)
+            XCTAssertTrue(stopped.message.contains("Files"),
+                          "the stop alert says where the file is: " + stopped.message)
+        } else {
+            XCTAssertEqual(started.title, "Nothing to Record",
+                           "a row that did not start a take says the port has no device open "
+                           + "rather than starting one anyway: " + started.message)
+            let again = tapAudioRow("again")
+            XCTAssertEqual(again.title, started.title,
+                           "with no device the row gives the same reading twice; a remembered flag "
+                           + "would answer the second tap differently")
+        }
+    }
+
     // MARK: - Ballpad's own Files importer (doc 34 F01/F02)
 
     /// The three files the wrapper script puts in this app's Files-visible Documents folder. They
@@ -511,7 +1605,7 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 
     /// A row in the picker's *list* of places rather than in its sidebar. The list decorates the
     /// name it was given, and the decoration is not part of the name: the app's own folder is
-    /// published as `identifier: 'Ballpad Strikers, Container', label: 'Ballpad Strikers, 4 items'`
+    /// published as `identifier: 'BallPad Strikers, Container', label: 'BallPad Strikers, 4 items'`
     /// (measured, run f01f02-phone-r3, attached as files-picker-in-On-My-iPhone), so an exact
     /// comparison against the folder's name can never find the row. The prefix is the identity;
     /// the suffix is the picker's own annotation of what is inside.
@@ -646,7 +1740,7 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         // a Locations list). The sidebar entries carry their own name, but the folder list below
         // them decorates it, so both spellings are looked for.
         for container in ["On My iPhone", "On My iPad", "This iPhone", "This iPad",
-                          "Ballpad Strikers"] {
+                          "BallPad Strikers"] {
             guard let inside = pickerMatch([container])
                                   ?? pickerContainer(named: container, timeout: 6) else { continue }
             inside.tap()
