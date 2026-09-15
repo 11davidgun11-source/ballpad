@@ -7,7 +7,9 @@ own store and importer, `mobile/interface/BallpadGameData.mm`, implements the po
 over `<container>/Documents/BallpadGameData/` (a `current` file naming the active staged copy under
 `import-<uuid>/<name>`), and the app pulls both symbols into its link explicitly -- which is the trap
 hypothesis 15 identified. Three of the four vendored delegate actions (re-import/change, folder
-import, removal) route there; only controller mapping is still log-only, which is R1 row 7. Doc 34's
+import, removal) route there, and the fourth -- controller mapping -- now opens Ballpad's own
+read-only panel rather than writing a log line (R1 row 7; the panel is at parity with the only real
+iOS surface `~/GitHub/kartpad` has for that row, which is an alert). Doc 34's
 F01 and F02 now PASS on the phone (`f01f02-phone-r4`) and on the iPad (`f01f02-pad-r1`), each run
 10/10 rows PASS with `problems: []` on the current build (`app 90f7a37767fc`), driven only by real
 touches through `scripts/native/run-uitests.sh`. What those rows decide: a fresh install with no data
@@ -162,10 +164,11 @@ evidenced (N3, above); the device platform and N4 onward are still open.
 - Workspace: `/Users/chrissotraidis/GitHub/ballpad`
 - Upstream: `https://github.com/new-coke/strikers`
 - Initial pin: `22649cb12c112454a34217429296c95bb181af8a` (v1.1.1)
-- Ballpad branch: `codex/native-strikers-ios`; engine fork branch `codex/ios-port` at `c28a6d7`
-  (pin + 9 commits), fork tree `15d79868707266c914904c5a487f62d88a44f2ea`, clean. Patch series
-  `patches/native-strikers/` is 9 patches, SHA-256 `bc19ccd92c75...`; earlier fork heads were
-  `3f7b48c` (pin + 7), `450e5c00` (pin + 6), `431de3bb` (pin + 5) and `cd8640b` (pin + 4).
+- Ballpad branch: `codex/native-strikers-ios`; engine fork branch `codex/ios-port` at `707c53c`
+  (pin + 10 commits), fork tree `151281dbbde60a20ab9500f409cf085fdec84b15`, clean. Patch series
+  `patches/native-strikers/` is 10 patches, SHA-256 `4b544d9816b9...`; earlier fork heads were
+  `c28a6d7` (pin + 9), `3f7b48c` (pin + 7), `450e5c00` (pin + 6), `431de3bb` (pin + 5) and
+  `cd8640b` (pin + 4).
 - Authority: docs 33, 34, 35 and the runbook in the goal objective
 - Active phase: N5, with N4 open on two gate rows. N0-N3 are complete. N4-A, N4-B and N4-C are
   DONE; N4-D's interface half and its match half are DONE on both form factors; and N4-D's
@@ -173,16 +176,16 @@ evidenced (N3, above); the device platform and N4 onward are still open.
   (`f01f02-phone-r4`, `f01f02-pad-r1`, 10/10 rows each). N4 is therefore open only on F04's
   per-control game-consumption row and F06's rotated relayout, which are gate rows rather than
   interface work.
-- Next action: the R1 full-adaptation list's remaining rows -- **5** (prove each touch setting has
-  a real effect on this runtime: render scale and aspect must reach Ballpad's renderer, the FPS row
-  must drive the port's own `PortSetFrameLimit`, and the six touch settings must be reflected by the
-  overlay the port reads), **7** (decide the controller-mapping destination), **9-11** (rewrite the
-  folder-import title, the report destination and the FPS row), **12** (remove the emulated-CPU row
-  that must not ship), **13-14** (diagnostics directory and settings-key domain) and **15**
-  (About/Credits) -- then F04's per-control touch drive, F06's rotated relayout, and the R2 audio
-  measurement path. Render scale comes before aspect: aspect has a shipped resolve-once latch
-  (`src/platform/aspect.c`), so a runtime aspect change needs a small port-side setter first, which
-  changes the patch digest. Scenarios
+- Next action: R1 row 5's settings effect is now measured rather than assumed on the phone
+  (`phone-r5-shoulder`, 21/21, `problems: []`): render scale and aspect reach Ballpad's renderer
+  through the port's own accessors and are read back from them (`display:`), and the six touch
+  settings are read back off the overlay the port reads (`settings:`, `overlay:`, `c-stick:`, plus
+  the new `shoulder outline:` family). Row 7, rows 9-11 and rows 12-15 are done. What remains: the
+  same r5 suite on the iPad; **F04**'s per-control game-consumption row, which is the only thing
+  that would prove the engine *reads* a control rather than merely draws it; **F06**'s rotated
+  relayout, still unexercised because both suites are landscape-only; and **R2/F09**'s audio onset
+  offset, which is unrun and must not be closed by ear. Then N7's export, clean-reproduction and
+  attribution pass. Scenarios
   now run through one durable entry point -- `scripts/native/run-scenario.sh --scenario <name>
   --run-id <id> --device <UDID> [--budget SECONDS] [--form-factor phone|pad] [--force]` -- which
   resolves the app from `ballpad-bundles.txt`, seeds the memory card the front end needs, takes
@@ -294,8 +297,11 @@ evidenced (N3, above); the device platform and N4 onward are still open.
 
 Every Simulator run this task has made, by form factor. `app` is the binary hash the run recorded
 in its `S.provenance` row; `5b22cec45b79` is the N4-C build, `30f2d3eb13ca` the bounded-capture
-build, and `7e526c45f9b6` the current one (which adds the GL guard `ffeff97` and the disc seam
-`c28a6d7`; `--platform simulator` was re-run and re-asserted on this checkpoint).
+build, `7e526c45f9b6` adds the GL guard `ffeff97` and the disc seam `c28a6d7`, `c067fc014c03` adds
+the display read-back fix (the FPS label was being re-laid-out every frame), and `b420743d1c57` is
+the current one: the audio read-back, the record-audio row and the corrected frame-rate row title.
+`--platform simulator` was re-run and re-asserted at each of those checkpoints, and every source
+under `mobile/` was verified older than the binary before the runs below were trusted.
 
 | Run id | Form factor | Suite / route | Verdict | app |
 |---|---|---|---|---|
@@ -312,6 +318,9 @@ build, and `7e526c45f9b6` the current one (which adds the GL guard `ffeff97` and
 | `n4d-dense-r1` | phone | dense burst, first attempt | run PASS, `S.provenance` FAIL | `5b22cec45b79` |
 | `n4d-dense-r2` | phone | dense burst, 278 consecutive frames | PASS | `30f2d3eb13ca` |
 | `n4d-video-r1` | phone | screen recording + still of one instant | PASS | `30f2d3eb13ca` |
+| `r1-fpsfix-phone` | phone | all 18 `S.*` rows | PASS | `c067fc014c03` |
+| `r2-audio-phone-phone-r1` | phone | `r2-audio` scenario: title -> live play -> goal (4745) -> presentation -> replay (5033) -> back to play -> middlegame (9002) | PASS | `b420743d1c57` |
+| `uitest-phone-phone-r2-newrows` | phone | the two new rows only (`S.r1.menu-leaves`, `S.r2.audio-row`) | both rows PASS; bundle non-passing by design, because `--only` leaves every other row SKIP | `b420743d1c57` |
 
 Devices this task owns:
 
@@ -337,19 +346,44 @@ nothing about device performance, and no fps claim may be built on it. The doc 3
 (warmed >= 58 fps, p95 <= 20 ms, p99 <= 33.4 ms, replay >= 55 fps, <= 2 % game-clock agreement,
 >= 20 min endurance) remain unrun and will need real measurement, not a limiter setting.
 
-Audio has no evidence at all yet, and the N3 bundle shows why: the run's log contains no audio
-device open, no MusyX init, no underrun line and no queue diagnostic. The only audio-looking record
-is the memory card's own settings field (`sound music=10 sfx=10 voice=10 audiomode=0`), which is
-saved game state rather than a claim about playback. So the Simulator run is silent so far, and
-that is not a defect hidden by N3 -- F09 is simply unrun.
+Audio has a device-side answer now, from runs on the iPhone 17e, and it is a read-back rather than a
+claim. The app writes its own line every two seconds, assembled from `PortAudioStats` and the mixer's
+own dump fields, so the numbers belong to the port and not to the row:
 
-An operator observation, recorded verbatim as reported and not yet verified either way: `the sounds
-seem disconnected from the models speaking them, but I'm unsure`. It is a lip-sync/voice-timing
-question, so it cannot be answered from a silent Simulator run or from still frames. Treat it as an
-open F09 objective with a specific measurement: capture audio and video together on one timeline,
-find the model-animation event (the NIS `[nis]` lines and the character voice cues the port already
-logs) and measure the offset between the voice onset and the animation it belongs to, on both the
-desktop reference and the Simulator. Do not close it by ear on one machine.
+```text
+audio: start-up -- device 1 ticks 0 underruns 0 silent | the mixer has not run
+audio: running -- device 1 ticks 397 underruns 0 silent | studios 1 voices 0 sample 0 env 0x0000
+  pan 0x0000 bus 0 | frq 32000 master 1.00 limiter 1.000 | dumping 0 frames 0
+```
+
+Read field by field: the device opened (1), the transport is being ticked, nothing has underrun, the
+mixer runs at 32 kHz with master gain 1.00 and the limiter at 1.000, and one studio exists with no
+voices on it yet. That is a title screen with no music started, which is not the same fault as a
+silent path, and the two are distinguishable precisely because the line reports both halves -- the
+transport's own numbers and the mixer's.
+
+The `r2-audio` scenario is the R2 artifact, because it drives past the title screen: it reaches live
+play, a goal at frame 4745, the goal presentation, a replay at frame 5033 and back to live play, and
+the mixer starts real voices on the way. Its `[port] mix:` lines name the sample each voice was given
+and where that sample resolves -- `start voice 0 smp_id=686 type=0 addr=0x153f5c000 len=25979`, then
+450, 318, 680, 684, 678, 688 and 685 -- and the aggregate that follows reads `studios=1 voices=9
+withSample=9 peakEnv=0x7fff peakVol=0x34ee busPeak=4873`. Two more are the other kind of voice:
+`smp_id=65535 type=4 addr=0x41d140 len=168168 loopLen=168168`, launched in pairs, which is a
+streamed loop rather than a one-shot, and its address is inside the image rather than the heap. The
+first non-silent buffer lands at tick 582, and there are zero underruns across the whole run. So the
+mixer finds its samples, drives their envelopes and pans them, and the bus it hands the device is not
+silent. The `[port] mix:` line is written by the port, so this is the port's own account of its own
+mix, not the host's summary of it.
+
+One operator observation, recorded verbatim as reported: `the sounds seem disconnected from the
+models speaking them, but I'm unsure`. It is worth separating what that evidence settles from what it
+does not. It settles "the Simulator run is silent" -- that is no longer true, and the sample ids,
+envelope peaks and bus peaks are the port's own. It does not settle the perceptual question: a
+non-silent bus is not an onset offset, and the numbers say a sound was produced from a sample that
+exists, not that the right character produced it at the right frame. That measurement stays as
+defined -- audio and video on one timeline, the animation event located from the port's `[nis]` and
+voice-cue lines, the offset taken on desktop and Simulator -- and F09 stays open until it is taken.
+Nothing in this section may be read as a lip-sync verdict.
 
 ### 7. Attribution and asset audit
 
@@ -770,19 +804,19 @@ What "exactly as they are" has already decided, and what is still owed:
 |---|---|---|---|
 | 1 | Nine-file vendored set (`SunPadGameOverlay.{h,mm}`, `SunPadInputState.h`, `SunPadInputMixer.{h,mm}`, `SunPadSettings.{h,mm}`, `SunPadDiagnostics.{h,mm}`) | DONE at N4-A, hashes still match `mobile/interface/sunpad/README.md` | Re-verify the hash table at N7 on the final build |
 | 2 | GameCube control set: main stick, C-stick, D-pad, A/B/X/Y/Z, Start, L, R | DONE at N4-B (published through `SunPadInputMixer` -> `PADSetVirtualStatus`) | Prove game consumption per control at a state boundary where each mapping is observable, and stick + action **simultaneously** (F04) |
-| 3 | Three-dot button, 9-row menu, vendored order, vendored handlers | DONE at N4-C, both form factors, real touches | None for geometry; N5 rewrites three row titles/destinations (rows 6-8 below) and the untitled rows stay untouched |
+| 3 | Three-dot button, 9-row menu, vendored order, vendored handlers | DONE at N4-C, both form factors, real touches. The order is asserted row-by-row by first sighting in `S.uitest.menu-order`, and every submenu now publishes exactly its own labelled leaves in `S.r1.menu-leaves` -- an exact comparison, so an unlabelled or placeholder row fails rather than vanishing | None. The three row titles/destinations N5 owed (items 9, 11, 12) are rewritten by vendored title in `-buildMenu`, and every row that was not named is passed through untouched |
 | 4 | Menu title | DONE at N4-C (`BallpadGameOverlay -buildMenu` re-wraps the vendored menu's children under the bundle's display name) | None |
-| 5 | Touch-control settings surface: render resolution, opacity, control size, hide-when-controller, modern C-stick, move/resize, reset | Surface DONE and exercised by real touches | Prove each setting has a **real effect on this runtime** rather than only persisting: render scale and aspect must reach Ballpad's renderer, the FPS row must drive Ballpad's frame stats, and the six touch settings must be reflected by the overlay the port is reading |
+| 5 | Touch-control settings surface: render resolution, opacity, control size, hide-when-controller, modern C-stick, move/resize, reset | Surface DONE and exercised by real touches, and the three leaves that reach the runtime are now proven to: the resolution and aspect leaf taps are read back from the port as `WxH @scale aspect A window\|pinned logical N blend B` in `S.r1.display-readback`, and the FPS row turns the port's own counters on and off in `S.r1.fps-row`. The submenu spellings are pinned leaf-by-leaf in `S.r1.menu-leaves` | The six touch settings still owe a reading taken **from the overlay the port is consuming**, not from the store: opacity, control size, hide-when-controller, modern C-stick, the move/resize pair and reset each need the value the overlay actually publishes for the port, the way the display settings now have one |
 | 6 | `gameOverlayRequestsGameDataChange` / `…FolderImport` / `…Removal` | DONE: all three route to Ballpad's own store (`BallpadGameData.mm`) since commit `ace661b`; the fourth delegate action is row 7 | None outstanding for routing. The pre-`main()` `DVDInit()` ordering is solved on the port side (`c28a6d7`), and F01/F02 exercise all three paths on both form factors (fresh import, re-import/refusal, removal's consequence) |
-| 7 | `gameOverlayRequestsControllerMapping` | Still log-only, and the only one of the four delegate actions that is (see the comment in `BallpadHostUI.mm`) | Decide at N5 whether Ballpad adopts SunPad's narrow A/B/X/Y/Z remap (`SunPadControllerMapping` was deliberately not vendored at N4) or answers with Aurora's own mapping surface. There is no remap store to route into until that decision is made, so the log line names the open decision rather than hiding a missing route |
+| 7 | `gameOverlayRequestsControllerMapping` | DONE as a decision, not as a stub: the row opens Ballpad's own read-only panel (`BallpadControllerMapping.{h,mm}`, proven by `S.f13.mapping-panel`), which reports the port's live button table including a re-read that has to survive a refresh | Nothing outstanding. The decision was made deliberately against evidence rather than by default: `~/GitHub/kartpad` at `a3747a4` has **no** iOS remapping UI at all -- `apple/ios/KartPadRuntimeOverlayHost.mm` answers the same row with an alert naming the connected-controller count, and only its Android port has real remapping (`KartPadControllerMapping.kt`). A read-only panel is therefore at parity with the interface this one is measured against, and it is honest about a map the native port owns |
 | 8 | `gameOverlayDiagnosticContext` / `gameOverlayPerformanceProfile` | DONE at N4-B (both answer from this build) | Keep truthful as the runtime gains features |
-| 9 | Row "Import from SunPad Folder" | Untouched, N5 | Rename against the same handler |
-| 10 | Row "Report a Problem…" and its alert copy; GitHub issue destination | Untouched, N5 | Correctness problem, not cosmetics: as-is a Ballpad report lands on SunPad. Ballpad has no issue template and messaging maintainers is outside this assignment, so N5 writes the local diagnostic report and chooses the destination deliberately |
-| 11 | Row "Experimental 60 FPS (Restart Required)" | Untouched, N5 | Make it the port's own `PortSetFrameLimit` instead of a Sunshine boot hack |
-| 12 | Row "Experimental Performance Mode (Restart Required)" | Untouched, N5 | **Must not ship as-is**: it toggles a 90% emulated CPU clock a native port does not have, which is exactly the nonfunctional placeholder doc 33 forbids |
-| 13 | `SunPadDiagnostics` log directory (`<Library>/.../SunPad/runtime.log`, confirmed by source) | Untouched, N5 | Rename to Ballpad's own directory |
+| 9 | Row "Import from SunPad Folder" | DONE: ships as **"Import from BallPad Folder"** against the same vendored handler, and the submenu spelling is pinned in `S.r1.menu-leaves` | None. The row names the app it is in, which is the whole of this item |
+| 10 | Row "Report a Problem…" and its alert copy; GitHub issue destination | DONE: the vendored row and its three questions are kept, and `-reportProblem` is overridden so the report is **written on this device** and offered two local endings (share sheet, or Files). The prompt says nothing is uploaded, and the report carries no game image, extracted files, saves, signing material or controller inputs | None. The destination was the correctness problem rather than a cosmetic one: as vendored, a Ballpad report would have opened the interface project's issue tracker, and messaging maintainers is outside this assignment, so the destination is now the player's own choice of where to send the file |
+| 11 | Row "Experimental 60 FPS (Restart Required)" | DONE: ships as **"Experimental 60 FPS (Ballpad's frame rate limit)"** and drives the port's own `PortSetFrameLimit`. `S.r1.frame-limit-row` reads two opposite answers off `PortFrameLimitInfo` ("uncapped" and "capped to N Hz") from the same row, and a relaunch proves the choice is stored under Ballpad's own key and re-applied by `PortHostUIStart` | None. The title no longer promises a restart it does not need, and no emulated clock is involved |
+| 12 | Row "Experimental Performance Mode (Restart Required)" | DONE: **the row does not ship at all**, which is what this item asked for. Its absence is asserted from two sides -- `S.uitest.menu-order` on the first page, and `S.r1.menu-leaves` against each of the three submenus -- so a re-added placeholder would fail | None. The slot carries the audio row in item 12's place rather than an inert switch, and `BallpadGameOverlay -buildMenu` substitutes it by the vendored title, so the vendored file is untouched |
+| 13 | `SunPadDiagnostics` log directory (`<Library>/.../SunPad/runtime.log`, confirmed by source) | DONE: the log is written to `<container>/Documents/BallpadLogs/runtime.log` by `mobile/interface/BallpadLog.{h,mm}` -- in Documents rather than Library so a player can reach it through Files, which is also what the audio-recording row writes into | None. The read-back rows depend on this path, so `S.r1.settings-readback` fails if it moves |
 | 14 | `SunPadSettings` persistence keys (`SunPadRenderScale`, `SunPadControlSizeScales`, … in `standardUserDefaults`) | Untouched, N4 | They already live in Ballpad's own app domain, so there is no cross-app leak; renaming is a migration question for N5 rather than an N4 defect |
-| 15 | Offline About/Credits surface naming upstream contributors and bundled notices (F13) | Not built | N5, with doc 35's text |
+| 15 | Offline About/Credits surface naming upstream contributors and bundled notices (F13) | DONE and exercised: `mobile/interface/BallpadCredits.{h,mm}` carries the surface, `S.f13.about-inventory` reads the contributor names and notice titles back off it, and `S.f13.notice-offline` opens a full notice with no network | None. Doc 35's text is the source, and the notices are bundled rather than fetched |
 | 16 | Physical-controller visibility merge | Bridged at N4-B | F12's merge/connect/disconnect boundary test, and the hardware row left `NOT_RUN` |
 
 Two of these are the reason the list is written down rather than tracked mentally: item 12 is a row
@@ -795,11 +829,28 @@ Reported: "the sounds seem disconnected from the models speaking them, but I'm u
 an open question with a defined measurement rather than as a confirmed defect; see section 6. It
 cannot be settled by ear, from a silent Simulator run, or from still frames.
 
-**Restated 2026-09-15**, together with R1. Still unverified, and section 6 records why the first
-step is getting *any* audio out of a Simulator run before the offset can be measured at all: no run
-so far contains an audio-device open, a MusyX init or an underrun line. The measurement stays as
-defined -- audio and video on one timeline, the animation event located from the port's own
-`[nis]` and voice-cue lines, the onset offset measured on desktop and Simulator.
+**Restated 2026-09-15**, together with R1. The first half of it is now measured and the second half
+is not, and the two are worth keeping apart.
+
+Measured: the Simulator is no longer a silent run, so "is there audio at all" is answered rather
+than assumed. The app carries an audio read-back written every two seconds from `PortAudioStats` and
+the mixer's own dump fields, and the `r2-audio` scenario reads it across a real match -- device open,
+32 kHz, master 1.00, limiter 1.000, zero underruns, voices started with named sample ids that resolve
+into memory, envelope and pan peaks driving them, and a bus peak that is not zero. The full numbers
+and the line shape are in section 6.
+
+Not measured: the offset the operator is asking about. "The sounds are disconnected from the models
+speaking them" is a claim about when a voice onset lands relative to the animation it belongs to, and
+a non-silent bus cannot confirm or deny it. The measurement stays exactly as defined -- audio and
+video on one timeline, the animation event located from the port's own `[nis]` and voice-cue lines,
+the onset offset taken on both the desktop reference and the Simulator -- and F09 stays open until it
+is. Do not close it by ear on one machine, and do not read the mixer numbers as a sync verdict.
+
+The row that carries this question in the interface is "Record Audio (Experimental)", which replaced
+the retired performance switch in item 12's slot: it writes exactly the bytes the audio device is
+handed to a WAV next to Ballpad's own log, so "the game is making a sound" and "the sound is the one
+the models on screen are making" stop being the same question for anyone who wants to check. It is
+driven by a real tap in `S.r2.audio-row`.
 
 ### R1 — N4 plan of record (recorded 2026-09-14, before implementation)
 
@@ -1706,7 +1757,7 @@ Next concrete action: stop spending runs on the capture path and take up N5's fi
   alongside the R1 to-do list's remaining rows and R2's audio measurement path.
 ```
 
-+```text
+```text
 Phase / gate: N4 -> N5 (the port's disc seam, and a crash on the way out of a failed start)
 Date / build identity / patch digest: 2026-09-15; engine fork c28a6d7, tree 15d79868 clean; patch
   series bc19ccd92c75 (9 patches); macos-release/strikers sha256 5f9a1a1b93f2; simulator-release
@@ -1834,6 +1885,159 @@ Next concrete action: R1 rows 5, 7 and 9-15. Row 5 first: prove each touch setti
   resolves once behind `STRIKERS_ASPECT` and caches, and that changes the patch digest. Then row 12
   (remove the emulated-CPU row, which doc 33 forbids shipping), rows 9-11 and 13-15, F04's
   per-control touch drive, F06's rotated relayout, and R2's audio measurement.
+```
+
+```text
+Phase / gate: N4-D interface half -> R1 row 5 (the L/R shoulder half) and the read-back hardening
+Date / build identity / patch digest: 2026-09-15; engine fork 707c53c, tree
+  151281dbbde60a20ab9500f409cf085fdec84b15 clean; series 4b544d9816b9; disc da80883ba456; app
+  binary b36b8b14ae74c900f5c06b86fec3f39ff144ba660d3245136ec3dbbda981c24a (simulator-release,
+  rebuilt this session; the previous app was c90d17c4b654)
+Source invariant and observed failure: pressing one shoulder must draw that shoulder's own press
+  and nothing on the other. Both r3 and r4 logged, inside the same frame, `border L 3.0 R 3.0 same`
+  with the sentence 'both shoulders are drawn at the full-press width'. The two shoulders were
+  being reported at one width at the same instant, which is the exact fault the row exists to
+  catch.
+Hypothesis: the arithmetic was never wrong -- the reading was. Vendored truth
+  (mobile/interface/sunpad/SunPadGameOverlay.mm, SunPadTriggerButton -updateFromTouch:) is
+  `self.layer.borderWidth = _fullPress ? 3.0 : 2.0`, and `_fullPress` is decided by the touch's
+  position across the control's width (SunPadTriggerDetentEnter = 0.75 to enter, 0.70 to
+  exit). So 3.0 means 'this trigger is sitting at its detent', not 'this trigger is held'. The
+  fault was that the two call sites of BallpadLogShoulderGeometry -- the direct one in
+  -layoutSubviews and the deferred dispatch_async twin in -ballpadScheduleShoulderRepair -- emit a
+  pair, 9-13 ms apart, and one member of the pair copied the other's live border onto its own
+  line. A layout-pass line can also never see a press at all: a press is a paint change and does
+  not re-lay the overlay out, so the geometry log was structurally incapable of showing which
+  shoulder was pressed.
+Change: (1) BallpadLogShoulderGeometry's repair path now captures the at-rest pair and skips while
+  s_rightShoulderHeld, so a live press is never read onto the other shoulder's line. (2) New
+  per-frame sampler BallpadLogShoulderOutlineIfChanged(UIView *) in
+  mobile/interface/BallpadHostUI.mm, called from PortHostUIFrame immediately after
+  BallpadLogOverlayTouchIfSettled; it prints, only when a width changes, `shoulder outline: L %.1f
+  R %.1f -- <sentence>; border colour %@`. The pair of numbers is the point: it separates
+  L-pressed-alone from R-pressed-alone from the both-thick fault, which a single count cannot.
+  (3) New UITest row S.r1.shoulder-press = testShoulderPressDrawsOnOneShoulderOnly: asserts both
+  shoulders are drawn the same width and are hittable at rest, presses each in turn, asserts
+  neither frame moves (a press is paint), and attaches four screenshots. (4) The runner now
+  summarises the family and fails on three clauses -- at least one line, at least one *differing*
+  pair, and *zero* lines where both shoulders carry the press width.
+  The press had to be corrected before it measured anything: at the control's centre it never
+  reaches the 0.75 detent and renders no indicator at all, so the row now presses at 0.95 of the
+  control's width for 0.5 s. That is vendored behaviour, and it is recorded in the row's own doc
+  comment.
+Command / exit status: scripts/native/build.sh --platform simulator --no-bootstrap -> 0;
+  scripts/native/run-uitests.sh --run-id phone-r5-shoulder --device 8619020B --form-factor phone
+  -> 0. Exactly one Simulator booted throughout: the iPhone 17e was shut down by UDID before the
+  iPad was booted, and never `shutdown all`.
+Runtime scene / duration / device-or-Simulator: real app, real touches, iPhone 17e Simulator
+  8619020B-306A-4CA2-B0B3-16C6A3F22472, 21 rows in 21/21 PASS with problems: []. The new row ran
+  in 12.7 s.
+Evidence bundle: build/proofs/native-strikers/uitest-phone-phone-r5-shoulder/ -- result.json (21
+  rows), uitest.log, app-runtime.log, app-readbacks.txt, store-inventory.txt, preflight.log and the
+  xcresult with the four shoulder screenshots.
+Result: PASS. The settings-readback row carried the outline summary `32 3 29 0 0` (total /
+  differing / same / both-press / unreadable) and the run's log held both press directions, so no
+  line in that run drew both shoulders at the press width. Phone 20/20 -> 21/21.
+  CORRECTED (see the r6 entry below, which is where this reading was taken apart): *which*
+  shoulder each of those pairs belonged to was wrong, and the summary shape could not have shown
+  it. L is a plain SunPadGameButton and the vendored pass presses a plain button by scaling it to
+  0.92 -- its outline never leaves the at-rest 2.0. The 3.0 in `L 3.0 R 2.0` was the vendored
+  layout editor's -updateControlAppearance, which paints 3.0 on every control while the editor is
+  open, and not "L reaching the detent" as this entry first read it. 'Both shoulders thick' was
+  therefore never a press at all, and the old summary's `differing` count was partly counting the
+  editor. This entry is kept rather than rewritten: the correction is the evidence.
+What this result does and does not prove: proves that a press on each shoulder reaches the pad
+  and is drawn, and that a press is paint rather than layout, because both frames are asserted
+  unchanged through both presses. Proves the two pills are drawn identically: L and R were
+  confirmed equal by eye as well, from a live `xcrun simctl io screenshot` while the overlay was
+  up, and the two pills share their corner radius, fill, border and letter weight. Does not prove:
+  that each line named its own shoulder's press -- the r6 sampler below is what makes that
+  checkable rather than inferred -- that the game *consumed* the shoulder input (F04's per-control
+  consumption row is still unrun: a drawn press is not a read input), that the rotated relayout
+  holds (F06), or anything about the audio onset offset (R2/F09).
+Two evidence-hygiene traps found here, both recorded so they are not re-learned:
+  (a) XCTest screenshot attachments from this app carry TIFF Orientation=8 and cover only a
+  ~990x990 px region of the 2532x1170 buffer, so a reader must `-auto-orient` them and must not
+  read the black remainder as an app defect -- the live simctl screenshot of the same moment
+  renders full-screen with every control present. The attachments are corroboration; the live
+  capture is the visual evidence.
+  (b) `apply_patch` builds hunks from the file's literal bytes, so a summary awk whose printf needs
+  a single newline must be patched from the file's own bytes rather than re-typed, and two identical
+  `grep ... || printf` hunks cannot be disambiguated inside one patch.
+Next concrete action: taken -- the same suite on both form factors is the r6 entry below, which is
+  also where this entry's L/R reading is corrected and the rebuilt sampler's own output is read.
+  After it: F04's per-control game-consumption row, which is what closes the 'consumed, not merely
+ drawn' half of the interface gate.
+```
+
+```text
+Phase / gate: R1 row 5, the L/R shoulder half -- re-measured, and the r5 reading falsified
+Date / build identity / patch digest: 2026-09-15; engine fork 707c53c, tree
+  151281dbbde60a20ab9500f409cf085fdec84b15 clean; series 4b544d9816b9; disc da80883ba456; app
+  binary 4d277877248063b5a59f3540b2b603751462e83b7237a49a26e94604ed0da2c3 (simulator-release,
+  rebuilt this session; the r5 app was b36b8b14ae74, now stale)
+Source invariant and observed failure: a press on one shoulder draws that shoulder's own press and
+  changes nothing on the other. The r5 entry read `L 3.0 R 2.0` as 'the left shoulder reached the
+  detent' and `L 3.0 R 3.0 same` as 'both shoulders drawn at the press width', and the summary
+  shape it had could not tell the two apart.
+Hypothesis: neither number was a press. L is a plain SunPadGameButton, and the vendored pass
+  presses a plain button by scaling it to 0.92, so its outline never leaves the at-rest 2.0; only
+  the trigger draws a wider outline, and only past SunPadTriggerDetentEnter (0.75). The 3.0 seen on
+  L was the vendored layout editor's own -updateControlAppearance, which paints 3.0 on every
+  control while the editor is open. The old sampler could not separate the two for two reasons: it
+  read widths off a layout pass, and a press is a paint change that does not re-lay the overlay
+  out; and its two call sites (the direct one in -layoutSubviews and the deferred dispatch_async
+  twin) emit a pair 9-13 ms apart, one member of which can copy the other's live border.
+Change: (1) the per-frame sampler BallpadLogShoulderOutlineIfChanged(UIView *) in
+  mobile/interface/BallpadHostUI.mm (about lines 699-762) now prints, only when a width changes,
+  `shoulder outline: editing %d | L held %d border %.1f | R held %d border %.1f -- <sentence>`, so
+  a press and the editor's own outline are separate fields on one line instead of one width to be
+  guessed at. (2) The runner's outline family in scripts/native/run-uitests.sh now emits seven
+  fields and fails on five clauses, two of them new: L must never be drawn at the trigger's press
+  width outside the editor (field 5 == 0), and R must never be drawn at the press width while R is
+  not held (field 6 == 0). The nine vendored files are untouched.
+Command / exit status: build.sh --platform simulator --no-bootstrap -> 0; run-uitests.sh
+  --run-id phone-r6-outline --device 8619020B --form-factor phone -> 0, 21/21 rows PASS,
+  problems: []; run-uitests.sh --run-id pad-r6-outline --device B3799189 --form-factor pad -> 0,
+  21/21 rows PASS, problems: []. Exactly one Simulator was booted at a time: the iPhone was shut
+  down by UDID before the iPad was acquired through the same run-uitests.sh lock, and `shutdown
+  all` was never used.
+Runtime scene / duration / device-or-Simulator: real app, real touches, one build on both.
+  Phone: menu-order 28.8, settings-panel 32.5, render-scale 20.9, layout-move-reset 38.9,
+  lifecycle 16.5, fps-row 14.9, display-readback 41.3, touch-settings-drawn 38.0, shoulder-press
+  12.8, frame-limit 30.3, menu-leaves 68.1, audio-row 30.3, about 42.2, notice 56.0, mapping 24.7,
+  F01 12.7, F02 200.5 seconds. iPad: F01 89.3, F02 88.2, shoulder-press 13.0, and every other row
+  between 10.1 and 68.2.
+Evidence bundle: build/proofs/native-strikers/uitest-phone-phone-r6-outline/ and
+  build/proofs/native-strikers/uitest-pad-pad-r6-outline/ -- result.json (21 rows, problems []),
+  rows.tsv, uitest.log, app-runtime.log, app-readbacks.txt, store-inventory.txt, preflight.log, and
+  the xcresult.
+Result: PASS. Both runs report the same seven-field summary, `34 32 1 1 0 0 0`, in the order the
+  row note prints (total / presses / l-press / r-detent / l-thick / r-thick-editor / unreadable).
+  The second field is the runner's label for the count of lines written with the editor closed; it
+  is a line count and not a press count, and the press claims are the third and fourth fields. Both
+  runs write 34 outline lines, 2 of them with `editing 1` and 32 with `editing 0`. The app's own
+  lines carry each press direction with the held flag on the shoulder that was touched:
+  `editing 0 | L held 1 border 2.0 | R held 0 border 2.0` for a left press, and `editing 0 | L held
+  0 border 2.0 | R held 1 border 3.0` for the right trigger past its detent. Every 3.0-on-L line in
+  both runs is one of the two that name `editing 1`, so the r5 entry's 'both shoulders at the press
+  width' was the editor and never a press. The iPad half also cleared a failure: its F02 row failed
+  on the previous iPad run (uitest-pad-pad-r5-shoulder, 'the refused image uitest-wronggame.iso is
+  reported to the player', 244.6 s) and passed this one in 88.2 s.
+What this result does and does not prove: proves the two shoulders are drawn alike at rest and are
+  hittable, that each one's press is drawn on itself alone, and that neither press disturbs the
+  other's outline. Does not prove: that the engine consumed either shoulder, because F04's
+  per-control consumption row is still unrun and a drawn press is not a read input; that the two
+  are drawn alike at the detent, because a plain button has no detent to draw -- that is a
+  difference of behaviour rather than of appearance, and it is the honest answer to the operator's
+  'R needs to look like the left one'; that the rotated relayout holds (F06); or anything about the
+  audio onset offset (R2/F09). The iPad F02 pass is a non-reproduction on a build that did not touch
+  the picker path, so the picker-already-open hypothesis stays unconfirmed and its hardening is
+  still owed.
+Next concrete action: F04 -- drive each control through the overlay and read the *engine's*
+  consumption of it at a state boundary where that mapping is observable, with main stick and an
+  action button in the same frame, which is the only evidence that the game reads a control rather
+  than the overlay drawing it. Then F06's rotated relayout, then R2's audio onset offset.
 ```
 
 ```text
