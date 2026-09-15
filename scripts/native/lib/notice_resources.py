@@ -20,7 +20,10 @@ import sys
 
 LIST_NAME = 'resources.txt'
 MANIFEST_NAME = 'manifest.json'
-HEADER = ('# ballpad-notice-resources/1', 'sha256\tbytes\tpath')
+# Both header lines are comments. The column row is deliberate: readers that split on tabs get a
+# self-describing file, and readers that key on the leading '#' -- this app's About screen among
+# them -- do not mistake the column names for a notice file named "path".
+HEADER = ('# ballpad-notice-resources/1', '# sha256\tbytes\tpath')
 
 
 def sha256_of(path):
@@ -130,4 +133,3 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
-
