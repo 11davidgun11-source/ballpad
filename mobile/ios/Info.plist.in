@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Ballpad's iOS application Info.plist.
+
+  mobile/CMakeLists.txt configures this file with @ONLY and hands the result to
+  MACOSX_BUNDLE_INFO_PLIST, so every @VALUE@ below is replaced at configure time and no
+  dollar-brace placeholder survives for CMake's own bundle step to expand.
+
+  The orientation and full-screen keys describe what the game already is: Strikers renders a
+  4:3 identity widened to the display aspect, so it is landscape-only and has no layout for a
+  split-view width. The document keys are what let a player put their own disc image in the
+  app through the Files app instead of it only being readable from inside the bundle.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>@BALLPAD_EXECUTABLE@</string>
+	<key>CFBundleIdentifier</key>
+	<string>@BALLPAD_BUNDLE_ID@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>@BALLPAD_DISPLAY_NAME@</string>
+	<key>CFBundleDisplayName</key>
+	<string>@BALLPAD_DISPLAY_NAME@</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@BALLPAD_VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BALLPAD_BUILD_VERSION@</string>
+	<key>MinimumOSVersion</key>
+	<string>@BALLPAD_MIN_OS@</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+		<string>metal</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<key>UIStatusBarHidden</key>
+	<true/>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<!-- Physical controllers and a hardware keyboard both arrive as UIKit events. -->
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<!-- The player's own copy of the disc image goes in through Files, not through iTunes. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>@BALLPAD_COPYRIGHT@</string>
+</dict>
+</plist>
