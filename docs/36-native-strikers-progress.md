@@ -2,6 +2,16 @@
 
 ## Current state
 
+Doc 34's F04 rows now PASS on both form factors, and the reading they rest on is a real one: the
+engine's own pad holds this port's clamp of the *previous* poll's offer plus the port's own
+left-analog-to-d-pad bits when the map reaches them, and the same-frame offer cannot account for the
+lines. On the current build (`app 0971b0865c1b`, engine series `a378c305bf60` unmoved) the phone run
+`uitest-phone-f04-2` and the iPad run `pad-f04-2` are each 23/23 rows PASS with `problems: []`; both
+report 93 consumption lines, all 93 accounted for by the previous offer against 86 and 85 by the
+same-frame one, with all twelve controls covered, none missing and nothing unexplained. The summary
+program is shared at `scripts/native/consume-summary.awk` rather than inline in the runner. The F04
+gate is closed; F06 and R2/F09 are not, and nothing here is physical-device evidence.
+
 N4's Files-import half is closed, on both form factors, and with it doc 34's F01 and F02. Ballpad's
 own store and importer, `mobile/interface/BallpadGameData.mm`, implements the port's two host hooks
 over `<container>/Documents/BallpadGameData/` (a `current` file naming the active staged copy under
@@ -2038,6 +2048,106 @@ Next concrete action: F04 -- drive each control through the overlay and read the
   consumption of it at a state boundary where that mapping is observable, with main stick and an
   action button in the same frame, which is the only evidence that the game reads a control rather
   than the overlay drawing it. Then F06's rotated relayout, then R2's audio onset offset.
+```
+
+```text
+```text
+Phase / gate: R1 row 5's engine half -> doc 34 F04 (every control reaches the engine's own pad)
+Date / build identity / patch digest: 2026-09-15; upstream pin 22649cb12c11 (v1.1.1); engine fork
+  7a0874037759, tree 530f179e9d7a clean; patch series a378c305bf60 (12 patches, unmoved -- this
+  session changed only the host adapter, the runner and the shared summary awk, none of which the
+  series carries); disc da80883ba456; app binary 0971b0865c1b (simulator-release), the same hash on
+  both form factors and the same hash the installer reports as the installed binary
+Source invariant and observed failure: doc 34's F04 wants the game's response to a control, not a
+  drawn press: PadStatus::s_Current[0], the sample cPlatPad::IsPressed and the game's own tasks
+  read, must hold the control the host offered. The first version of this row read the engine's pad
+  beside the offer the host made for the *same* frame, and every ramp in it looked like a fault -- a
+  main stick of 40 beside an offer of 75, a C-stick of 44 beside an offer of 84, a trigger of 150
+  beside an offer of 255 -- and carried no way to tell a real clamp from a broken adapter, so it
+  decided nothing.
+Hypothesis: (1) none of those is a fault and none is even a delay: each is the game's own
+  PADClampCircle (extern/aurora/lib/dolphin/pad/pad.cpp) of the offer made one poll earlier, whose
+  ClampRegion holds triggers to 30..180, the main stick to a 15 deadzone and a 56 radius and the
+  C-stick to a 15 deadzone and a 44 radius, so a trigger of 255 becomes 150 and a stick of 127
+  becomes 56. Pairing the sample with the *previous* poll's offer, rather than the same frame's, is
+  therefore the measurement. (2) The port adds one thing to the sample that no offer ever carried:
+  platpad.cpp's left-analog-to-d-pad map, the m_isLeftAnalogToDPadMapEnabled branch of the VBlank
+  swap, ORs a compass bit into the buttons when the clamped main stick reaches 0.6 of its 56 radius,
+  which is 33.6; the bucket is a 45-degree step taken from a 16-bit tick of that angle,
+  (u16)(int)(nlATan2f(y, x) * 10430.378f), scaled back by 0.005493164. It wraps rather than rounds:
+  an angle a hair below the positive X axis is negative before the cast, comes back just under 360
+  degrees and lands in bucket 315, DOWN|RIGHT, and the bucket at exactly 180 degrees is LEFT because
+  the map has zeroed a Y that never reached 0.6.
+Change: (1) mobile/interface/BallpadHostUI.mm prints both offers on one `consume:` line, `now`
+  before `prev`, from two statics written at the end of the pad poll (s_offerPrev = s_offerThis;
+  s_offerThis = *out), and its comment now states the clamp arithmetic and the d-pad map and its
+  wrap rather than the port's frame order alone. (2) The summary is a shared program,
+  scripts/native/consume-summary.awk, because it restates the port's clamp *and* its d-pad map in
+  full -- one conversion function, one integer sqrt and one sector map -- and the runner calls it
+  instead of carrying an inline copy. (3) The runner's F04 clauses are re-cut around the pairing:
+  the previous offer plus the pad's own d-pad bits must account for every line with no engine error,
+  the same-frame offer must account for strictly fewer, and agreement and coverage are kept as the
+  secondary claim. The summary moved from 14 fields to 19, with the three analog fields now counted
+  as bad lines per axis rather than good ones, so every clause index, every legend and the row text
+  were renumbered in lockstep.
+Command / exit status: build.sh --platform simulator --no-bootstrap -> 0; run-uitests.sh
+  --run-id uitest-phone-f04-2 --device 8619020B --form-factor phone -> 0, 23/23 rows PASS,
+  problems: []; run-uitests.sh --run-id pad-f04-2 --device B3799189 --form-factor pad -> 0, 23/23
+  rows PASS, problems: []. Exactly one Simulator was booted at a time: the iPhone was shut down by
+  UDID before the iPad was taken through the same run-uitests.sh lock, and `shutdown all` was never
+  used.
+Runtime scene / duration / device-or-Simulator: real app, real touches, one build on both. Phone:
+  the consumption sweep 46.6 s, menu-leaves 67.9, the two import rows 12.2 and 201.5, every other
+  row between 12.9 and 56.7. iPad: the consumption sweep 47.1, menu-leaves 68.2, the two import
+  rows 88.1 and 88.7, every other row between 10.1 and 39.7.
+Evidence bundle: build/proofs/native-strikers/uitest-phone-uitest-phone-f04-2/ and
+  build/proofs/native-strikers/uitest-pad-pad-f04-2/ -- result.json (23 rows, problems []),
+  rows.tsv, uitest.log, app-runtime.log, app-readbacks.txt, store-inventory.txt, preflight.log and
+  the xcresult.
+Result: PASS. Both runs report the same shape, `93 93 0 91 2 86 0 0 16 12 - 5 4 0 8 0 5 0 0` on
+  the phone and `93 93 0 91 2 85 0 0 16 12 - 5 3 0 9 0 5 0 0` on the iPad, in the row's own order
+  (total / ok / errored / prevall / dpad / nowall / bmissing / bextra / agree / coverage / missing /
+  scenes / stick-lines / stick-bad / sub-lines / sub-bad / trig-lines / trig-bad / unreadable).
+  Reading it: 93 consumption lines, every one with no engine pad error; 91 of them hold exactly the
+  previous poll's clamp and 2 more hold that clamp plus the port's own d-pad bits, so 93 -- all of
+  them -- are accounted for by the previous offer, while the same-frame offer accounts for only 86
+  on the phone and 85 on the iPad. That contrast is the measurement the row now rests on, and it is
+  why the row no longer depends on the port's frame order being known: swap the two offers and the
+  pairing flips, but only the previous one can account for every line and still leave the other
+  short. Across those lines the pad held all twelve controls with none missing, over 5 front-end
+  scenes, on 4 of 4 (phone) and 3 of 3 (iPad) main-stick lines, 8 of 8 and 9 of 9 C-stick lines and
+  5 of 5 trigger lines, with 0 lines carrying a bit that neither offer nor map explains and 0
+  unreadable. The two dpad lines matter on their own: they are the first evidence that the map
+  branch is live rather than dead code.
+Two defects were found and fixed in the shared awk while building this, recorded so they are not
+  re-learned. (a) Portability: this host's awk is BWK awk 20200816, whose parser accepts a trailing
+  && or || line continuation but rejects a leading one, and which reserves `sub` -- so a function
+  parameter of that name was a syntax error. Two conditions were rewritten from leading to trailing
+  form and the parameter renamed. (b) A real logic bug: the split between 'explained by the previous
+  offer' and 'explained by the map' tested the wrong quantity. A line whose only extra bit is the
+  pad's own d-pad bit has no unexplained bit at all, so it satisfied the previous-offer test and the
+  map branch was unreachable -- the first version of the summary could never have shown it. The test
+  now asks whether the mask carries a bit the previous offer did not offer, and the two counts are
+  91 and 2 rather than 93 and 0.
+Evidence hygiene, corrected here rather than left standing: an earlier attempt to read the first
+  run's log paired each `consume:` line with the previous *logged* line and reported prevall 87.
+  That number is not a measurement. `consume:` lines are change-detected -- written only when a pad
+  field or the scene moves -- so consecutive lines are not consecutive frames, and the earlier
+  figure also came from a sed remap that set prev equal to now. What the first run does prove by
+  hand survives: same-frame pairing was wrong, in exactly the shape the clamp arithmetic predicts.
+  The genuine previous-versus-same-frame contrast could only come from a fresh run, which is the run
+  above.
+What this result does and does not prove: proves that every one of the twelve SunPad controls
+  reached the engine's own pad and was held there -- a reading no screenshot could give -- and that
+  the engine's sample is this port's clamp of the previous poll's offer plus its own d-pad bits,
+  with the same-frame offer unable to account for the lines. Does not prove: that a live *match*
+  consumed them, since F04's sweep is the front-end and menu surfaces; that the rotated relayout
+  holds (F06); anything about the audio onset offset (R2/F09); or any physical-device behaviour.
+Next concrete action: doc 34's F04 rows are PASS on both form factors, so the F04 gate is closed.
+  Next are F06 (rotated relayout) and R2/F09 (the audio onset offset the operator raised -- 'the
+  sounds seem disconnected from the models speaking them' -- which needs audio and video on one
+  timeline). Then the SunPad three-dot-menu parity pass, whose remaining audit is the layout-editor
+  row and the leave rows.
 ```
 
 ```text

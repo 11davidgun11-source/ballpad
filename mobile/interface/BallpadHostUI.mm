@@ -19,6 +19,9 @@
 
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_video.h>
+// getenv, for the STRIKERS_LOG_ poll gates further down. Included rather than reached for through
+// UIKit: the port's own files spell it this way, and this one reads the same variables they do.
+#include <stdlib.h>
 
 // The port's plain-C headers, included rather than restated: aspect, the frame limiter, and the
 // frame-time benchmark the FPS row reads. include/port/input.h is here for the same reason -- it is
@@ -29,6 +32,7 @@
 #include "port/framerate.h"
 #include "port/hostui.h"
 #include "port/input.h"
+#include "port/overlay.h"
 
 // The render-scale pin is the one exception, and the exception is the point. include/port/launch.h
 // declares PortSetRenderScale and PortRenderScale inside a PORT_USE_AURORA guard and reaches for
@@ -680,20 +684,35 @@ static void BallpadLogShoulderGeometry(UIView *overlay, NSString *what)
         @((long long)(right.layer.borderWidth * 100.0)),
         @(sameBorder ? 1 : 0),
         @((long long)artwork),
+        // The layout editor is the one state in which the pair is deliberately not kept in step,
+        // so it belongs in the fingerprint as well: with it out, opening or closing the editor
+        // would change the reading below without changing the key, and the line that says which
+        // state the numbers came from would never be written.
+        @(BallpadOverlayIsEditingLayout(overlay) ? 1 : 0),
     ];
     static NSArray<NSNumber *> *s_seen = nil;
     if (s_seen != nil && [s_seen isEqualToArray:fingerprint])
         return;
     s_seen = fingerprint;
 
-    BallpadLog(@"shoulder: %@ -- L frame %@ bounds %@ R frame %@ bounds %@; corner L %.1f R %.1f, "
-               @"border L %.1f R %.1f %@, R visible shape layers %lu, R class %@, R value %@",
-               what,
+    // The two numbers that say "one drawn thing, drawn twice" without a picture: how far each
+    // shoulder sits from its own edge of the surface, and the row each one is on. They are derived
+    // from the live frames rather than reported by the repair, so a repair that stopped mirroring
+    // the pair would print the difference here instead of covering it up.
+    const CGFloat leftInset = CGRectGetMinX(left.frame);
+    const CGFloat rightInset = CGRectGetWidth(overlay.bounds) - CGRectGetMaxX(right.frame);
+    const CGFloat rowDelta = CGRectGetMinY(right.frame) - CGRectGetMinY(left.frame);
+
+    BallpadLog(@"shoulder: %@ -- editing %d | L frame %@ bounds %@ R frame %@ bounds %@; "
+               @"corner L %.1f R %.1f, border L %.1f R %.1f %@, mirror inset L %.1f R %.1f "
+               @"row delta %.1f, R visible shape layers %lu, R class %@, R value %@",
+               what, BallpadOverlayIsEditingLayout(overlay) ? 1 : 0,
                NSStringFromCGRect(left.frame), NSStringFromCGSize(left.bounds.size),
                NSStringFromCGRect(right.frame), NSStringFromCGSize(right.bounds.size),
                (double)left.layer.cornerRadius, (double)right.layer.cornerRadius,
                (double)left.layer.borderWidth, (double)right.layer.borderWidth,
                sameBorder ? @"same" : @"differs",
+               (double)leftInset, (double)rightInset, (double)rowDelta,
                (unsigned long)artwork, NSStringFromClass(right.class), right.accessibilityValue ?: @"none");
 }
 // L's and R's press state, sampled every frame rather than on the layout pass the geometry line
@@ -1357,6 +1376,29 @@ static NSString *BallpadAudioRecordingPath(void)
     right.accessibilityHint = nil;
     right.accessibilityValue = nil;
 
+    // Where R is drawn, not only how big: the size, corner and border above already match L, and the
+    // two shoulders were still drawn as different things because the pair is not the same *shape of
+    // placement*. The vendored layout gives each shoulder its own normalized centre -- 0.0906 and
+    // 0.86875 on a phone, 0.1281 and 0.8960 on a pad -- and R's is neither L's mirror nor on L's
+    // row, so R was measured on this build sitting 7pt lower than L with 54pt between it and its
+    // edge where L had 24. The operator's reference is the left shoulder, so R is placed where L's
+    // mirror is: its distance from the surface's right edge is L's distance from the left, and it is
+    // drawn on L's row. Both numbers come from L's live frame and the surface's own width rather than
+    // from copies of the vendored constants, so the pair cannot drift as the vendored numbers move.
+    //
+    // The editor is the exception, for the reason the border above has one: while it is open the
+    // player is placing this control by hand, and a repair that kept pulling R back to L's mirror
+    // would be a drag that undoes itself.
+    if (!BallpadOverlayIsEditingLayout(self))
+    {
+        CGRect mirrored = right.frame;
+        mirrored.origin.x = CGRectGetWidth(self.bounds) - CGRectGetMinX(left.frame)
+                            - CGRectGetWidth(mirrored);
+        mirrored.origin.y = CGRectGetMinY(left.frame);
+        if (!CGRectEqualToRect(mirrored, right.frame))
+            right.frame = mirrored;
+    }
+
     [self ballpadWireRightShoulder:right];
 
     // From this pass rather than from -layoutSubviews: the repair has just run and no vendored pass
@@ -1774,6 +1816,118 @@ static void BallpadReattachOverlay(NSString *reason)
                    NSStringFromClass(container.class), NSStringFromCGRect(container.bounds));
 }
 
+// F04: what the engine did with a control, as opposed to what the overlay drew.
+//
+// doc 34's F04 asks for game response rather than hittability, and the two are different readings of
+// the same touch. The overlay samplers above say a control was drawn pressed; this one says what the
+// engine's own pad held, read back through PortPadEngineRead, which returns the bytes
+// PadStatus::s_Current[0] carries -- the sample cPlatPad::IsPressed and the game's own tasks read.
+// The host's own offer is printed on the same line because the claim is the pair: a control that
+// reached the engine is what F04 wants, and an offer that never did is the failure this line has to
+// be able to show.
+//
+// The one asymmetry, and it is arithmetic rather than assumption. The port builds a frame in this
+// order (src/Game/main.cpp: PortUpdateSyntheticInput, then PortHostUIFrame, then
+// PortInvokePadSamplingCallback): this host's poll, then this sampler, then the engine's own
+// VBlankPadUpdate, which is the pass that clamps the assembled pad and swaps it into
+// PadStatus::s_Current. So the sample read here during frame N is the one the engine assembled
+// during frame N-1, and the offer it was made from is the poll of frame N-1 rather than the poll
+// frame N has already made. Both are printed, "now" before "prev", because the difference between
+// them is exactly the thing the line has to be able to show. The first run of this line printed the
+// poll of the same frame alone, and every ramp in it disagreed in a way that looked like a fault:
+// a main stick of 40 beside an offer of 75, a C-stick of 44 beside an offer of 84, a trigger of 150
+// beside an offer of 255. None of those is a fault, and none is even a delay: each is the game's
+// own clamp of the offer made one poll earlier. The clamp is PADClampCircle
+// (extern/aurora/lib/dolphin/pad/pad.cpp), whose ClampRegion is stick min 15 radius 56, C-stick min
+// 15 radius 44, trigger min 30 max 180, so a trigger of 255 becomes 150 and a stick of 127 becomes
+// 56. With the pair stated, the button half is exact equality and the analog half is that clamp of a
+// value the reader can see, which is a row that can be judged rather than explained away.
+//
+// There is one more difference between the sample and the offer, and it is the port's own, not the
+// engine's. When the game enables its left-analog-to-d-pad map, the port reaches into the sample it
+// has just published and ORs a compass bit into the buttons when the main stick's own normalized
+// value reaches 0.6 of the clamp radius -- 33.6 of 56 (src/NL/plat/platpad.cpp, the
+// m_isLeftAnalogToDPadMapEnabled branch of the VBlank swap). The bucket is a 45-degree step taken
+// from a 16-bit tick of nlATan2f: angleU16 = (u16)(int)(angle * 10430.378f), scaled back by
+// 0.005493164 and truncated to a multiple of 45. The cast is worth stating because it wraps rather
+// than rounds -- an angle a hair below the positive X axis is negative before the cast, comes back
+// just under 360 degrees, and lands in the 315 bucket, DOWN|RIGHT, rather than bucket 0 -- and
+// because the bucket at exactly 180 degrees is LEFT, the map having zeroed a Y that never reached
+// 0.6. Those bits are in the sample without ever being in an offer, so a reader who had only the
+// offers would call them presses the host never made. They are why the read-back is judged as the
+// previous offer PLUS the port's own map rather than as the previous offer alone.
+//
+// Written only when a field changes: the port's frame loop is not a place to write a line a frame.
+// STRIKERS_LOG_CONSUME gates it, the convention the port's own STRIKERS_LOG_* variables use.
+static PortHostPad s_offerThis;   // the poll this frame has made; the next sample will carry it
+static PortHostPad s_offerPrev;   // the poll one frame back: what this frame's sample was made from
+static BOOL s_haveOffer;
+
+static void BallpadLogConsumptionIfChanged(void)
+{
+    static const int s_enabled = (getenv("STRIKERS_LOG_CONSUME") != NULL) ? 1 : 0;
+    if (!s_enabled)
+        return;
+
+    PortPadEngineState engine;
+    if (!PortPadEngineRead(0, &engine))
+        return;
+
+    static PortPadEngineState s_lastEngine;
+    static BOOL s_haveEngine = NO;
+    static int s_lastScene = -12345;
+
+    // The engine's own front-end scene, from the label BaseGameSceneManager formats and pushes: the
+    // scene a control was held in, and the scene it left. Without this the row could only say the
+    // pad carried a bit, and a pad that carried a bit is exactly the reading an overlay drawing a
+    // press would also produce. The number is the port's, not a re-parse here.
+    const int scene = PortOverlaySceneNumber();
+    if (s_haveEngine
+        && engine.err == s_lastEngine.err
+        && engine.buttons == s_lastEngine.buttons
+        && engine.stickX == s_lastEngine.stickX
+        && engine.stickY == s_lastEngine.stickY
+        && engine.substickX == s_lastEngine.substickX
+        && engine.substickY == s_lastEngine.substickY
+        && engine.triggerLeft == s_lastEngine.triggerLeft
+        && engine.triggerRight == s_lastEngine.triggerRight
+        && scene == s_lastScene)
+        return;
+
+    s_lastEngine = engine;
+    s_haveEngine = YES;
+    s_lastScene = scene;
+
+    // consume: is the tag the runner's read-back family greps for. Both offers are on the line, in
+    // the order the paragraph above explains: "now" is the poll this frame made and "prev" is the
+    // one whose clamp is what the engine's own pad holds here, so a reader can compare the sample
+    // against the offer it was made from and against the one it was not. The scene label is last
+    // because it carries spaces and is the only field a reader does not have to machine-parse; the
+    // number in front of it is the one that is compared.
+    BallpadLog(@"consume: frame %lu engine err %d buttons 0x%04x stick %d,%d sub %d,%d trig %d,%d"
+                " now 0x%04x nstick %d,%d nsub %d,%d ntrig %d,%d"
+                " prev 0x%04x pstick %d,%d psub %d,%d ptrig %d,%d scene %d -- %s",
+               PortInputFrame(),
+               engine.err, engine.buttons,
+               engine.stickX, engine.stickY, engine.substickX, engine.substickY,
+               engine.triggerLeft, engine.triggerRight,
+               s_haveOffer ? s_offerThis.buttons : 0u,
+               s_haveOffer ? s_offerThis.stickX : 0,
+               s_haveOffer ? s_offerThis.stickY : 0,
+               s_haveOffer ? s_offerThis.substickX : 0,
+               s_haveOffer ? s_offerThis.substickY : 0,
+               s_haveOffer ? s_offerThis.triggerLeft : 0,
+               s_haveOffer ? s_offerThis.triggerRight : 0,
+               s_haveOffer ? s_offerPrev.buttons : 0u,
+               s_haveOffer ? s_offerPrev.stickX : 0,
+               s_haveOffer ? s_offerPrev.stickY : 0,
+               s_haveOffer ? s_offerPrev.substickX : 0,
+               s_haveOffer ? s_offerPrev.substickY : 0,
+               s_haveOffer ? s_offerPrev.triggerLeft : 0,
+               s_haveOffer ? s_offerPrev.triggerRight : 0,
+               scene, PortOverlaySceneName());
+}
+
 extern "C" void PortHostUIStart(void *sdlWindow)
 {
     @autoreleasepool
@@ -1884,6 +2038,16 @@ extern "C" int PortHostUIPollPad(PortHostPad *out)
         if (out->triggerRight < 255)
             out->triggerRight = 255;
     }
+
+    // The two offers the sampler above pairs with the engine's reading. Recorded here rather than in
+    // that sampler because this is the only place the whole offer exists: this struct belongs to the
+    // port's frame and is gone by the time the sampler runs, and the claim is about the pair. Both are
+    // kept for the reason the block above records, and the shift is ordered so that the offer this
+    // poll just made becomes the sampler's "now" while the previous poll becomes its "prev" -- the
+    // one the engine's own VBlank pass has already clamped into the sample the sampler will read.
+    s_offerPrev = s_offerThis;
+    s_offerThis = *out;
+    s_haveOffer = YES;
     return 1;
 }
 
@@ -1906,6 +2070,12 @@ extern "C" void PortHostUIFrame(void)
         // can fail to open before any row or setting exists to report it, and a line written only
         // when something changes would leave that failure in the log as an absence.
         BallpadLogAudioIfDue();
+
+        // The engine's own pad, for F04: the overlay samplers say a control was drawn, and this one
+        // says the game read it. It sits with the bridges above rather than below the overlay check
+        // for the same reason they do -- the reading is of the engine, and it is the frames with no
+        // overlay (a lifecycle rebuild) where an offer with no reader would otherwise be invisible.
+        BallpadLogConsumptionIfChanged();
 
         if (s_overlay == nil)
             return;

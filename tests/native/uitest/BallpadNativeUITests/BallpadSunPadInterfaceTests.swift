@@ -75,7 +75,12 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 			      !value.isEmpty, !value.hasPrefix("$(") else { return nil }
 			return value
 		}
-		var env: [String: String] = ["STRIKERS_LOG_SCENES": "1", "STRIKERS_SEED": "12345"]
+		// The scene log names the front end's own scene, and the consumption log is the F04 row's
+		// reading: what the *engine's* pad held while the overlay drew a control. Both are the port's
+		// STRIKERS_LOG_* convention and both are off unless asked for, because the frame loop is not
+		// a place to write a line a frame.
+		var env: [String: String] = ["STRIKERS_LOG_SCENES": "1", "STRIKERS_LOG_CONSUME": "1",
+		                             "STRIKERS_SEED": "12345"]
 		if let iso = path("BALLPAD_UITEST_ISO", "BallpadUITestDiscImage") { env["STRIKERS_DATA"] = iso }
 		if let user = path("BALLPAD_UITEST_USER_DIR", "BallpadUITestUserDir") {
 			env["STRIKERS_USER_DIR"] = user
@@ -1255,6 +1260,26 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
                        "the two shoulders are drawn the same width at rest ("
                        + NSCoder.string(for: leftAtRest) + " and "
                        + NSCoder.string(for: rightAtRest) + ")")
+
+        // The operator's claim is that R looks like the left shoulder, and the *placement* is the
+        // half a width comparison cannot see: the pair matched in size, corner and border while R
+        // was still drawn on its own row and its own distance from the edge, which is what a second,
+        // differently-positioned copy of the same shape looks like. The repair places R from L's own
+        // live frame on the surface, so the surface's two gaps are equal and the two shoulders share
+        // a row. The reading is taken here in screen points against the window the surface fills, and
+        // the app's own `shoulder:` read-back states the same relation in the surface's coordinates,
+        // where the numbers are computed beside the repair that applies them.
+        let surface = app.windows.firstMatch.frame
+        let leftGap = leftAtRest.minX - surface.minX
+        let rightGap = surface.maxX - rightAtRest.maxX
+        XCTAssertEqual(leftGap, rightGap, accuracy: 2.0,
+                       "R is placed as L's mirror across the surface, so the gap from the left edge "
+                       + "to L (" + String(Double(leftGap)) + ") is the gap from R to the right edge ("
+                       + String(Double(rightGap)) + ")")
+        XCTAssertEqual(leftAtRest.minY, rightAtRest.minY, accuracy: 1.0,
+                       "and the two shoulders are drawn on the same row ("
+                       + String(Double(leftAtRest.minY)) + " against "
+                       + String(Double(rightAtRest.minY)) + ")")
         attach("shoulders-at-rest")
 
         left.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).press(forDuration: 0.5)
@@ -1278,6 +1303,89 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         // resting one and the differing pair the run requires is not buried under a later frame.
         Thread.sleep(forTimeInterval: 1.0)
         attach("shoulders-after-both-presses")
+    }
+
+    // MARK: - What the engine's own pad held (F04)
+
+    /// A real touch on the overlay's main stick, dragged to its right edge and *held* there. The
+    /// hold is the whole point of the variant used: the port reads the pad once a frame and the
+    /// engine's own pad is the sample one assembly boundary later, so a displacement that exists for
+    /// a single frame can be gone before the reading that has to see it. The vendored stick view
+    /// resets its axis in `-touchesEnded`, so a finger that is still down keeps the axis where it
+    /// left it, and the drag is held for a second after it arrives.
+    private func holdMainStickRight() {
+        let stick = app.otherElements["move"]
+        guard stick.exists else {
+            attachHierarchy("move-stick-missing")
+            XCTFail("the overlay's main stick is on screen to be dragged")
+            return
+        }
+        let start = stick.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = stick.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5))
+        start.press(forDuration: 0.3, thenDragTo: end, withVelocity: .default,
+                    thenHoldForDuration: 1.0)
+    }
+
+    /// F04, the half a screenshot cannot decide. A press that the overlay *draws* is proven by the
+    /// screenshot; a press the *game read* is a different fact, and doc 34 asks for the second one.
+    /// Every control the row names is therefore pressed as a real touch on the real surface, held
+    /// long enough for the port's per-frame poll to carry it, and the run's `consume:` read-back
+    /// family is where the verdict lives: those lines are the port's own report of what
+    /// `PadStatus::s_Current[0]` -- the sample `cPlatPad::IsPressed` and the game's own tasks read --
+    /// held, printed beside what the host offered for the same frame.
+    ///
+    /// The main stick and the C-stick are driven the same way, each as a real drag that is held
+    /// off-centre rather than a synthetic axis, because a stick is the control whose value a press
+    /// cannot stand in for. Both shoulders are included: L is the vendored button and R is the
+    /// trigger with BallPad's own wiring onto it, and the row is where the two are checked to reach
+    /// the same pad.
+    ///
+    /// What this row does *not* claim, stated rather than left to a reader to notice: XCUIAutomation's
+    /// public headers expose no multi-touch, so the main stick and an action button cannot be held at
+    /// the same instant by two real touches here. Simultaneity is a property of the merge boundary
+    /// (one `SunPadInputState` carrying both the buttons and the axes, and one port pad built from
+    /// it), it is exercised directly at that boundary by the port's own control channel, and the
+    /// physical-controller half of it stays F12 until there is a controller to hold.
+    func testEveryControlReachesTheEnginesOwnPad() throws {
+        launchAndWaitForOverlay()
+
+        // Every control doc 34 names, in the overlay's own identifiers. The D-pad's four keys are
+        // separate controls in the drawn overlay and separate bits in the pad, so they are separate
+        // presses; a single pass at the middle of the D-pad would leave three of the four unread.
+        let controls = ["A", "B", "X", "Y", "Z", "Start", "D_U", "D_D", "D_L", "D_R", "L", "R"]
+        attach("controls-before-the-sweep")
+        for name in controls {
+            let control = app.buttons[name]
+            guard control.waitForExistence(timeout: 60) else {
+                attachHierarchy("control-\(name)-missing")
+                XCTFail("the overlay's \(name) control is on screen to be pressed")
+                return
+            }
+            XCTAssertTrue(control.isHittable, "\(name) is hittable, so the press below reaches it")
+            let resting = control.frame
+            // Near the control's edge rather than at its centre, because that is where the vendored
+            // trigger's detent begins and where the *drawn* press is; the bit the engine reads is set
+            // for a touch anywhere on the control, so the same press answers both questions. It is
+            // held for half a second, which is dozens of frames at the front end's rate and is the
+            // same order as a deliberate player press.
+            control.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5))
+                .press(forDuration: 0.5)
+            Thread.sleep(forTimeInterval: 0.3)
+            // A press is a paint property: the control stays where it was drawn, so anything that
+            // moved here is a layout fault rather than a press, and it would also mean the frame the
+            // row compared next was not the one it started from.
+            assertFrameClose(control.frame, resting, accuracy: 1.0,
+                             "pressing \(name) leaves it where it was drawn")
+        }
+        attach("controls-after-the-sweep")
+
+        holdMainStickRight()
+        attach("main-stick-held-right")
+        Thread.sleep(forTimeInterval: 0.3)
+
+        dragCameraStickRight()
+        attach("camera-stick-dragged-right")
+        Thread.sleep(forTimeInterval: 0.5)
     }
 
     // MARK: - Every row of the panel is a row that does something (R1 rows 5, 11, 12; R2)

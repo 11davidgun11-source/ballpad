@@ -183,6 +183,7 @@ TEST_ROW_SPECS=(
     "S.f13.mapping-panel=testControllerMappingPanelReportsThePortsOwnMap"
     "S.f01.import-through-files=testFreshInstallShowsImportScreenAndActivatesAPickedImage"
     "S.f02.refusal-keeps-previous=testRefusedImportKeepsThePreviousInstallationUsable"
+    "S.f04.ui-touch-sweep=testEveryControlReachesTheEnginesOwnPad"
 )
 EXPECTED="S.run,S.provenance"
 for spec in "${TEST_ROW_SPECS[@]}"; do
@@ -195,6 +196,9 @@ EXPECTED="${EXPECTED},S.f01f02.store-bytes"
 # screen, and the check below is that the read-backs the display and shoulder work depends on are
 # actually in it.
 EXPECTED="${EXPECTED},S.r1.settings-readback"
+# F04's engine half is a reading of the port's own pad rather than of anything on screen, so it is a
+# read-back row like the one above and is judged by this script, not by a test method.
+EXPECTED="${EXPECTED},S.f04.engine-consumption"
 
 # -- Own the device ----------------------------------------------------------
 sim_lock_acquire
@@ -487,9 +491,20 @@ CSTICK_LINES=0
 OVERLAY_ALPHAS=0
 CSTICK_SUMMARY="0 0 0 0 0"
 OUTLINE_SUMMARY="0 0 0 0 0"
+# F04's two readings: the mirror relation between the two shoulders on every line outside the
+# editor, and what the engine's own pad held beside both offers the host made for that frame.
+# Each defaults to its all-zero shape so a run that never wrote the line reports a FAIL row rather
+# than an empty string.
+MIRROR_SUMMARY="0 0 0 0 0 0 0"
+CONSUME_SUMMARY="0 0 0 0 0 0 0 0 0 0 - 0 0 0 0 0 0 0 0"
+# F04's engine reading is judged from the consume: family rather than from the read-back family, so it
+# keeps its own failure list. It is set in the branch below when the log is there and to the
+# missing-log reason when it is not, so the row lands either way instead of vanishing with a branch.
+CONSUME_FAIL=""
 log_new "$READBACK_LINES"
 if [ ! -f "$RUNTIME_LOG" ]; then
     READBACK_FAIL="the app left no log at ${RUNTIME_LOG}"
+    CONSUME_FAIL="the app left no log at ${RUNTIME_LOG}, so the engine's own pad was never read back beside the host's offer"
 else
     cp "$RUNTIME_LOG" "$LOG_COPY"
     DISPLAY_LINES="$(grep -cE ' display: ' "$LOG_COPY" || true)"
@@ -541,11 +556,35 @@ else
     OUTLINE_SUMMARY="$(awk '/ shoulder outline: / { editing = ""; lheld = ""; rheld = ""; lw = ""; rw = ""; for (i = 1; i <= NF; i++) { if ($i == "editing") editing = $(i + 1); if ($i == "L" && $(i + 1) == "held") { lheld = $(i + 2); lw = $(i + 4) } if ($i == "R" && $(i + 1) == "held") { rheld = $(i + 2); rw = $(i + 4) } } if (editing == "" || lheld == "" || rheld == "" || lw == "" || rw == "") { unread++; next } total++; if (editing == "1") { editor++; next } presses++; if ((lw + 0) > 2.0) lthick++; if ((rw + 0) > 2.0) { if (rheld == "0") rthick++; else rdetent++ } if (lheld == "1" && (lw + 0) <= 2.0) lpress++ } END { printf "%d %d %d %d %d %d %d\n", total + 0, presses + 0, lpress + 0, rdetent + 0, lthick + 0, rthick + 0, unread + 0 }' "$LOG_COPY")"
     # One outline field, by number, so the checks below read as the sentences they are.
     outline_field() { printf '%s' "$OUTLINE_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
+    # The shoulder pair's *placement*, read from the two numbers the app derives from the live frames
+    # rather than from copies of the vendored layout constants: how far each shoulder sits from its own
+    # edge of the surface, and the row each one is on. The claim the operator made is that R looks like
+    # the left shoulder, and a pair matched in size, corner and border while R sits on its own row and
+    # its own distance from the edge is what a second, differently-placed copy of the same shape looks
+    # like -- which is exactly the state this build was in before the placement mirror was added. The
+    # editor is the one state in which the pair is deliberately not kept in step, so its lines are
+    # counted apart and were never the claim.
+    MIRROR_SUMMARY="$(awk '/ shoulder: / { editing = ""; li = ""; ri = ""; rd = ""; for (i = 1; i <= NF; i++) { if ($i == "editing") editing = $(i + 1); if ($i == "mirror" && $(i + 1) == "inset" && $(i + 2) == "L") { li = $(i + 3); ri = $(i + 5); rd = $(i + 8) } } if (editing == "" || li == "" || ri == "" || rd == "") { unread++; next } total++; if (editing == "1") { editor++; next } rest++; d = li - ri; if (d < 0) d = -d; if (d <= 0.15) mirrored++; else skew++; dd = rd + 0; if (dd < 0) dd = -dd; if (dd <= 0.15) rowed++ } END { printf "%d %d %d %d %d %d %d\n", total + 0, rest + 0, mirrored + 0, skew + 0, rowed + 0, editor + 0, unread + 0 }' "$LOG_COPY")"
+    mirror_field() { printf '%s' "$MIRROR_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
+    # What the engine's own pad held, which is the reading F04 asks for and the one no screenshot can
+    # give: doc 34 wants game response rather than hittability, and a drawn press is not a read one.
+    # Every `consume:` line is the port's report of `PadStatus::s_Current[0]` -- the sample
+    # `cPlatPad::IsPressed` and the game's own tasks read -- beside both offers: the one the poll of
+    # this frame made, and the one the poll before it made, which is the offer the port's own VBlank
+    # pass clamped into the sample this line carries. The bits are read out of the hex by hand
+    # because the `awk` on this host has no `strtonum` and no bitwise `and`. The summary is its own
+    # file rather than an inline program because it restates the port's clamp and its own
+    # left-analog-to-d-pad map in full, and both are arithmetic this host's `awk` has to spell out:
+    # one conversion function, one integer sqrt, and a sector map carried through a 16-bit tick.
+    CONSUME_SUMMARY="$(awk -f "${BALLPAD_ROOT}/scripts/native/consume-summary.awk" "$LOG_COPY")"
+    consume_field() { printf '%s' "$CONSUME_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
+    consume_explained() { printf '%s' "$CONSUME_SUMMARY" | awk '{ print $4 + $5 }'; }
+    consume_missing() { printf '%s' "$CONSUME_SUMMARY" | awk -v n="$1" '{ print $n }'; }
     {
         printf 'source: %s\n' "$RUNTIME_LOG"
         printf 'whole log: %s lines, copied to %s\n\n' "$(wc -l < "$LOG_COPY" | tr -d ' ')" "$LOG_COPY"
-        grep -E ' (display|settings|shoulder|shoulder outline|audio|overlay|c-stick): ' "$LOG_COPY" \
-            || printf 'no display, settings, shoulder, shoulder-outline, audio, overlay or c-stick line is in the log\n'
+        grep -E ' (display|settings|shoulder|shoulder outline|audio|overlay|consume|c-stick): ' "$LOG_COPY" \
+            || printf 'no display, settings, shoulder, shoulder-outline, audio, overlay, consume or c-stick line is in the log\n'
     } >> "$READBACK_LINES"
     [ "$DISPLAY_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no display: line, so no display row was read back from the port"
     [ "$SETTINGS_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no settings: line, so no setting was read back from the store"
@@ -571,11 +610,85 @@ else
         || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }a shoulder outline: line outside the editor draws L at the right trigger's press width, which is one shoulder's state painted onto the other (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable: ${OUTLINE_SUMMARY})"
     [ "$(outline_field 6)" -eq 0 ] \
         || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }a shoulder outline: line outside the editor draws R at the press width while R is not held, which is the right trigger left looking pressed at rest (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable: ${OUTLINE_SUMMARY})"
+    [ "$(mirror_field 1)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no shoulder: line carrying the mirror reading, so the two shoulders' placement was never compared (total/rest/mirrored/skew/on-L's-row/editor/unreadable: ${MIRROR_SUMMARY})"
+    [ "$(mirror_field 7)" -eq 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }a shoulder: line carries no readable mirror reading, so the pair's placement could not be judged (total/rest/mirrored/skew/on-L's-row/editor/unreadable: ${MIRROR_SUMMARY})"
+    [ "$(mirror_field 2)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }every shoulder: line carrying the mirror reading was written with the layout editor open, whose repair deliberately leaves the pair where the player put it, so no line states the two shoulders' placement at rest (total/rest/mirrored/skew/on-L's-row/editor/unreadable: ${MIRROR_SUMMARY})"
+    { [ "$(mirror_field 3)" -eq "$(mirror_field 2)" ] && [ "$(mirror_field 4)" -eq 0 ]; } \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }R is not drawn as L's mirror at rest: the gap from the surface's left edge to L is a different number from the gap from R to its right edge (total/rest/mirrored/skew/on-L's-row/editor/unreadable: ${MIRROR_SUMMARY})"
+    [ "$(mirror_field 5)" -eq "$(mirror_field 2)" ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }R is not drawn on L's row at rest, so the pair is one shape in two places rather than one shape drawn twice (total/rest/mirrored/skew/on-L's-row/editor/unreadable: ${MIRROR_SUMMARY})"
+    # F04, the engine half. Each clause is one field of the summary above, and each rests on the one
+    # relation this row exists to measure: the engine's own pad holds the clamp of the *previous*
+    # poll's offer, not of the offer made in the same frame as the line. A consume: line is
+    # change-detected -- it is written only when a field or a scene moves -- so consecutive lines are
+    # not consecutive frames, and a pairing built on the previous logged line would be an artifact.
+    # The port clamps between the host's offer and the game's read of the sample, which is why the
+    # previous offer describes strictly more lines than the same-frame offer does. Clauses 5 through 8
+    # state that pairing, its completeness and its contrast, and they are what makes the row
+    # independent of the port's frame order: swap the two offers and the pairing flips, but only the
+    # previous one can account for every line with no engine error and still leave the same-frame
+    # offer short. Agreement and coverage are the secondary claim -- a nonzero mask equal to the
+    # previous offer's, seen across all twelve controls -- because a pad handed nothing cannot produce
+    # one, and coverage is what turns a single agreeing press into "every control reaches the
+    # engine". A line may also carry the port's own left-analog-to-d-pad bits, which the d-pad map
+    # adds to the sample and the offer does not have, so those lines are counted apart from the
+    # previous-offer lines and are allowed on top of them.
+    [ "$(consume_field 1)" -gt 0 ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }the log holds no consume: line, so the engine's own pad was never read back beside the offer the host made for the same frame (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_field 19)" -eq 0 ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }a consume: line carries a field this script could not read, so the engine's own pad could not be judged (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_field 3)" -eq 0 ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }the engine reported a pad fault while the host was offering input, which is a real error code rather than the all-zero reading that clears the pad (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_field 2)" -gt 0 ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }every consume: line carried an engine error, so no line states what the engine's own pad held (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_field 7)" -eq 0 ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }a consume: line's mask lacks a bit the previous poll's offer carried, so the host offered a control the engine's own pad did not hold (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_field 8)" -eq 0 ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }a consume: line's mask carries a bit neither the previous poll's offer nor the port's own d-pad map explains, so a press reached the engine that the host never made (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_explained)" -eq "$(consume_field 2)" ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }the previous poll's offer and the port's own d-pad bits account for $(consume_explained) of the $(consume_field 2) lines with no engine error, so some line's mask is not this port's clamp of the offer that preceded it (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_explained)" -gt "$(consume_field 6)" ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }the same-frame offer accounts for $(consume_field 6) lines while the previous offer accounts for $(consume_explained), so the two offers cannot be told apart and the pairing this row rests on was not measured (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_field 9)" -gt 0 ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }no consume: line shows the engine's own pad holding a nonzero mask equal to the previous poll's offer, which is a press that was drawn and not read (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_field 10)" -eq 12 ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }the engine's own pad was seen holding only $(consume_field 10) of the twelve controls across the previous offer's lines, so the sweep did not carry every control into the engine (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_missing 11)" = "-" ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }the previous offer's lines never show the engine's pad holding $(consume_missing 11), so those controls were drawn and not read (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    [ "$(consume_field 12)" -ge 1 ] \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }no consume: line names a front-end scene, so a press cannot be paired with the scene it landed in (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    { [ "$(consume_field 13)" -gt 0 ] && [ "$(consume_field 14)" -eq 0 ]; } \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }no consume: line shows the engine's own pad holding the main stick at the value the previous offer made for it, so the stick moved on screen without reaching the engine (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    { [ "$(consume_field 15)" -gt 0 ] && [ "$(consume_field 16)" -eq 0 ]; } \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }no consume: line shows the engine's own pad holding the C-stick at the value the previous offer made for it, so the camera stick moved on screen without reaching the engine (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    { [ "$(consume_field 17)" -gt 0 ] && [ "$(consume_field 18)" -eq 0 ]; } \
+        || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }no consume: line shows the engine's own pad holding a shoulder trigger at the value the previous offer made for it, so a shoulder moved on screen without reaching the engine (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
 fi
 if [ -z "$READBACK_FAIL" ]; then
-    printf "S.r1.settings-readback\tPASS\t%s display, %s settings, %s shoulder, %s audio (of which %s name the mixer's own fields) and %s overlay lines (over %s alpha for the A control) plus %s c-stick lines and %s shoulder-outline lines (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable), written by the app itself\tapp-readbacks.txt\n" "$DISPLAY_LINES" "$SETTINGS_LINES" "$SHOULDER_LINES" "$AUDIO_LINES" "$AUDIO_MIX_LINES" "$OVERLAY_LINES" "$OVERLAY_ALPHAS" "$CSTICK_LINES" "$OUTLINE_SUMMARY" >> "$ROWS"
+    printf "S.r1.settings-readback\tPASS\t%s display, %s settings, %s shoulder, %s audio (of which %s name the mixer's own fields) and %s overlay lines (over %s alpha for the A control) plus %s c-stick lines, %s shoulder-outline lines (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable) and %s shoulder-mirror readings (total/rest/mirrored/skew/on-L's-row/editor/unreadable), written by the app itself\tapp-readbacks.txt\n" "$DISPLAY_LINES" "$SETTINGS_LINES" "$SHOULDER_LINES" "$AUDIO_LINES" "$AUDIO_MIX_LINES" "$OVERLAY_LINES" "$OVERLAY_ALPHAS" "$CSTICK_LINES" "$OUTLINE_SUMMARY" "$MIRROR_SUMMARY" >> "$ROWS"
 else
     printf "S.r1.settings-readback\tFAIL\t%s\tapp-readbacks.txt\n" "$READBACK_FAIL" >> "$ROWS"
+fi
+
+# -- What the engine did with the controls -----------------------------------
+# F04's own row, and the one row in this script that no screenshot could decide. The front-end suite
+# proves a control was drawn pressed and that the port was handed a value; this proves the engine's
+# own pad held it, which is the reading doc 34 asks for when it says a button being hittable does not
+# prove that the game consumed its input. What carries the row is the pairing: the engine's sample
+# holds the port's clamp of the *previous* poll's offer, plus the port's own left-analog-to-d-pad bits
+# when the map reaches them, and that pairing accounts for every line with no engine error while the
+# same-frame offer accounts for strictly fewer -- a contrast only a real clamp between two offers can
+# produce, and one a reader can check without knowing the port's frame order. Agreement and coverage
+# are what turn the pairing into "every control reaches the engine": a mask equal to the previous
+# offer's, seen across all twelve controls. The row text states each of those counts so a reader can
+# see the measurement rather than the verdict alone.
+if [ -z "$CONSUME_FAIL" ]; then
+    printf "S.f04.engine-consumption\tPASS\t%s consume: lines, %s of them with no engine pad error, of which %s hold a mask equal to the previous poll's offer and %s also carry the port's own d-pad bits (%s in total, leaving the same-frame offer to explain only %s); covering %s of the twelve controls (missing %s) across %s front-end scenes; the main stick held the previous offer's clamp on %s of %s moving lines, the C-stick on %s of %s and the triggers on %s of %s, with %s lines carrying an extra bit the offers never made and %s unreadable (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: %s), read from the port's own pad rather than from a screenshot\tapp-readbacks.txt\n" "$(consume_field 1)" "$(consume_field 2)" "$(consume_field 4)" "$(consume_field 5)" "$(consume_explained)" "$(consume_field 6)" "$(consume_field 10)" "$(consume_missing 11)" "$(consume_field 12)" "$(( $(consume_field 13) - $(consume_field 14) ))" "$(consume_field 13)" "$(( $(consume_field 15) - $(consume_field 16) ))" "$(consume_field 15)" "$(( $(consume_field 17) - $(consume_field 18) ))" "$(consume_field 17)" "$(consume_field 8)" "$(consume_field 19)" "$CONSUME_SUMMARY" >> "$ROWS"
+else
+    printf "S.f04.engine-consumption\tFAIL\t%s\tapp-readbacks.txt\n" "$CONSUME_FAIL" >> "$ROWS"
 fi
 
 # -- Screenshots -------------------------------------------------------------
