@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chris Sotraidis <56282582+chrissotraidis@users.noreply.github.com>
+Date: Tue, 15 Sep 2026 13:34:09 -0500
+Subject: [PATCH] port: hold the frame limiter to the game's own field rate
+
+The limiter's period is not only the renderer's pace: VIWaitForRetrace waits for it and then advances the retrace count, and nothing in the tree decouples the two, so one period is one game frame of game time. On a display that reports vsync the period was derived as refresh * 1.05 -- 63 Hz against the game's 60 -- and a 60 Hz display therefore ran 5% fast.
+
+The audio transport is drained by the machine's own clock at 5 ms a tick, so a game running 5% fast pulls away from it. Measured on the iPhone Simulator: the transport ticked 199.7 times a second beside 63.0 frames a second, a skew of 95.2% where 100% is the two being one clock.
+
+The derived rate is now capped at VI_FIELD_NS whenever the display can carry the field rate, and the vsync margin is kept only where the panel is below it. STRIKERS_FPS_LIMIT still takes an explicit rate exactly.
+---
+ smstrikers-port/include/port/framerate.h |  6 +++++
+ smstrikers-port/src/platform/vi.c        | 28 +++++++++++++++++++-----
+ 2 files changed, 29 insertions(+), 5 deletions(-)
+
+diff --git a/smstrikers-port/include/port/framerate.h b/smstrikers-port/include/port/framerate.h
+index 7617108..654135e 100644
+--- a/smstrikers-port/include/port/framerate.h
++++ b/smstrikers-port/include/port/framerate.h
+@@ -4,6 +4,12 @@
+ // With vsync on the limiter is held slightly above the refresh rate, because two pacers in series
+ // at the same rate but a different phase drift, and each time the deadline lands just after a
+ // vblank the frame waits nearly a whole extra period.
++//
++// The derived rate is capped at the game's own NTSC field (vi.c's VI_FIELD_NS), because the period
++// is also the game's clock: one VIWaitForRetrace is one game frame, and the whole tree is locked to
++// it. A rate above the field -- a 1.05 margin over a 60 Hz display is 63 Hz -- does not buy frames,
++// it buys speed, and the audio transport, drained in real time at 5 ms a tick, cannot follow a
++// clock that is running fast.
+ 
+ // STRIKERS_FPS_LIMIT overrides, in Hz or 0 for unlimited, and is taken exactly.
+ 
+diff --git a/smstrikers-port/src/platform/vi.c b/smstrikers-port/src/platform/vi.c
+index 06f8403..5e58eb8 100644
+--- a/smstrikers-port/src/platform/vi.c
++++ b/smstrikers-port/src/platform/vi.c
+@@ -24,7 +24,8 @@ typedef void (*VIRetraceCallback)(u32 retraceCount);
+ #define PORT_FALLBACK_FRAME_NS 8333333ull
+ 
+ // How far above the display's refresh rate the limiter sits while vsync is also pacing, so the two
+-// never fight over which one ends the frame.
++// never fight over which one ends the frame. It is capped at the NTSC field below: the margin is
++// about which pacer ends a frame, and how fast the game itself runs is not the margin's to change.
+ #define PORT_VSYNC_HEADROOM 1.05
+ 
+ static VIRetraceCallback s_pre_cb;
+@@ -86,11 +87,28 @@ static u64 frame_period_ns(void)
+         }
+         else if (s_displayHz > 0.0)
+         {
+-            const double hz = s_displayVsync
+-                                  ? s_displayHz * PORT_VSYNC_HEADROOM
+-                                  : s_displayHz;
++            // This period is the game's clock, not just the renderer's pace: VIWaitForRetrace
++            // waits for it and then advances s_retrace_count, and nothing in the tree decouples
++            // the two, so one loop of this period is one game frame of game time. The game is
++            // authored for the NTSC field, so a rate above VI_FIELD_NS does not buy frames -- it
++            // buys speed. The audio transport is drained in real time, 5 ms of audio a tick, and
++            // cannot follow a clock that is running fast: game time pulls ahead of the device,
++            // and every voice lands further behind the model that speaks it than the one before.
++            const double fieldHz = 1000000000.0 / (double)VI_FIELD_NS;
++            double hz = s_displayVsync ? s_displayHz * PORT_VSYNC_HEADROOM : s_displayHz;
++            if (hz > fieldHz)
++            {
++                // A display that can carry the field rate gets the field rate, margin and all.
++                // Only a display below it keeps the margin, where it costs speed the panel
++                // cannot give back either way.
++                hz = fieldHz;
++                why = "display, capped at the field";
++            }
++            else
++            {
++                why = s_displayVsync ? "display, +5% for vsync" : "display";
++            }
+             s_period = (u64)(1000000000.0 / hz);
+-            why = s_displayVsync ? "display, +5% for vsync" : "display";
+         }
+         else
+         {
