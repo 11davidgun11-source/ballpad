@@ -1,0 +1,22 @@
+# N4-B: the port's host-UI seam is live and this app is the thing behind it.
+#
+# The port calls four hooks -- Start once the window exists, PollPad while it assembles each
+# frame's pad, Frame after that, Stop after the loop -- and ships weak no-ops for all four so the
+# desktop executable and the unit tests still link. That makes "did the app's adapter win" a real
+# question rather than a formality: a build that resolved every hook to the port's own no-op links,
+# launches and presents the same frame, with no touch interface at all.
+#
+# So this scenario checks the seam, not the geometry. The interface's own layout is SunPad's,
+# vendored byte-for-byte, and the fidelity claim about it is a diff against the sibling project
+# rather than a screenshot. What cannot be settled by a diff is whether the port is calling into
+# the app: the two expected lines are the adapter's, and one of them can only be printed from
+# inside the port's frame loop.
+#
+# Both go to stderr through NSLog as well as to the overlay's own runtime log, so the driver sees
+# them; the runtime log's copy is what the three-dot menu's report row would attach.
+env STRIKERS_LOG_SCENES=1
+require-frame 180
+expect [SunPad] host ui: overlay
+expect [SunPad] host ui: first pad poll
+shot hostui_boot
+dump hostui_boot

@@ -1,0 +1,61 @@
+# N3: the whole route to a live match, then a post-goal auto replay sampled by
+# the engine's own state lines instead of by predicted frames.
+#
+# Three engine lines make the post-goal sequence observable:
+#   [match] t=... state=2 .....  GS_POST_GOAL, the match's own goal detection, printed once a
+#                                second while the sim runs
+#   [task] state=0x100 ........  presentation/NIS, entered for the goal celebration
+#   [task] state=0x10 .........  the port's own name for the auto-replay task state,
+#                                printed on entry and about every 120 frames while it holds
+# The control heartbeat is 600 frames, longer than the replay itself, so a frame-anchored
+# sample could miss the replay entirely.  Each wait-log consumes the line it matched, so
+# repeating a wait walks through the later occurrences of a periodic line.
+#
+# Goal timing is not reproducible run to run (observed first goals at match t=11.0, t=10.9 and
+# t~78), so the scenario predicts no frame: it arms a wait while the match is still goalless and
+# lets the match score when it scores.  The arming point is the first live-play line, which the
+# [match] line announces as state=4.  That line carries t= and ball= fields between the tag and
+# the state, so a needle must not jump straight from "[match]" to "state="; written that way it
+# matches nothing and the wait stalls until its timeout.
+# Nothing is injected here.  The goal is whatever the match scores on its own, and the match's
+# own detection, celebration script, scorer credit and auto replay follow from it.  If a run ever
+# plays a goal-less match the port has a fallback in its own debug channel (PDBG_WARP_BALL, op 8)
+# -- the same request the debug menu's "into home net" button sends.
+#
+# health -> saving/loading -> legal -> intro movie -> title -> main menu -> mariobg ->
+# choose captains (both sides) -> stadium select -> loading -> live match -> goal ->
+# goal presentation -> auto replay -> kickoff.
+env STRIKERS_LOG_SCENES=1
+env STRIKERS_LOG_MATCH=1
+env STRIKERS_LOG_NIS=1
+env STRIKERS_AUTOPRESS=A@s51+180,A@s2+240,A@s53+120,A@s3+240,A@s8+300,A@s8+420,A@s8+540,A@s8+660,LEFT@s8+780,A@s8+900,A@s8+1020,A@s9+300
+require-scene choose_captains
+wait-log state=4 ot=0 score @420
+shot kickoff
+dump kickoff
+wait-log state=2 ot=0 @540
+shot goal
+dump postgoal
+wait-log [task] state=0x100 renderWorld @240
+shot goal_pres
+dump goal_pres
+wait-log [task] state=0x10 renderWorld @180
+shot replay0
+dump replay0
+wait-log [task] state=0x10 renderWorld @120
+shot replay1
+dump replay1
+wait-log [task] state=0x10 renderWorld @120
+shot replay2
+dump replay2
+wait-log [task] state=0x10 renderWorld @120
+shot replay3
+dump replay3
+wait-log [task] state=0x2 renderWorld @180
+shot back_to_play
+dump back_to_play
+require-frame 9000
+dump middlegame
+expect [task] state=0x10 renderWorld
+expect [task] state=0x100 renderWorld
+expect state=2 ot=0

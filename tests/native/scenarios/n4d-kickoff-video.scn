@@ -1,0 +1,30 @@
+# N4-D evidence, video half: is a black frame *presented* at kickoff, or does only the
+# readback path ever produce one?
+#
+# There are now two disjoint facts about the kickoff frame.  Single-sample captures taken right
+# after \`wait-log state=4\` resolve have been 100% black at three different frames (phone 3155 and
+# 3232, iPad 3232), and the desktop \`n1-nav-v12\` bundle holds one 7.82 s *into* live play; yet the
+# dense consecutive burst in \`n4d-kickoff-dense.scn\`, which captures every frame across the same
+# transition, produced zero black frames and captured those same frames lit (\`n4d-dense-r2\`).
+# So the question left is not "what does the game do" but "which surface are the two paths
+# measuring".
+#
+# \`STRIKERS_CAPTURE_EVERY\` and \`shot\` both read back the render target through Aurora's capture
+# path.  A screen recording reads the *presented* surface through a completely different conduit,
+# so a run recorded with \`xcrun simctl io <udid> recordVideo\` answers the question the still
+# captures cannot: if the recording contains no near-black frame at the transition, nothing black
+# was ever shown, and the still captures are measuring their own readback.
+#
+# This scenario deliberately does *both*: \`shot kickoff-v\` right after the same \`wait-log\` the sparse
+# runs used, so the still and the video describe the same instant of the same run.
+env STRIKERS_LOG_SCENES=1
+env STRIKERS_LOG_MATCH=1
+env STRIKERS_LOG_NIS=1
+env STRIKERS_AUTOPRESS=A@s51+180,A@s2+240,A@s53+120,A@s3+240,A@s8+300,A@s8+420,A@s8+540,A@s8+660,LEFT@s8+780,A@s8+900,A@s8+1020,A@s9+300
+require-scene choose_captains
+wait-log state=4 ot=0 score @420
+shot kickoff-v
+dump kickoff_video
+require-frame 3400
+dump after_kickoff
+quit

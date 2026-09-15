@@ -1,0 +1,35 @@
+# N4-D evidence: is the black first live-play frame a fade, a real presented flash, or a
+# capture/readback artifact?
+#
+# The single-sample runs left the question open because the artifact is not deterministic at a
+# frame number: the kickoff frame has been captured black at 3155/3232 and lit at 3233/3235/3236
+# across runs, and the earlier 9-shot burst (frames 3234..3261) was lit end to end -- so the burst's
+# spacing (2-4 frames between shots) cannot tell "one black frame bounded by lit ones" apart from
+# "nothing black happened".
+#
+# This scenario therefore captures *consecutive* frames (STRIKERS_CAPTURE_EVERY=1) across the whole
+# transition window, bounded by STRIKERS_CAPTURE_FROM/TO so the run does not write a file per frame
+# from frame 0. The window is wide on purpose: the transition frame is drift-prone because the
+# front end's presses are anchored to scene-entry lines that are themselves polled, so the window
+# is 3080..3360 rather than a guess at one frame.
+#
+# What the three outcomes look like in the files:
+#   fade          -> a monotone ramp out of black over many consecutive frames
+#   presented flash -> an isolated all-black frame with lit frames immediately either side
+#   capture artifact -> the black file is not adjacent to lit ones in a way that matches a frame
+#                      boundary, or its neighbours repeat content (the readback raced the buffer)
+#
+# STRIKERS_SHOT_DIR is absolute because the Simulator app does not inherit the driver's cwd.
+env STRIKERS_LOG_SCENES=1
+env STRIKERS_LOG_MATCH=1
+env STRIKERS_LOG_NIS=1
+env STRIKERS_CAPTURE_EVERY=1
+env STRIKERS_CAPTURE_FROM=3080
+env STRIKERS_CAPTURE_TO=3360
+env STRIKERS_SHOT_DIR=/tmp/ballpad-dense-n4d-dense-r2
+env STRIKERS_AUTOPRESS=A@s51+180,A@s2+240,A@s53+120,A@s3+240,A@s8+300,A@s8+420,A@s8+540,A@s8+660,LEFT@s8+780,A@s8+900,A@s8+1020,A@s9+300
+require-scene choose_captains
+wait-log state=4 ot=0 score @420
+require-frame 3400
+dump kickoff_dense
+quit

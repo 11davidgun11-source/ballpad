@@ -1,0 +1,55 @@
+# N4-C: the interface is placed over the real render surface, and the application survives leaving the
+# foreground with nothing latched.
+#
+# Two different claims, two different kinds of evidence.
+#
+# Placement and the Ballpad header are geometry, and geometry here is SunPad's own: the vendored bytes
+# are unchanged and the only adaptation is a UIMenu re-wrapped under a Ballpad title, so the honest
+# evidence is a Simulator screenshot rather than a rule in this file.  What this scenario proves is
+# that the interface is actually attached to the window the port renders into -- the adapter prints
+# the frame it got and the window it attached to, from inside `PortHostUIStart`.
+#
+# Lifecycle is behaviour and can be driven.  Doc 34 F07 asks for five background/foreground cycles, and
+# no in-process action can send an application to the background, so the driver grew a `host` directive:
+# it brings another application to the front, which backgrounds this one, and then brings this one back.
+# Coming back is a launch of an already-running process, so it activates rather than relaunches -- a
+# resume, which is the case being tested; the PID staying put is what tells the two apart.
+#
+# `dump` is the frame-loop witness and it is why one follows every foreground.  A control line is only
+# acknowledged from inside the frame loop, so a `dump` that returns can only have returned because a
+# frame ran to read the control file.  The ack carries that frame, so the five cycles produce five
+# increasing frames after five silences -- a resume, not a frozen process still holding a socket.  A
+# `require-frame` could not make that argument: it resolves off periodic engine lines and says nothing
+# about who was still running.
+#
+# STRIKERS_LOG_INPUT prints the pad's edge state after every resample, which is how a stuck button is
+# told apart from a benign one: after each resume the published pad must read neutral (`cur=0x0000` for
+# pad 0).  Nothing in this scenario holds a port-channel button across a cycle on purpose -- a hold
+# there is frame-counted, so it would correctly still be held on the far side and would only make the
+# neutral readings harder to read.
+env STRIKERS_LOG_SCENES=1
+env STRIKERS_LOG_INPUT=1
+require-frame 180
+expect [SunPad] host ui: overlay
+expect [SunPad] host ui: first pad poll
+dump before_cycles
+host background
+host foreground
+dump cycle1
+host background
+host foreground
+dump cycle2
+host background
+host foreground
+dump cycle3
+host background
+host foreground
+dump cycle4
+host background
+host foreground
+dump cycle5
+shot after_cycles
+dump after_cycles
+expect [SunPad] host ui: background;
+expect [SunPad] host ui: foreground;
+expect [SunPad] host ui: active;

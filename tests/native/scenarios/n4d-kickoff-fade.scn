@@ -1,0 +1,31 @@
+# N4-D evidence: is the black first live-play frame a fade or a capture artifact?
+#
+# Both form factors produced a 100%-black frame at the kickoff sample -- the first frame the
+# engine reports as live play (`[match] ... state=4`).  Two explanations fit that single sample
+# and they point at different conclusions: the field genuinely fades in from black at kickoff and
+# the sample landed on the fade's first frame (engine is correct, the sample is just early), or a
+# single mid-transition frame really is presented black while its neighbours are lit (a visible
+# flash, and an F03/F05 correctness question).
+#
+# One sample cannot tell them apart, so this scenario takes a burst: consecutive presentations
+# sampled back to back from the moment live play is announced, first at 6-frame spacing (the
+# fade, if it is one, is short) and then a coarser tail.  A fade shows a monotonic ramp out of
+# black; an artifact shows an isolated black frame bounded by lit ones.  Nothing is injected and
+# no frame is predicted: the burst is relative to the engine's own live-play line.
+env STRIKERS_LOG_SCENES=1
+env STRIKERS_LOG_MATCH=1
+env STRIKERS_LOG_NIS=1
+env STRIKERS_AUTOPRESS=A@s51+180,A@s2+240,A@s53+120,A@s3+240,A@s8+300,A@s8+420,A@s8+540,A@s8+660,LEFT@s8+780,A@s8+900,A@s8+1020,A@s9+300
+require-scene choose_captains
+wait-log state=4 ot=0 score @420
+shot kickoff-b0
+shot kickoff-b1
+shot kickoff-b2
+shot kickoff-b3
+shot kickoff-b4
+shot kickoff-b5
+shot kickoff-b6
+shot kickoff-b7
+shot kickoff-b8
+dump kickoff_burst
+quit
