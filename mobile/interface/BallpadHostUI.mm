@@ -400,6 +400,115 @@ static void BallpadLogOverlayTouchIfSettled(SunPadGameOverlay *overlay)
     BallpadLog(@"overlay: the touch controls as drawn -- %@", now);
 }
 
+// -- The safe area the controls are drawn inside (doc 34 F06) -----------------
+// F06's rotation half asks whether the landscape layout fits the safe areas, and this is the
+// reading that answers it: not "the layout ran" but "every control it drew is inside the region the
+// surface says is safe". The vendored pass is the only thing that decides where a control goes, and
+// it derives its placement from the overlay's own -safeAreaInsets, so the surface's safe rect is
+// the reference and the controls' converted frames are the claim. Nothing here is a device
+// constant: the numbers come from UIKit and the verdict is a containment test.
+//
+// This is worth a line of its own rather than a clause on the overlay read-back above because the
+// two disagree in the case that matters. Rotating the device from one landscape side to the other
+// leaves the surface the same *size* -- so an overlay reading that prints bounds and centres looks
+// unchanged -- while the notch and the home indicator swap sides and the safe rect moves under
+// every control. The insets are therefore stated in the line, and the runner's F06 clause is that
+// two different inset readings were seen (the rotation happened) and that no line in either of them
+// put a drawn control outside the safe rect.
+//
+// Settled rather than immediate, for the reason the overlay read-back is: a rotation animates, and
+// the frames sampled during the animation are the ones on their way somewhere. Thirty-five
+// hundredths of a second after the tree stops moving is the layout that stayed.
+static NSString *BallpadLayoutReadBack(SunPadGameOverlay *overlay)
+{
+    const UIEdgeInsets insets = overlay.safeAreaInsets;
+    // Half a point of slack, so a control the vendored pass placed exactly on the safe edge is
+    // inside it rather than outside by a rounding error.
+    const CGRect safe = CGRectInset(UIEdgeInsetsInsetRect(overlay.bounds, insets), -0.5, -0.5);
+
+    NSArray<UIView *> *controls = BallpadTouchControlsInDrawOrder(overlay);
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    NSMutableArray<NSString *> *outside = [NSMutableArray array];
+    NSUInteger judged = 0;
+    for (UIView *control in controls)
+    {
+        // Only what is actually drawn is judged: a control the player has hidden by the
+        // controller-connected rule or by the opacity slider is not a layout claim, and counting it
+        // would turn a setting into a false failure.
+        if (control.hidden || control.alpha == 0.0)
+            continue;
+        judged++;
+        [names addObject:control.accessibilityIdentifier ?: @"?"];
+        const CGRect drawn = [control convertRect:control.bounds toView:overlay];
+        if (!CGRectContainsRect(safe, drawn))
+            [outside addObject:[NSString stringWithFormat:@"%@ %@", control.accessibilityIdentifier ?: @"?",
+                                NSStringFromCGRect(drawn)]];
+    }
+
+    // The FPS counter is Ballpad's own view rather than one of the vendored controls, and it is
+    // placed against the same insets by BallpadPositionFPSCounterLabel -- so it belongs in the same
+    // verdict. It is reported separately because it is the one drawn thing whose frame is set once
+    // per surface shape, and a rotation that did not re-place it is a defect this line can show.
+    //
+    // Found by the identifier it publishes rather than held as a reference, for the reason
+    // BallpadControlLabelled gives: the reading is of the tree the player has, and this file's
+    // counter key is not in scope this early in the translation unit.
+    UILabel *counter = nil;
+    for (UIView *subview in overlay.subviews)
+        if ([subview isKindOfClass:UILabel.class] &&
+            [subview.accessibilityIdentifier isEqualToString:@"BallpadFPSCounter"])
+            counter = (UILabel *)subview;
+    NSString *counterField = @"fps 0";
+    if (counter != nil && counter.superview != nil)
+    {
+        const CGRect drawn = [counter convertRect:counter.bounds toView:overlay];
+        counterField = [NSString stringWithFormat:@"fps 1 origin %.1f,%.1f inside %d",
+                        (double)drawn.origin.x, (double)drawn.origin.y,
+                        CGRectContainsRect(safe, drawn) ? 1 : 0];
+    }
+
+    NSString *offenders = outside.count > 0
+        ? [NSString stringWithFormat:@" (%@)", [outside componentsJoinedByString:@"; "]]
+        : @"";
+    return [NSString stringWithFormat:
+            @"surface %.0fx%.0f safe %.1f,%.1f,%.1f,%.1f | judged %lu outside %lu%@ | %@ | %@",
+            (double)CGRectGetWidth(overlay.bounds), (double)CGRectGetHeight(overlay.bounds),
+            (double)insets.left, (double)insets.top, (double)insets.right, (double)insets.bottom,
+            (unsigned long)judged, (unsigned long)outside.count, offenders,
+            [names componentsJoinedByString:@","], counterField];
+}
+
+static void BallpadLogLayoutIfSettled(SunPadGameOverlay *overlay)
+{
+    static __weak SunPadGameOverlay *s_readFrom = nil;
+    static NSString *s_logged = nil;
+    static NSString *s_pending = nil;
+    static CFTimeInterval s_pendingSince = 0.0;
+
+    if (overlay != s_readFrom)
+    {
+        s_readFrom = overlay;
+        s_logged = nil;
+        s_pending = nil;
+    }
+
+    NSString *now = BallpadLayoutReadBack(overlay);
+    if (s_logged != nil && [now isEqualToString:s_logged])
+        return;
+    const CFTimeInterval stamp = CACurrentMediaTime();
+    if (s_pending == nil || ![now isEqualToString:s_pending])
+    {
+        s_pending = now;
+        s_pendingSince = stamp;
+        return;
+    }
+    if (stamp - s_pendingSince < 0.35)
+        return;
+    s_logged = now;
+    s_pending = nil;
+    BallpadLog(@"layout: %@", now);
+}
+
 // The C-stick flip, read back where it is applied: the pad the port is handed. R1 item 5 counts
 // this switch among the settings that have to reach the runtime, and this runtime's C-stick is the
 // port's, so the value worth publishing is the published one. Only transitions of the setting and
@@ -797,6 +906,7 @@ static void BallpadLogShoulderOutlineIfChanged(UIView *overlay)
 // The right shoulder's own press and appearance, wired and applied from -layoutSubviews; the flags
 // they read and set are above, next to the reason they exist.
 - (void)ballpadRightShoulderGesture:(UILongPressGestureRecognizer *)gesture;
+- (void)ballpadApplySafeAreaContainment;
 - (void)ballpadApplyShoulderRepair;
 - (void)ballpadScheduleShoulderRepair;
 - (void)ballpadWireRightShoulder:(UIView *)right;
@@ -1290,6 +1400,8 @@ static NSString *BallpadAudioRecordingPath(void)
 //
 //   * the three-dot button gets one explicit appearance, so dismissing a primary-action menu cannot
 //     synthesize a rectangular highlight over it and a rebuilt surface cannot leave it with none;
+//   * a control the vendored default pass drew outside the safe rect is put back inside it, for the
+//     reason -ballpadApplySafeAreaContainment gives;
 //   * the right shoulder is made L's twin, for the reason its flags are documented above.
 - (void)layoutSubviews
 {
@@ -1304,6 +1416,7 @@ static NSString *BallpadAudioRecordingPath(void)
         s_rightShoulderHeld = false;
     s_rightShoulderInert = editing;
 
+    [self ballpadApplySafeAreaContainment];
     [self ballpadApplyShoulderRepair];
     [self ballpadScheduleShoulderRepair];
 }
@@ -1323,6 +1436,89 @@ static NSString *BallpadAudioRecordingPath(void)
         [weakSelf ballpadApplyShoulderRepair];
     });
 }
+
+// A control the vendored default pass drew outside the surface's safe rect. -placeControl: clamps a
+// *saved* origin and does not clamp its own default, and the phone defaults are normalized centres
+// captured at a control size scale of 1.0 -- Z's 0.97125 is one, and it sits exactly on the safe
+// rect's right edge at that scale, which is why the constant has the value it has. The scale runs to
+// 1.35 globally and to 1.75 for a single control, and a control already on the edge at 1.0 grows
+// straight out of the rect when the scale is raised: on the iPhone 17e the layout read-back caught
+// `judged 14 outside 1 (Z {{746.328125, 131.87}, {58.21875, 58.21875}})` against a safe rect ending
+// at 797, which is 7.5pt of that button under the display's rounded corner. It survived a relaunch,
+// because the scale that grew the control is persisted and nothing in the default pass puts a
+// default back inside.
+//
+// The policy applied here is the vendored file's own rather than one invented for Ballpad:
+// -controlDragged: and the saved-origin branch of -placeControl: both clamp a centre into the safe
+// rect with these same half-extent numbers. A control the player placed is therefore already inside
+// and is left alone, the vendored pass keeps deciding where every control goes, and the only thing
+// this moves is a control the vendored default pass itself put outside -- by exactly as much as it
+// takes to bring it back. It runs before the shoulders are repaired, so the right shoulder mirrors a
+// left shoulder that has already been brought inside.
+//
+// The four directional buttons are governed as one control, by their group: the vendored pass lays
+// them out around the group's clamped centre and their extent *is* the group's bounds, so clamping
+// one button on its own would break the cross rather than fix it.
+- (void)ballpadApplySafeAreaContainment
+{
+    CGRect safe = self.bounds;
+    if (@available(iOS 11.0, *))
+        safe = UIEdgeInsetsInsetRect(safe, self.safeAreaInsets);
+    if (safe.size.width <= 0.0 || safe.size.height <= 0.0)
+        return;
+
+    NSMutableArray<UIView *> *judged = [NSMutableArray array];
+    for (UIView *control in BallpadTouchControlsInDrawOrder(self))
+        if (![control.accessibilityIdentifier hasPrefix:@"D_"])
+            [judged addObject:control];
+    UIView *dPad = BallpadControlLabelled(self, @"D-pad");
+    if (dPad != nil)
+        [judged addObject:dPad];
+
+    NSMutableArray<NSString *> *moved = [NSMutableArray array];
+    for (UIView *control in judged)
+    {
+        const CGRect drawn = [control convertRect:control.bounds toView:self];
+        if (CGRectContainsRect(safe, drawn))
+            continue;
+        // MIN against half the safe rect as well as half the control, which is the vendored editor's
+        // own guard: a control larger than the whole safe rect is centred on it rather than given a
+        // clamp range that has crossed over itself.
+        const CGFloat halfWidth = MIN(CGRectGetWidth(drawn) * 0.5, safe.size.width * 0.5);
+        const CGFloat halfHeight = MIN(CGRectGetHeight(drawn) * 0.5, safe.size.height * 0.5);
+        const CGFloat minX = CGRectGetMinX(safe) + halfWidth, maxX = CGRectGetMaxX(safe) - halfWidth;
+        const CGFloat minY = CGRectGetMinY(safe) + halfHeight, maxY = CGRectGetMaxY(safe) - halfHeight;
+        const CGPoint centre = CGPointMake(MIN(MAX(CGRectGetMidX(drawn), minX), maxX),
+                                           MIN(MAX(CGRectGetMidY(drawn), minY), maxY));
+        // A control that is outside by a rounding error is inside for every purpose that matters
+        // here, and re-centring it every pass would be churn without a picture to show for it.
+        if (fabs(centre.x - CGRectGetMidX(drawn)) < 0.01 &&
+            fabs(centre.y - CGRectGetMidY(drawn)) < 0.01)
+            continue;
+        [moved addObject:[NSString stringWithFormat:@"%@ %.1f,%.1f to %.1f,%.1f",
+                          control.accessibilityIdentifier ?: @"?",
+                          (double)CGRectGetMidX(drawn), (double)CGRectGetMidY(drawn),
+                          (double)centre.x, (double)centre.y]];
+        control.center = [control.superview convertPoint:centre fromView:self];
+    }
+
+    // Only a control that actually moved is written, and only when the set of them changes: this is
+    // the line that says the defect was live, so on a layout that respects the safe rect it is
+    // absent rather than repeating every pass.
+    if (moved.count == 0)
+        return;
+    NSString *line = [moved componentsJoinedByString:@"; "];
+    static NSString *s_lastMoved = nil;
+    if ([line isEqualToString:s_lastMoved])
+        return;
+    s_lastMoved = line;
+    BallpadLog(@"safe area: %lu control(s) were drawn outside the surface's safe rect and are back "
+               @"inside it -- %@ | insets %.1f,%.1f,%.1f,%.1f",
+               (unsigned long)moved.count, line, (double)self.safeAreaInsets.left,
+               (double)self.safeAreaInsets.top, (double)self.safeAreaInsets.right,
+               (double)self.safeAreaInsets.bottom);
+}
+
 
 // R as L's twin. The vendored width is 2*small + 24*scale wider than L's, which is the spray track's
 // own geometry, and its border is re-derived on every layout pass; both are undone here from L's live
@@ -2097,6 +2293,11 @@ extern "C" void PortHostUIFrame(void)
         // press does not re-lay the tree out, so only a per-frame sample sees it. See the sampler
         // for why the pair is the value rather than a count.
         BallpadLogShoulderOutlineIfChanged(s_overlay);
+
+        // And the safe-area verdict (F06): the same settled pass over the drawn tree as the
+        // overlay read-back above, measured against the overlay's own -safeAreaInsets, which is the
+        // only thing that moves when the device is turned from one landscape side to the other.
+        BallpadLogLayoutIfSettled(s_overlay);
     }
 }
 

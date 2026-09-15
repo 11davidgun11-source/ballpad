@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Real-touch acceptance for the vendored SunPad interface running inside the native
 /// Strikers port (doc 36 R1; stages N4-C and N4-D).
@@ -54,6 +55,13 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 
     private static let renderScaleSegments = ["1×", "2×", "3×", "4×"]
 
+    /// The overlay's whole control set, by the labels SunPad publishes, for the rotation row: the
+    /// claim there is that the turn leaves every one of them drawn and hittable, so the list is the
+    /// set the overlay draws rather than a sample of it.
+    private static let rotationControls = [
+        "move", "c", "D_U", "D_D", "D_L", "D_R", "A", "B", "X", "Y", "Z", "Start", "L", "R",
+    ]
+
     private var app: XCUIApplication!
 
     override func setUpWithError() throws {
@@ -96,7 +104,74 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     private var menuButton: XCUIElement { app.buttons["Menu"] }
 
     private func attach(_ name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let image = app.screenshot().image
+        let upright = Self.bakedUpright(image)
+        let attachment = XCTAttachment(image: upright)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        // The fix is only checkable from the bundle if its input is recorded, so the screenshot's
+        // own geometry lands beside the image rather than staying in an annotator's head.
+        attachNote(name + "-orientation",
+                   "source \(Int(image.size.width))x\(Int(image.size.height)) @\(image.scale)x "
+                   + "orientation \(Self.orientationName(image.imageOrientation)) -> "
+                   + "baked \(Int(upright.size.width))x\(Int(upright.size.height)) as \(name).png")
+    }
+
+    /// The app's screenshot, re-rendered so that its own orientation is baked into the pixels.
+    ///
+    /// `XCTAttachment(screenshot:)` keeps the screenshot's `imageOrientation` on the image and does
+    /// not carry it into the exported PNG, so on a landscape device the file a reader gets is a
+    /// rotated buffer. Measured on the iPad bundle `uitest-pad-pad-f06d`: the three F06 attachments
+    /// only read after an external 90 degree rotation, and after it they are a portrait canvas
+    /// holding an off-centre region. Doc 34 asks for the F06 screenshots to be visually inspected in
+    /// their actual orientation, so the rotation belongs in the pixels here rather than in the
+    /// reader's head, and the same fix makes every other row's screenshots readable.
+    ///
+    /// The canvas has to be the *display* size, not `image.size`: a screenshot of a landscape
+    /// interface is a portrait pixel buffer carrying a rotation, and UIKit reports `size` as that
+    /// raw buffer -- measured here as `820x1180 @2.0x orientation left` on the iPad. Drawing it into
+    /// a canvas of its own raw size is what produced the portrait, off-centre frames, so the axes
+    /// are swapped for the four quarter-turn orientations. `UIImage.draw(in:)` applies the
+    /// orientation itself, so the aspect ratios then agree and the fit is exact.
+    private static func bakedUpright(_ image: UIImage) -> UIImage {
+        guard image.imageOrientation != .up else { return image }
+        let size = displaySize(of: image)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = image.scale
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+
+    /// The size the image occupies once its orientation is honoured: a quarter-turn orientation
+    /// swaps the axes, and the upright ones leave them alone.
+    private static func displaySize(of image: UIImage) -> CGSize {
+        switch image.imageOrientation {
+        case .left, .right, .leftMirrored, .rightMirrored:
+            return CGSize(width: image.size.height, height: image.size.width)
+        default:
+            return image.size
+        }
+    }
+
+    private static func orientationName(_ orientation: UIImage.Orientation) -> String {
+        switch orientation {
+        case .up: return "up"
+        case .down: return "down"
+        case .left: return "left"
+        case .right: return "right"
+        case .upMirrored: return "upMirrored"
+        case .downMirrored: return "downMirrored"
+        case .leftMirrored: return "leftMirrored"
+        case .rightMirrored: return "rightMirrored"
+        @unknown default: return "unknown(\(orientation.rawValue))"
+        }
+    }
+
+    private func attachNote(_ name: String, _ text: String) {
+        let attachment = XCTAttachment(string: text)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -1090,12 +1165,88 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         guard slider.exists else { return nil }
         let normalized = CGFloat(min(max(percent / 100.0, 0.0), 1.0))
         slider.adjust(toNormalizedSliderPosition: normalized)
-        let deadline = Date().addingTimeInterval(10)
+        return settledSliderPercent(label)
+    }
+
+    /// The reading a slider settles on, waited for rather than taken at the first opportunity.
+    ///
+    /// A slider applies a touch on a later turn of the app's own run loop, so a read taken in the same
+    /// breath as the gesture can be the value from *before* it -- and a drive that reads its own request
+    /// back would then conclude the slider had already reached the top when it had not. Two equal
+    /// readings in a row are what "settled" means: the first read is the one that can be stale, and the
+    /// second is the one that agrees with it. A slider that is not there at all reads nil, which is not
+    /// the same answer as a slider at the bottom of its track.
+    private func settledSliderPercent(_ label: String, timeout: TimeInterval = 8) -> Double? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previous: Double?
         repeat {
-            if let now = sliderPercent(label) { return now }
-            Thread.sleep(forTimeInterval: 0.25)
+            guard let now = sliderPercent(label) else { return previous }
+            if now == previous { return now }
+            previous = now
+            Thread.sleep(forTimeInterval: 0.3)
         } while Date() < deadline
-        return sliderPercent(label)
+        return previous
+    }
+
+    /// One tap on the far end of `label`'s track, and what the slider reads afterwards.
+    ///
+    /// `adjust(toNormalizedSliderPosition: 1.0)` synthesizes a *drag* from wherever the thumb is to the
+    /// track's own end, and that path is what the layout can move out from under: the same call that
+    /// reads a clean 100% on the iPhone 17e has stopped at 93% on the iPad, with the app's own log
+    /// showing the drag ending at size 1.30 of the vendored 0.70-1.35 range, and repeating the identical
+    /// call walks a little further and then plateaus in the nineties. A tap has no path -- it is one
+    /// touch at one point -- and a slider jumps its thumb to the point it is touched, so a tap at the
+    /// end of the element's own bounds asks the slider for the top of its track directly.
+    ///
+    /// A tap is also the only fallback that cannot disturb the tree if it misses. The drag released
+    /// *past* the end of the slider was tried first and does reach the top of the panel's slider, but on
+    /// the layout editor's slider it took hold of the surface behind the editor and moved a control with
+    /// it: measured on the iPad, the selected control's slider fell to 35% and the right shoulder was
+    /// left 12pt off its row. A tap that misses reads a value it did not change and nothing else moves.
+    @discardableResult
+    private func tapTheEndOfTheTrack(_ label: String) -> Double? {
+        let slider = app.sliders[label]
+        guard slider.exists else { return nil }
+        slider.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.5)).tap()
+        return settledSliderPercent(label)
+    }
+
+    /// Drives `label` to the top of its track and returns the reading of the state it leaves behind.
+    ///
+    /// `adjust(toNormalizedSliderPosition:)` is the mechanism that addresses a slider's own track, and
+    /// it is tried first because it is the one mechanism both sliders answer on both form factors. When
+    /// it stops short -- the same call that reads a clean 100% on the iPhone 17e has stopped at 93% on
+    /// the iPad -- the tap on the end of the track is the second opinion, and the two are alternated
+    /// until one of them reports the top or neither improves on the reading it came after.
+    ///
+    /// The repetition stops at the first reading that does not improve on the one before it, and what
+    /// comes back is the reading the slider is left at rather than a high-water mark it has since fallen
+    /// back from: "the top of the track" is a reading rather than a request, and the caller's assertion
+    /// over it is what decides whether the reading *is* the top.
+    @discardableResult
+    private func driveSliderToItsTop(_ label: String, attempts: Int = 3) -> Double? {
+        // The adjust first: it is the mechanism a slider answers on its own, and on the iPhone it is
+        // the whole of the drive, because it reaches the top on the first call.
+        var best = setSliderTrackPercent(label, to: 100.0)
+        var previous: Double?
+        for _ in 0..<attempts {
+            guard let reading = best else { return nil }
+            if reading >= 99.5 { return reading }
+            // Short of the top: one tap on the end of the track, and the reading is kept only when it is
+            // the better of the two so a tap that missed cannot walk the drive backwards.
+            if let tapped = tapTheEndOfTheTrack(label) {
+                if tapped >= 99.5 { return tapped }
+                best = max(tapped, reading)
+            }
+            // Then the adjust again, from wherever that left the slider, and the drive ends at the first
+            // reading that does not improve on the one before it: what comes back is the state the slider
+            // is in, never a high-water mark it has since fallen back from.
+            guard let again = setSliderTrackPercent(label, to: 100.0) else { return best }
+            if let earlier = previous, again <= earlier + 0.01 { return again }
+            previous = again
+            best = max(again, best ?? again)
+        }
+        return best
     }
 
     /// Waits for the drawn A button's frame to satisfy `predicate`. A slider applies on the next
@@ -1115,6 +1266,21 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         XCTFail("the drawn A button did not change " + what + "; it stayed at "
                 + NSCoder.string(for: last))
         return nil
+    }
+
+    /// Waits for the drawn control's frame to satisfy `predicate`, returning the frame it is drawn
+    /// at when the wait ends. Bounded, and it returns rather than fails: the assertions after it are
+    /// what report a control that never moved or never came back, so a control the app has stopped
+    /// drawing at all is the only case this helper speaks to on its own.
+    @discardableResult
+    private func waitForDrawnFrame(_ label: String, timeout: TimeInterval = 20,
+                                   where predicate: (CGRect) -> Bool) -> CGRect? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let element = overlayElement(label), predicate(element.frame) { return element.frame }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        return overlayElement(label)?.frame
     }
 
     /// A real touch on the overlay's camera stick: a sustained press at its centre, dragged to its
@@ -1303,6 +1469,257 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         // resting one and the differing pair the run requires is not buried under a later frame.
         Thread.sleep(forTimeInterval: 1.0)
         attach("shoulders-after-both-presses")
+    }
+
+    // MARK: - The rotated relayout (F06)
+
+    /// F06's rotation half. This app is landscape-only, so the orientation it can be turned to is the
+    /// *other* landscape side, and that is the transition worth exercising: it is the moment the
+    /// surface is laid out again, so it is where a layout can drop a control, push one off the
+    /// screen, or leave the two shoulders mismatched. Editing, resizing, opacity, reset and their
+    /// persistence are the neighbouring rows; what is unexercised without this one is the relayout.
+    ///
+    /// What is claimed after the turn is that the layout still *fits*: the whole control set is still
+    /// drawn, every control is still hittable and still inside the window, the two shoulders are
+    /// still each other's mirror about the surface's vertical axis, and the port's display read-back
+    /// still reports the same render target -- a turn that rebuilt the surface would show up there
+    /// rather than in a control's arithmetic.
+    ///
+    /// What is deliberately *not* claimed is that any control moved. Measured from the app's side of
+    /// the boundary, in the run's own `layout:` line, this device publishes the same view-space safe
+    /// inset on both landscape sides -- `safe 47.0,0.0,47.0,20.0` on the phone, symmetrically, in
+    /// each -- so UIKit hands the overlay the same safe rect either way and the correct placement of
+    /// every control is the same coordinate. An assertion that a control had moved would therefore
+    /// be an assertion of a defect. The containment verdict lives where the insets actually are: the
+    /// app writes the rect it was handed, and every drawn control's rect against it, and the runner
+    /// judges those lines rather than taking this process's word for arithmetic it cannot see.
+    func testTurnToTheOtherLandscapeSideKeepsEveryControlInsideAndHittable() throws {
+        launchAndWaitForOverlay()
+        // The counter's label is where the port publishes its display read-back, so turning it on is
+        // what makes the drawable readable from out here as well as in the app's log.
+        setFPSCounter(true)
+
+        guard waitForIdentifier("BallpadFPSCounter", timeout: 20) != nil else {
+            attachHierarchy("fps-counter-missing-before-rotation")
+            XCTFail("the FPS counter is drawn, so the port's display read-back is readable")
+            return
+        }
+
+        XCTAssertTrue(waitForOverlayElement("L", timeout: 30) != nil, "L is on screen before the turn")
+
+        let displayBefore = displayReadBack()
+        XCTAssertNotNil(displayBefore, "the port's display read-back is readable before the turn")
+        attach("rotation-before")
+        attachHierarchy("rotation-before-hierarchy")
+
+        // The turn. `landscapeRight` is the opposite side of the default `landscapeLeft`, and the
+        // app declares both, so iOS performs a real rotation rather than refusing it.
+        XCUIDevice.shared.orientation = .landscapeRight
+        defer { XCUIDevice.shared.orientation = .landscapeLeft }
+
+        // Waited for by the tree settling rather than by a sleep: the surface is laid out again over
+        // the frames that follow the turn, so the readings below are taken only once the whole
+        // control set has answered with the same frames twice in a row.
+        waitForTheControlSetToSettle()
+        attach("rotation-after")
+        attachHierarchy("rotation-after-hierarchy")
+
+        // The whole control set, not only the pair: a rotation that dropped a control would otherwise
+        // pass on a screenshot that looks plausible.
+        var frames: [String: CGRect] = [:]
+        for control in Self.rotationControls {
+            // Resolved by label across the collections the overlay publishes into, because the set is
+            // mixed: the two analog sticks are plain views and the buttons are buttons, and the claim
+            // here is about the control rather than about which collection it lands in.
+            guard let element = waitForOverlayElement(control, timeout: 10) else {
+                XCTFail("the " + control + " control is drawn after the turn")
+                continue
+            }
+            frames[control] = element.frame
+            XCTAssertTrue(element.isHittable,
+                          "the " + control + " control is still hittable after the turn")
+        }
+        XCTAssertEqual(frames.count, Self.rotationControls.count,
+                       "every control in the overlay's set survived the turn")
+
+        // Inside the window: the surface is the window, so a control drawn outside it is drawn off
+        // the screen however correct its inset arithmetic was.
+        let surface = app.windows.firstMatch.frame
+        for (control, frame) in frames {
+            XCTAssertTrue(surface.contains(frame) || surface.insetBy(dx: -1, dy: -1).contains(frame),
+                          "the " + control + " control is drawn inside the window after the turn: "
+                          + NSCoder.string(for: frame) + " against " + NSCoder.string(for: surface))
+        }
+
+        // And the pair is still L's twin on the other side of the surface, which is the relation the
+        // shoulder row reads at rest: a turn that re-placed one shoulder while keeping the other's
+        // old frame would leave them mismatched on exactly one landscape side.
+        let leftAfter = frames["L"] ?? .zero
+        let rightAfter = frames["R"] ?? .zero
+        XCTAssertEqual(leftAfter.minX - surface.minX, surface.maxX - rightAfter.maxX, accuracy: 2.0,
+                       "the shoulders keep their mirrored placement after the turn")
+        XCTAssertEqual(leftAfter.minY, rightAfter.minY, accuracy: 1.0,
+                       "and they are still on the same row after the turn")
+
+        // The engine is still the one engine: the port's display read-back is still readable and the
+        // render target keeps its shape, so the turn did not lose the drawable or bring up a second
+        // surface. The counter's own text moving is the "still running" half.
+        let running = waitForDisplay("a reading after the turn", timeout: 20) { _ in true }
+        XCTAssertEqual(running?.width, displayBefore?.width,
+                       "the render target keeps its width across the turn")
+        XCTAssertEqual(running?.height, displayBefore?.height,
+                       "and its height, so the drawable was not recreated at another shape")
+    }
+
+    /// A bounded wait for a layout in flight to stop changing, so that what is read afterwards
+    /// describes one tree rather than two frames of a moving one -- whether the tree is moving
+    /// because the device was turned or because a size was changed. It returns as soon as the whole
+    /// control set has answered with the same frames twice in a row, and it is what lets the app's
+    /// own settled-layout read-back write a line for the state being judged.
+    ///
+    /// A timeout is deliberately not asserted here: an unsettled tree is what the assertions after
+    /// the wait are for, and failing here as well would report the same defect twice. The wait is
+    /// still bounded, so a tree that never settles costs a report rather than a hang.
+    private func waitForTheControlSetToSettle(timeout: TimeInterval = 20) {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previous: [String: CGRect] = [:]
+        repeat {
+            var current: [String: CGRect] = [:]
+            for control in Self.rotationControls {
+                if let element = overlayElement(control) { current[control] = element.frame }
+            }
+            if current.count == Self.rotationControls.count && current == previous { return }
+            previous = current
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+    }
+
+    // MARK: - The size extremes (F06)
+
+    /// F06's resizing half, driven to the largest size the panel can produce and held there.
+    ///
+    /// The claim this row is about is containment -- that no control is drawn outside the region the
+    /// surface itself calls safe -- and the only process that can decide it is the app: the safe rect
+    /// is UIKit's answer to the overlay's own `-safeAreaInsets`, and a test process is never told it.
+    /// So this test puts the tree into the state the claim is *about*, waits for the layout to stop
+    /// moving so that the app writes a settled `layout:` line for it, and leaves the judging to the
+    /// run's containment clauses over those lines.
+    ///
+    /// That state is the size extremes, and it is not incidental coverage. A vendored default is a
+    /// normalized centre captured at a size scale of 1.0, so a control whose default sits on the safe
+    /// edge at 1.0 grows straight out of the safe rect when the scale is raised, and nothing in the
+    /// vendored default pass clamps a control it was never given a saved origin for. Measured on the
+    /// iPhone 17e before the containment repair, Z was drawn 7.5pt past the safe rect's right edge
+    /// with the panel's slider at its maximum -- and because the scale is persisted, that reading
+    /// survived a relaunch. Both size controls are driven here because they are two different paths
+    /// into the layout: the panel's slider scales the whole set through `-sizeChanged:`, and the
+    /// editor's scales one control through `-selectedSizeChanged:` and runs to a larger factor.
+    ///
+    /// The row ends with the vendored reset, which is what makes the two claims one claim: the size
+    /// driven to its maximum has to come back to the default the layout started at, and the control
+    /// with it. The starting state is normalized to that default first, so "at the default" is a
+    /// frame this test measured rather than one it assumed.
+    func testTheLargestControlSizeThePanelOffersIsStillInsideTheSafeArea() throws {
+        launchAndWaitForOverlay()
+        openMenu()
+        openTouchSettings()
+
+        // The vendored default, as the slider's own percentage: 0.70 + 0.4615 * 0.65 = 1.00. Pinning
+        // it here makes the frame below a reading of the default rather than of whatever an earlier
+        // row left in the store.
+        setSliderTrackPercent("Control size", to: 46.0)
+        guard let zAtDefault = overlayElement("Z")?.frame else {
+            attachHierarchy("z-missing-before-the-size-drag")
+            XCTFail("the overlay's Z button is drawn before any size is driven")
+            return
+        }
+
+        // -- The panel's slider, at its maximum: the whole set grows, edge control included -------
+        let panelMaximum = driveSliderToItsTop("Control size")
+        XCTAssertEqual(panelMaximum ?? -1.0, 100.0, accuracy: 0.5,
+                       "the Control size slider is at its maximum; it stopped at "
+                       + String(format: "%.1f", panelMaximum ?? -1.0) + "%")
+        let atPanelMaximum = waitForDrawnFrame("Z") { $0.width > zAtDefault.width + 1.0 }
+        XCTAssertNotNil(atPanelMaximum, "Z is still drawn with the Control size slider at its maximum")
+        if let grown = atPanelMaximum {
+            XCTAssertGreaterThan(grown.width, zAtDefault.width + 1.0,
+                                 "Z is drawn larger with the slider at its maximum ("
+                                 + NSCoder.string(for: zAtDefault) + " then "
+                                 + NSCoder.string(for: grown) + ")")
+        }
+        waitForTheControlSetToSettle()
+        attach("control-size-maximum")
+
+        // -- The editor's per-control slider, which overrides that for a single control ----------
+        let moveSwitch = app.switches["Move touch controls"]
+        XCTAssertTrue(moveSwitch.waitForExistence(timeout: 10), "the Move touch controls switch")
+        if (moveSwitch.value as? String) != "1" { moveSwitch.tap() }
+        if !app.buttons["Finish moving touch controls"].waitForExistence(timeout: 12) {
+            attachHierarchy("move-controls-after-first-tap")
+            if moveSwitch.exists && moveSwitch.isHittable { moveSwitch.tap() }
+        }
+        XCTAssertTrue(app.buttons["Finish moving touch controls"].waitForExistence(timeout: 30),
+                      "the layout editor bar appears once moving is on")
+
+        guard let z = overlayElement("Z") else {
+            attachHierarchy("z-missing-in-the-editor")
+            XCTFail("Z is on screen to be selected for resizing")
+            return
+        }
+        z.tap()
+        // Selecting re-labels the editor's slider after the control it now sizes, so this is also the
+        // read-back that the selection landed: it is the control's own name that appears.
+        let selectedSize = app.sliders["Z size"]
+        XCTAssertTrue(selectedSize.waitForExistence(timeout: 10),
+                      "tapping Z selects it and the editor sizes that control")
+        let zMaximum = driveSliderToItsTop("Z size")
+        XCTAssertEqual(zMaximum ?? -1.0, 100.0, accuracy: 0.5,
+                       "the selected control's size slider is at its maximum; it stopped at "
+                       + String(format: "%.1f", zMaximum ?? -1.0) + "%")
+        let atLargest = waitForDrawnFrame("Z") { $0.width > (atPanelMaximum?.width ?? 0) + 1.0 }
+        XCTAssertNotNil(atLargest, "Z is still drawn with its own size slider at its maximum")
+        if let grown = atLargest, let previous = atPanelMaximum {
+            XCTAssertGreaterThan(grown.width, previous.width + 1.0,
+                                 "Z is drawn larger again with its own size at its maximum ("
+                                 + NSCoder.string(for: previous) + " then "
+                                 + NSCoder.string(for: grown) + ")")
+            // On screen is the weaker claim and is checked here rather than left to the run: the
+            // window is a larger rectangle than the safe rect, so this cannot stand in for the
+            // containment clause, but a control drawn off the screen entirely would be a different
+            // failure from a control drawn under the notch and the two should not look alike.
+            let surface = app.windows.firstMatch.frame
+            XCTAssertTrue(surface.contains(grown),
+                          "Z is still drawn inside the window at its largest ("
+                          + NSCoder.string(for: grown) + " against " + NSCoder.string(for: surface) + ")")
+        }
+        waitForTheControlSetToSettle()
+        attach("z-size-maximum")
+        app.buttons["Finish moving touch controls"].tap()
+        XCTAssertFalse(app.buttons["Finish moving touch controls"].exists,
+                       "finishing editing leaves the layout editor")
+
+        // -- The vendored reset returns both scales, and the control with them -------------------
+        openMenu()
+        openTouchSettings()
+        let resetButton = app.buttons["Reset This Device Layout"]
+        XCTAssertTrue(resetButton.waitForExistence(timeout: 10), "the reset button")
+        resetButton.tap()
+        let alert = app.alerts["Reset Touch Control Layout?"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 10), "the reset confirmation alert")
+        alert.buttons["Reset"].tap()
+        XCTAssertFalse(alert.waitForExistence(timeout: 3), "Reset dismisses the alert")
+        waitForTheControlSetToSettle()
+        XCTAssertEqual(requireSliderPercent("Control size", "after the reset"), 46.0, accuracy: 1.0,
+                       "the reset put the control size back at the vendored default")
+        if let zNow = overlayElement("Z")?.frame {
+            assertFrameClose(zNow, zAtDefault,
+                             "Z is back at the default the reset restored, having been drawn at its "
+                             + "largest twice")
+        } else {
+            attachHierarchy("z-missing-after-the-reset")
+            XCTFail("Z is still drawn after the layout reset")
+        }
+        attach("z-after-reset")
     }
 
     // MARK: - What the engine's own pad held (F04)

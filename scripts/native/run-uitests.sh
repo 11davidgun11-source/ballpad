@@ -184,6 +184,8 @@ TEST_ROW_SPECS=(
     "S.f01.import-through-files=testFreshInstallShowsImportScreenAndActivatesAPickedImage"
     "S.f02.refusal-keeps-previous=testRefusedImportKeepsThePreviousInstallationUsable"
     "S.f04.ui-touch-sweep=testEveryControlReachesTheEnginesOwnPad"
+    "S.f06.rotated-relayout=testTurnToTheOtherLandscapeSideKeepsEveryControlInsideAndHittable"
+    "S.f06.size-extremes=testTheLargestControlSizeThePanelOffersIsStillInsideTheSafeArea"
 )
 EXPECTED="S.run,S.provenance"
 for spec in "${TEST_ROW_SPECS[@]}"; do
@@ -199,6 +201,10 @@ EXPECTED="${EXPECTED},S.r1.settings-readback"
 # F04's engine half is a reading of the port's own pad rather than of anything on screen, so it is a
 # read-back row like the one above and is judged by this script, not by a test method.
 EXPECTED="${EXPECTED},S.f04.engine-consumption"
+# F06's containment half is a property of the tree the app drew against the surface's own safe area,
+# which is a reading the app publishes and a test process cannot make for itself: see the layout:
+# family below.
+EXPECTED="${EXPECTED},S.f06.safe-area"
 
 # -- Own the device ----------------------------------------------------------
 sim_lock_acquire
@@ -497,14 +503,22 @@ OUTLINE_SUMMARY="0 0 0 0 0"
 # than an empty string.
 MIRROR_SUMMARY="0 0 0 0 0 0 0"
 CONSUME_SUMMARY="0 0 0 0 0 0 0 0 0 0 - 0 0 0 0 0 0 0 0"
+# F06's containment reading, defaulted to its all-zero shape for the same reason as the two above:
+# a run that never wrote a layout: line has to report a FAIL row rather than an empty string
+# (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines).
+LAYOUT_SUMMARY="0 0 0 0 0 0 0 0 0"
 # F04's engine reading is judged from the consume: family rather than from the read-back family, so it
 # keeps its own failure list. It is set in the branch below when the log is there and to the
 # missing-log reason when it is not, so the row lands either way instead of vanishing with a branch.
 CONSUME_FAIL=""
+# F06's row reads the layout: family rather than the read-back family, so it keeps its own failure
+# list too, set the same two ways.
+LAYOUT_FAIL=""
 log_new "$READBACK_LINES"
 if [ ! -f "$RUNTIME_LOG" ]; then
     READBACK_FAIL="the app left no log at ${RUNTIME_LOG}"
     CONSUME_FAIL="the app left no log at ${RUNTIME_LOG}, so the engine's own pad was never read back beside the host's offer"
+    LAYOUT_FAIL="the app left no log at ${RUNTIME_LOG}, so no drawn control was ever judged against the surface's safe area"
 else
     cp "$RUNTIME_LOG" "$LOG_COPY"
     DISPLAY_LINES="$(grep -cE ' display: ' "$LOG_COPY" || true)"
@@ -522,6 +536,7 @@ else
     # with it, and the switch holds a preference while the port's pad holds what it was handed.
     OVERLAY_LINES="$(grep -cE ' overlay: ' "$LOG_COPY" || true)"
     CSTICK_LINES="$(grep -cE ' c-stick: ' "$LOG_COPY" || true)"
+    LAYOUT_LINES="$(grep -cE ' layout: ' "$LOG_COPY" || true)"
     # The C-stick lines judged as a relation rather than as a count: with the modern convention off
     # the port must have been handed the mixer's own value, and with it on the port's value must be
     # the mixer's negated. "off N agree, on M flipped, K unreadable" is the whole reading.
@@ -580,11 +595,29 @@ else
     consume_field() { printf '%s' "$CONSUME_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
     consume_explained() { printf '%s' "$CONSUME_SUMMARY" | awk '{ print $4 + $5 }'; }
     consume_missing() { printf '%s' "$CONSUME_SUMMARY" | awk -v n="$1" '{ print $n }'; }
+    # F06's containment half. The line is written once per settled layout, and the fields this row
+    # needs are the surface, the four safe-area insets and how many of the judged controls the
+    # containment test put outside that inset rect. Three of the summary's counts are things a single
+    # line cannot give: how many *different* inset readings were seen, how many lines the left inset
+    # was the greater of the two on against how many the right was, and the worst outside-count over
+    # every line, which is the quantity the row's pass criterion is about. The first two are reported
+    # rather than required: this device publishes the same view-space insets on both landscape sides
+    # (`safe 47.0,0.0,47.0,20.0`, symmetrically), so one shape is the honest reading here and a
+    # criterion that demanded two would be demanding a defect. The ninth count is what keeps the
+    # containment claim from being vacuous: if the surface had published a zero safe area then
+    # "nothing outside it" would be true of the whole surface and would say nothing about insets.
+    #
+    # Read by field name rather than by position, because the drawn control list and the fps field
+    # follow the numbers and both are variable-length. The four insets arrive as one comma-joined
+    # field, so they are split rather than read as four tokens: reading $n + 1 alone would silently
+    # judge the whole inset rect by its left edge.
+    LAYOUT_SUMMARY="$(awk '/ layout: / { surface = ""; sv = ""; judged = ""; out = ""; for (i = 1; i <= NF; i++) { if ($i == "surface") surface = $(i + 1); if ($i == "safe") sv = $(i + 1); if ($i == "judged") { judged = $(i + 1); out = $(i + 3) } } if (surface == "" || sv == "" || judged == "" || out == "") { unread++; next } if (split(sv, p, ",") != 4) { unread++; next } total++; insets[sv] = 1; if ((p[1] + 0) > 0 || (p[2] + 0) > 0 || (p[3] + 0) > 0 || (p[4] + 0) > 0) insetLines++; if ((p[1] + 0) > (p[3] + 0)) leftHeavy++; else if ((p[3] + 0) > (p[1] + 0)) rightHeavy++; if ((out + 0) > worst) worst = out + 0; if ((out + 0) == 0) clean++; if ((judged + 0) > most) most = judged + 0 } END { n = 0; for (k in insets) n++; printf "%d %d %d %d %d %d %d %d %d\n", total + 0, n + 0, leftHeavy + 0, rightHeavy + 0, clean + 0, worst + 0, most + 0, unread + 0, insetLines + 0 }' "$LOG_COPY")"
+    layout_field() { printf '%s' "$LAYOUT_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
     {
         printf 'source: %s\n' "$RUNTIME_LOG"
         printf 'whole log: %s lines, copied to %s\n\n' "$(wc -l < "$LOG_COPY" | tr -d ' ')" "$LOG_COPY"
-        grep -E ' (display|settings|shoulder|shoulder outline|audio|overlay|consume|c-stick): ' "$LOG_COPY" \
-            || printf 'no display, settings, shoulder, shoulder-outline, audio, overlay, consume or c-stick line is in the log\n'
+        grep -E ' (display|settings|shoulder|shoulder outline|audio|overlay|consume|c-stick|layout): ' "$LOG_COPY" \
+            || printf 'no display, settings, shoulder, shoulder-outline, audio, overlay, consume, c-stick or layout line is in the log\n'
     } >> "$READBACK_LINES"
     [ "$DISPLAY_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no display: line, so no display row was read back from the port"
     [ "$SETTINGS_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no settings: line, so no setting was read back from the store"
@@ -666,6 +699,25 @@ else
         || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }no consume: line shows the engine's own pad holding the C-stick at the value the previous offer made for it, so the camera stick moved on screen without reaching the engine (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
     { [ "$(consume_field 17)" -gt 0 ] && [ "$(consume_field 18)" -eq 0 ]; } \
         || CONSUME_FAIL="${CONSUME_FAIL:+$CONSUME_FAIL; }no consume: line shows the engine's own pad holding a shoulder trigger at the value the previous offer made for it, so a shoulder moved on screen without reaching the engine (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: ${CONSUME_SUMMARY})"
+    # F06's containment half. Each clause is one field of the layout summary above. Three of them are
+    # guards against a vacuous pass: a run with no line at all, a line that judged nothing, or a
+    # surface that published no safe area at all would each otherwise report "nothing outside" while
+    # measuring nothing. The clause that carries the claim is the worst outside-count, which is the
+    # quantity doc 34's row is about: no drawn control, on any settled layout, outside the rect the
+    # surface itself called safe. The distinct-inset count and the left/right swap stay in the
+    # summary as reported readings rather than as criteria, for the reason given where the summary is
+    # built: on this device a correct turn produces one shape, so requiring two would fail the row
+    # for the app behaving correctly.
+    [ "$(layout_field 1)" -gt 0 ] \
+        || LAYOUT_FAIL="${LAYOUT_FAIL:+$LAYOUT_FAIL; }the log holds no layout: line, so no drawn control was judged against the surface's safe area (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines: ${LAYOUT_SUMMARY})"
+    [ "$(layout_field 8)" -eq 0 ] \
+        || LAYOUT_FAIL="${LAYOUT_FAIL:+$LAYOUT_FAIL; }a layout: line carries a field this script could not read, so the safe-area verdict could not be taken (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines: ${LAYOUT_SUMMARY})"
+    [ "$(layout_field 7)" -gt 0 ] \
+        || LAYOUT_FAIL="${LAYOUT_FAIL:+$LAYOUT_FAIL; }every layout: line judged no drawn control, so its containment reading is vacuously empty (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines: ${LAYOUT_SUMMARY})"
+    [ "$(layout_field 9)" -gt 0 ] \
+        || LAYOUT_FAIL="${LAYOUT_FAIL:+$LAYOUT_FAIL; }every layout: line published a zero safe area, so containment was measured against the whole surface and says nothing about the insets (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines: ${LAYOUT_SUMMARY})"
+    [ "$(layout_field 6)" -eq 0 ] \
+        || LAYOUT_FAIL="${LAYOUT_FAIL:+$LAYOUT_FAIL; }a layout: line put $(layout_field 6) drawn control(s) outside the rect the surface called safe, so the landscape layout does not fit the safe areas (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines: ${LAYOUT_SUMMARY})"
 fi
 if [ -z "$READBACK_FAIL" ]; then
     printf "S.r1.settings-readback\tPASS\t%s display, %s settings, %s shoulder, %s audio (of which %s name the mixer's own fields) and %s overlay lines (over %s alpha for the A control) plus %s c-stick lines, %s shoulder-outline lines (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable) and %s shoulder-mirror readings (total/rest/mirrored/skew/on-L's-row/editor/unreadable), written by the app itself\tapp-readbacks.txt\n" "$DISPLAY_LINES" "$SETTINGS_LINES" "$SHOULDER_LINES" "$AUDIO_LINES" "$AUDIO_MIX_LINES" "$OVERLAY_LINES" "$OVERLAY_ALPHAS" "$CSTICK_LINES" "$OUTLINE_SUMMARY" "$MIRROR_SUMMARY" >> "$ROWS"
@@ -689,6 +741,33 @@ if [ -z "$CONSUME_FAIL" ]; then
     printf "S.f04.engine-consumption\tPASS\t%s consume: lines, %s of them with no engine pad error, of which %s hold a mask equal to the previous poll's offer and %s also carry the port's own d-pad bits (%s in total, leaving the same-frame offer to explain only %s); covering %s of the twelve controls (missing %s) across %s front-end scenes; the main stick held the previous offer's clamp on %s of %s moving lines, the C-stick on %s of %s and the triggers on %s of %s, with %s lines carrying an extra bit the offers never made and %s unreadable (total/ok/errored/prevall/dpad/nowall/bmissing/bextra/agree/coverage/missing/scenes/stick-lines/stick-bad/sub-lines/sub-bad/trig-lines/trig-bad/unreadable: %s), read from the port's own pad rather than from a screenshot\tapp-readbacks.txt\n" "$(consume_field 1)" "$(consume_field 2)" "$(consume_field 4)" "$(consume_field 5)" "$(consume_explained)" "$(consume_field 6)" "$(consume_field 10)" "$(consume_missing 11)" "$(consume_field 12)" "$(( $(consume_field 13) - $(consume_field 14) ))" "$(consume_field 13)" "$(( $(consume_field 15) - $(consume_field 16) ))" "$(consume_field 15)" "$(( $(consume_field 17) - $(consume_field 18) ))" "$(consume_field 17)" "$(consume_field 8)" "$(consume_field 19)" "$CONSUME_SUMMARY" >> "$ROWS"
 else
     printf "S.f04.engine-consumption\tFAIL\t%s\tapp-readbacks.txt\n" "$CONSUME_FAIL" >> "$ROWS"
+fi
+
+# -- Whether the drawn controls fit the safe area the surface published (F06) --
+# F06's safe-area half, and the second row in this script that no screenshot can decide. The test
+# proves the whole control set survived a turn to the other landscape side and that every control is
+# inside the window; this proves the stronger claim, that each of them is inside the *safe* inset rect
+# the surface itself publishes, and that the rect it published was a real one rather than the whole
+# surface. The distinction matters because the window and the safe rect are different rectangles: a
+# control can sit comfortably on screen and still be inside the notch or under the home indicator,
+# which is exactly the defect a plausible-looking screenshot of the overlay would not show. Only the
+# app can make this reading -- a test process is not told the insets -- so the row is decided by the
+# app's own layout: line and the clauses above are what turn it into a verdict. Containment is judged
+# with half a point of slack, so a control placed exactly on the safe edge counts as inside; the FPS
+# counter is judged in the same line because BallPad places it against the same insets, and a turn
+# that re-placed the controls but not the counter is a defect this row is meant to catch.
+#
+# The claim is not left to whichever size another row happened to leave the controls at: the run's
+# S.f06.size-extremes row drives both of the panel's size controls to their maxima and holds the tree
+# there, which is the state a vendored default can leave the safe area in -- a default is a
+# normalized centre captured at a size scale of 1.0, so a control sitting on the safe edge at 1.0
+# grows out of it when the scale is raised, and the vendored default pass clamps nothing it was not
+# given a saved origin for. So the containment clause above is exercised deliberately on every run,
+# at the harshest size the panel can produce, rather than vacuously.
+if [ -z "$LAYOUT_FAIL" ]; then
+    printf "S.f06.safe-area\tPASS\t%s layout: readings, %s of them publishing a non-zero safe area, over %s distinct safe-area shape(s) (%s with the left inset the greater, %s with the right, %s clean), judging up to %s drawn controls on every settled layout and finding none outside the inset rect the surface published, written by the app against its own -safeAreaInsets rather than read off a screenshot; the readings include the panel's two size controls held at their maxima, which is the state a default placement can leave the safe area in; the two landscape sides report the same view-space insets on this device, which is why a single shape is the reading here rather than a fault (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines: %s)\tapp-readbacks.txt\n" "$(layout_field 1)" "$(layout_field 9)" "$(layout_field 2)" "$(layout_field 3)" "$(layout_field 4)" "$(layout_field 5)" "$(layout_field 7)" "$LAYOUT_SUMMARY" >> "$ROWS"
+else
+    printf "S.f06.safe-area\tFAIL\t%s\tapp-readbacks.txt\n" "$LAYOUT_FAIL" >> "$ROWS"
 fi
 
 # -- Screenshots -------------------------------------------------------------
