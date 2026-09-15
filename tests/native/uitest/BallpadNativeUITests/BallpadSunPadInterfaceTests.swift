@@ -1211,42 +1211,73 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         return settledSliderPercent(label)
     }
 
+    /// One drag that begins inside `label` and ends past the far end of the element, and the reading it
+    /// leaves behind.
+    ///
+    /// This mechanism exists because the other two address a point *inside* the element's own frame, and
+    /// on this form factor the frame's mapping is what the ninth tenths of the track is worth. Measured
+    /// on the iPhone 17e: the editor's per-control slider reads 97.0% after both `adjust` and a tap at
+    /// [0.99, 0.5] of its frame, while the panel's slider reaches 100% from `adjust` alone on the same
+    /// run. A touch that lands *past* the right edge of the element is the one the geometry cannot hold
+    /// short: UIKit clamps the value at the slider's own maximum rather than at whichever position the
+    /// frame's outer hundredth maps to.
+    ///
+    /// The press has to be inside the element, and that is the whole of the safety argument. A gesture
+    /// recognizer is handed a touch only when it begins inside the view that owns it, so a drag that
+    /// starts on the slider cannot be taken away from it by the editor's control-drag pans even though
+    /// its path and its release both leave the slider's bounds -- which is exactly how this differs from
+    /// the drag past the end that was tried first, whose press landed beyond the slider, was handed to
+    /// whatever control was behind the editor, and moved one (the iPad measurement: the selected
+    /// control's slider fell to 35% and the right shoulder was left 12pt off its row).
+    @discardableResult
+    private func dragPastTheEndOfTheTrack(_ label: String) -> Double? {
+        let slider = app.sliders[label]
+        guard slider.exists else { return nil }
+        let start = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5))
+        let end = slider.coordinate(withNormalizedOffset: CGVector(dx: 1.10, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        return settledSliderPercent(label)
+    }
+
     /// Drives `label` to the top of its track and returns the reading of the state it leaves behind.
     ///
-    /// `adjust(toNormalizedSliderPosition:)` is the mechanism that addresses a slider's own track, and
-    /// it is tried first because it is the one mechanism both sliders answer on both form factors. When
-    /// it stops short -- the same call that reads a clean 100% on the iPhone 17e has stopped at 93% on
-    /// the iPad -- the tap on the end of the track is the second opinion, and the two are alternated
-    /// until one of them reports the top or neither improves on the reading it came after.
+    /// Three mechanisms, in the order of how much of the slider's own geometry each one depends on.
+    /// `adjust(toNormalizedSliderPosition:)` is the mechanism a slider answers on its own, and it is
+    /// tried first because on one form factor it is the whole of the drive: measured on the iPhone 17e,
+    /// the panel's `Control size` slider reads 100% from the first call. The drag that ends past the
+    /// element's far edge is second, because it is the one mechanism the frame's own mapping cannot stop
+    /// short of the maximum. The tap on the end of the track is third, as the cheap second opinion. The
+    /// three are alternated until one of them reports the top or a whole round improves on nothing.
     ///
-    /// The repetition stops at the first reading that does not improve on the one before it, and what
-    /// comes back is the reading the slider is left at rather than a high-water mark it has since fallen
-    /// back from: "the top of the track" is a reading rather than a request, and the caller's assertion
-    /// over it is what decides whether the reading *is* the top.
+    /// Every mechanism's reading is taken after it, and what comes back is always the slider's own
+    /// current state rather than a high-water mark it has since fallen back from. That distinction is
+    /// the drive's own correctness condition rather than a courtesy: a `max` over the round's readings
+    /// can report a value the slider is not at, which would hand the caller's assertion a 100% it could
+    /// pass on while the tree underneath held something else. What the caller's assertion decides is
+    /// whether the reading *is* the top; this drive's job is only to make it the best one it can reach
+    /// and to say truthfully where it stopped.
     @discardableResult
     private func driveSliderToItsTop(_ label: String, attempts: Int = 3) -> Double? {
-        // The adjust first: it is the mechanism a slider answers on its own, and on the iPhone it is
-        // the whole of the drive, because it reaches the top on the first call.
-        var best = setSliderTrackPercent(label, to: 100.0)
+        guard var reading = setSliderTrackPercent(label, to: 100.0) else { return nil }
+        if reading >= 99.5 { return reading }
         var previous: Double?
         for _ in 0..<attempts {
-            guard let reading = best else { return nil }
+            previous = reading
+            // Past the end of the element: the one mechanism whose reading cannot be capped by where
+            // the frame's own hundredth points land.
+            if let dragged = dragPastTheEndOfTheTrack(label) { reading = dragged }
             if reading >= 99.5 { return reading }
-            // Short of the top: one tap on the end of the track, and the reading is kept only when it is
-            // the better of the two so a tap that missed cannot walk the drive backwards.
-            if let tapped = tapTheEndOfTheTrack(label) {
-                if tapped >= 99.5 { return tapped }
-                best = max(tapped, reading)
-            }
-            // Then the adjust again, from wherever that left the slider, and the drive ends at the first
-            // reading that does not improve on the one before it: what comes back is the state the slider
-            // is in, never a high-water mark it has since fallen back from.
-            guard let again = setSliderTrackPercent(label, to: 100.0) else { return best }
-            if let earlier = previous, again <= earlier + 0.01 { return again }
-            previous = again
-            best = max(again, best ?? again)
+            // Then the tap on the end of the track.
+            if let tapped = tapTheEndOfTheTrack(label) { reading = tapped }
+            if reading >= 99.5 { return reading }
+            // Then the adjust again, from wherever that left the slider.
+            if let again = setSliderTrackPercent(label, to: 100.0) { reading = again }
+            if reading >= 99.5 { return reading }
+            // A whole round that improved on nothing ends the drive: what comes back is the state the
+            // slider is in, never a high-water mark it has since fallen back from.
+            if let before = previous, reading <= before + 0.01 { return reading }
         }
-        return best
+        return reading
     }
 
     /// Waits for the drawn A button's frame to satisfy `predicate`. A slider applies on the next
@@ -1946,6 +1977,69 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         return nil
     }
 
+    /// What a WAV on the disk actually holds, read here rather than taken from the alert that
+    /// described it. The audio row's claim is about bytes, and this is the reader that makes the
+    /// claim checkable: the header has to parse, the data chunk has to be the length the row named,
+    /// and the loudest sample has to be what the row said it was.
+    private struct WavReading {
+        let dataFrames: Int
+        let channels: Int
+        let sampleRate: Int
+        let bitsPerSample: Int
+        let peak: Int
+    }
+
+    private func readWav(at path: String) -> WavReading? {
+        guard let data = FileManager.default.contents(atPath: path), data.count >= 44 else {
+            return nil
+        }
+        let bytes = [UInt8](data)
+        func u32(_ at: Int) -> Int {
+            Int(bytes[at]) | Int(bytes[at + 1]) << 8 | Int(bytes[at + 2]) << 16
+                | Int(bytes[at + 3]) << 24
+        }
+        func u16(_ at: Int) -> Int { Int(bytes[at]) | Int(bytes[at + 1]) << 8 }
+        guard String(bytes: bytes[0..<4], encoding: .ascii) == "RIFF",
+              String(bytes: bytes[8..<12], encoding: .ascii) == "WAVE" else { return nil }
+
+        var channels = 0
+        var sampleRate = 0
+        var bits = 0
+        var offset = 12
+        while offset + 8 <= bytes.count {
+            let tag = String(bytes: bytes[offset..<(offset + 4)], encoding: .ascii) ?? ""
+            let size = u32(offset + 4)
+            if tag == "fmt ", offset + 24 <= bytes.count {
+                channels = u16(offset + 10)
+                sampleRate = u32(offset + 12)
+                bits = u16(offset + 22)
+            } else if tag == "data" {
+                let available = max(0, (bytes.count - (offset + 8)) / 2)
+                let samples = min(size / 2, available)
+                var peak = 0
+                for index in 0..<samples {
+                    let raw = u16(offset + 8 + index * 2)
+                    let value = raw >= 0x8000 ? 65536 - raw : raw
+                    if value > peak { peak = value }
+                }
+                let bytesPerFrame = max(1, channels * bits / 8)
+                return WavReading(dataFrames: size / bytesPerFrame, channels: channels,
+                                  sampleRate: sampleRate, bitsPerSample: bits, peak: peak)
+            }
+            offset += 8 + size + (size & 1)
+        }
+        return nil
+    }
+
+    /// The file the start alert named, taken out of the sentence that introduces it. The row prints
+    /// the absolute path it opened, and the point of pulling it back out here is to open the same
+    /// file rather than one this test went looking for.
+    private func recordedPath(in text: String, after marker: String) -> String? {
+        guard let start = text.range(of: marker) else { return nil }
+        let token = text[start.upperBound...].prefix { !$0.isWhitespace }
+        return token.hasSuffix(".wav") ? String(token) : nil
+    }
+
     /// Taps the audio recording row and returns the alert it raised as its title and its body. The
     /// row is looked up again on every tap because the menu is rebuilt after each one -- the handler
     /// calls -refreshMenuButton, which re-reads the mixer and re-composes the row's checkmark -- so
@@ -2018,6 +2112,37 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
                           "the stop alert names the mixer's own rate: " + stopped.message)
             XCTAssertTrue(stopped.message.contains("Files"),
                           "the stop alert says where the file is: " + stopped.message)
+
+            // The row promises a file, so the file is opened and measured instead of being
+            // inferred from the counter the alert printed. A take whose bytes never reached the
+            // disk, a header that disagrees with the length the alert named, or an audibility
+            // sentence the samples contradict all fail here, and the counter alone would pass all
+            // three.
+            if let path = recordedPath(in: started.message, after: "given to: ") {
+                XCTAssertTrue(FileManager.default.fileExists(atPath: path),
+                              "the take is where the start alert said it would be: " + path)
+                guard let wav = readWav(at: path) else {
+                    XCTFail("the take parses as a RIFF/WAVE file: " + path)
+                    return
+                }
+                XCTAssertEqual(wav.channels, 2, "the take is stereo: " + path)
+                XCTAssertEqual(wav.sampleRate, 32000,
+                               "the take is at the mixer's own rate: " + path)
+                XCTAssertEqual(wav.bitsPerSample, 16, "the take is 16-bit: " + path)
+                XCTAssertEqual(wav.dataFrames, frames ?? -1,
+                               "the WAV's data chunk is the length the stop alert named: " + path)
+                XCTAssertGreaterThan(wav.dataFrames, 0, "the take holds samples: " + path)
+                let silent = wav.peak < 32
+                XCTAssertEqual(stopped.message.contains("silence"), silent,
+                               "the stop alert's audibility sentence is what the samples say: "
+                               + stopped.message)
+                if !silent {
+                    XCTAssertTrue(stopped.message.contains("loudest sample is \(wav.peak)"),
+                                  "the alert names the peak it measured: " + stopped.message)
+                }
+            } else {
+                XCTFail("the start alert names the file it opened: " + started.message)
+            }
         } else {
             XCTAssertEqual(started.title, "Nothing to Record",
                            "a row that did not start a take says the port has no device open "

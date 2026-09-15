@@ -2,10 +2,12 @@
 
 ## Current state
 
-Doc 34's F06 rows are now CLOSED on both form factors, and the F04 rows closed before them. The
-current build is `app 8644a0ed466b` against engine series `a378c305bf60` (unmoved -- this session's
-diff is adapter, test, runner and doc only). Phone `uitest-phone-phone-f06b` and iPad
-`uitest-pad-pad-f06d` are each 26/26 rows PASS with `problems: []`. F06 rests on two readings a
+Doc 34's F06 rows are now CLOSED on both form factors, F04's rows closed before them, and the
+operator's third restatement has closed its last open item. The current build is `app
+c25669ffeb5b` against engine series `a378c305bf60` (unmoved -- this session's diff is adapter,
+test, runner, awk and doc only). iPad `uitest-pad-pad-f08` is 26/26 rows PASS with `problems: []`
+against this app, and phone `uitest-phone-phone-f09` is the same suite on the other form factor.
+F06 rests on two readings a
 screenshot cannot give: the test proves the control set survived a turn to the other landscape side
 and that every control is inside the window, and the runner's `S.f06.safe-area` row proves the
 stronger claim that each one is inside the *inset rect the surface itself published*, judged by the
@@ -19,10 +21,28 @@ left-analog-to-d-pad bits when the map reaches them, and the same-frame offer ca
 lines -- `uitest-phone-f04-2` and `pad-f04-2`, 23/23 rows PASS, 93 consumption lines all accounted
 for by the previous offer against 86 and 85 by the same-frame one, all twelve controls covered. The
 summary program is shared at `scripts/native/consume-summary.awk` rather than inline in the runner.
-What remains open is R1 row 5's six touch settings, F04's per-control consumption on a live match,
-R2/F09's audio onset offset, and the three-dot-menu parity audit; nothing here is physical-device
-evidence.
+What remains open is F04's per-control consumption on a live match, R2/F09's audio onset offset, and
+the three-dot-menu parity audit; nothing here is physical-device evidence.
 
+R1 row 5 -- the six touch settings -- is now closed on a reading taken from the overlay the port is
+handed, not from the store that persists it. The adapter prints each settled drawn tree as
+`overlay: the touch controls as drawn -- controllers N hide-requested N opacity A size S drawn D
+hidden H | <control> A WxH @x,y kK | ...`, and `scripts/native/overlay-summary.awk` reduces a run to
+nineteen numbers the runner asserts on, with a malformed line counting as *unread* rather than as a
+pass. The pad row reads `48 0 2 43 5 43 3 3 3 0.30 2 2 2 1 8 4 1 0 48`
+(total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/
+size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/
+hide-values/hidden-lines/visible-lines): 48 settled trees, none unreadable; opacity tracked on 43 of
+them and below unit on 43, so the drag reached the drawn paint; three sizes drawing the A control at
+three widths that hold one constant width-per-size (spread 0.30 against a 1.0 bound, so a control
+that scaled by anything other than its own `k` would fail); two solo `k` lines, both drawing their
+control at its own width-per-size times the line's size times its `k` (Z at `146x146 @977,573 k1.75`,
+against the ~62 points it is drawn at per unit of size with no override, at a line size of 1.35), one
+distinct `k` value; eight settled one-centre move pairs; and four lines that restored every centre
+with every `k` back at 1.00. The
+vacuity this gate feared -- a clause held by nothing the suite actually does -- is answered by the
+counts rather than by a new test: the suite already produces every state, so no focused row was
+added.
 N4's Files-import half is closed, on both form factors, and with it doc 34's F01 and F02. Ballpad's
 own store and importer, `mobile/interface/BallpadGameData.mm`, implements the port's two host hooks
 over `<container>/Documents/BallpadGameData/` (a `current` file naming the active staged copy under
@@ -226,8 +246,8 @@ evidenced (N3, above); the device platform and N4 onward are still open.
 | N1 Native desktop baseline | PASS | Build+tests PASS (`build/native/macos-release/strikers`, 12/12 checks, 265 gtests, proof `unit-macos-20260914T093026Z`); desktop runtime presents ~63 Hz on M2 with Dawn/Metal; real gameplay capture PASS in `n1-nav-v12` (whole front end to a match, clock 0 -> 75.69 s, score 0-0 -> 0-1, `valid=1`). Desktop only: no Simulator or device gameplay is implied |
 | N2 Mobile builds and dependencies | PASS | SDL3 + FFmpeg + zstd staged for Simulator and now for device, Dawn extracted once from the pinned ref and built from source for each platform, notices gate passing and scoped with an `add_custom_target`. The bundles are fully static and correctly located: hypotheses 5-8 are fixed, so no host zstd and no shared libpng enter the link, `build.sh` exits 0 on the bundle CMake actually produces, and the Simulator lock releases at run end. Simulator bundles are IOSSIMULATOR Mach-O; the device bundle is now built and asserts platform IOS, minos 17.0, sdk 26.5, arm64, unsigned, no `@rpath` and no Homebrew or `/usr/local` link. The smoke gate PASSES all five rows (`smoke-phone-smoke-phone-retry1`: probe presented 90/90 frames on Metal). Device runtime behaviour is not tested -- no hardware is present |
 | N3 Complete native Simulator match | PASS | Real native-engine match on the iPhone 17e Simulator: `BallpadStrikers.app` runs the whole front end to live play, the match scores on its own, and the engine's goal presentation, scorer credit, automatic replay and return to play follow. Proof `build/proofs/native-strikers/n3-sim-replay-phone-n3-sim-replay-r1/` has `S.run` and `S.provenance` both PASS, driver verdict PASS over 31 steps; see checkpoint N3 |
-| N4 Ballpad interface integration | IN_PROGRESS | N4-A PASS and N4-B PASS: SunPad's interface vendored byte-for-byte (9 files, hashes unchanged) and compiled into the app; a port-side host-UI seam plus the `BallpadHostUI.mm` adapter place SunPad's GameCube controls and three-dot menu over a real game frame, and a real tap on the overlay's A button advanced the game's memory-card screen. Proofs `n4b-hostui-seam-phone-n4b-hostui-seam-r2` (S.run + S.provenance PASS) and `n3-sim-replay-phone-n3-regress-after-n4b` (no regression in the record/replay path). N4-C's host/lifecycle surface PASSES on both form factors through real touches -- phone `n4d-phone-uitest-r2` and pad `n4d-pad-uitest-r3`, all five `S.uitest.*` rows PASS on a freshly installed `app 5b22cec45b79` (superseded by `app 30f2d3eb13ca`, the bounded-capture build, and now by `app 7e526c45f9b6`, which adds the disc seam and the GL fix) -- and the N4-D match half is PASS on **both** form factors (`n3-sim-replay-pad-n4d-ipad-match-r1`, `n3-sim-replay-phone-n4d-phone-match-r2`, both on the current build). The capture-path question the iPad run raised is closed as a readback artifact rather than a fade or a presented flash (`n4d-kickoff-fade-r1`, `n4d-dense-r2`, `n4d-video-r1`; hypotheses 16 and 19). Doc 33's N4 gate's Files-import half is now CLOSED on both form factors: the port side was solved by `c28a6d7`'s deferred refusal plus `PortHostUIRunGameDataImport`, Ballpad's own store and importer (`BallpadGameData.mm`) answers both hooks, and doc 34's F01 and F02 both PASS on phone (`f01f02-phone-r4`) and iPad (`f01f02-pad-r1`), 10/10 rows each with `problems: []` and real touches only. F06's rotated relayout and safe-area rows now PASS on both form factors (`uitest-phone-phone-f06b` and `uitest-pad-pad-f06d`, 26/26 rows each with `problems: []` on `app 8644a0ed466b`), so N4 is open only on F04's per-control game-consumption row on a live match, F04's own front-end sweep having PASSED. Three of the four delegate actions now route into Ballpad's own store (re-import/change, folder import and removal, commit `ace661b`); only controller mapping is still log-only, which is R1 row 7 |
-| N5 Audio, saves and lifecycle | IN_PROGRESS | F01 and F02 PASS on phone and iPad (`f01f02-phone-r4`, `f01f02-pad-r1`, 10/10 rows each): a fresh install presents Ballpad's own importer, a valid image picked through the Files picker stages byte-identically, and a truncated/wrong-game image is refused while the previous data keeps working. The store is `<container>/Documents/BallpadGameData/`. Audio (F09 / R2) is still unrun -- no run so far contains an audio-device open, a MusyX init or an underrun line |
+| N4 Ballpad interface integration | IN_PROGRESS | N4-A PASS and N4-B PASS: SunPad's interface vendored byte-for-byte (9 files, hashes unchanged) and compiled into the app; a port-side host-UI seam plus the `BallpadHostUI.mm` adapter place SunPad's GameCube controls and three-dot menu over a real game frame, and a real tap on the overlay's A button advanced the game's memory-card screen. Proofs `n4b-hostui-seam-phone-n4b-hostui-seam-r2` (S.run + S.provenance PASS) and `n3-sim-replay-phone-n3-regress-after-n4b` (no regression in the record/replay path). N4-C's host/lifecycle surface PASSES on both form factors through real touches -- phone `n4d-phone-uitest-r2` and pad `n4d-pad-uitest-r3`, all five `S.uitest.*` rows PASS on a freshly installed `app 5b22cec45b79` (superseded by `app 30f2d3eb13ca`, the bounded-capture build, and now by `app 7e526c45f9b6`, which adds the disc seam and the GL fix) -- and the N4-D match half is PASS on **both** form factors (`n3-sim-replay-pad-n4d-ipad-match-r1`, `n3-sim-replay-phone-n4d-phone-match-r2`, both on the current build). The capture-path question the iPad run raised is closed as a readback artifact rather than a fade or a presented flash (`n4d-kickoff-fade-r1`, `n4d-dense-r2`, `n4d-video-r1`; hypotheses 16 and 19). Doc 33's N4 gate's Files-import half is now CLOSED on both form factors: the port side was solved by `c28a6d7`'s deferred refusal plus `PortHostUIRunGameDataImport`, Ballpad's own store and importer (`BallpadGameData.mm`) answers both hooks, and doc 34's F01 and F02 both PASS on phone (`f01f02-phone-r4`) and iPad (`f01f02-pad-r1`), 10/10 rows each with `problems: []` and real touches only. F06's rotated relayout and safe-area rows now PASS on both form factors (`uitest-phone-phone-f06b` and `uitest-pad-pad-f06d`, 26/26 rows each with `problems: []` on `app 8644a0ed466b`), and R1 row 5's six touch settings are now closed as readings taken off the drawn overlay rather than off the store (`uitest-pad-pad-f07`, 26/26 rows with `problems: []` on `app 91c735b4fca3`, asserted clause by clause against the overlay's own nineteen-number summary), so N4 is open only on F04's per-control game-consumption row on a live match, F04's own front-end sweep having PASSED. Three of the four delegate actions now route into Ballpad's own store (re-import/change, folder import and removal, commit `ace661b`); only controller mapping is still log-only, which is R1 row 7 |
+| N5 Audio, saves and lifecycle | IN_PROGRESS | F01 and F02 PASS on phone and iPad (`f01f02-phone-r4`, `f01f02-pad-r1`, 10/10 rows each): a fresh install presents Ballpad's own importer, a valid image picked through the Files picker stages byte-identically, and a truncated/wrong-game image is refused while the previous data keeps working. The store is `<container>/Documents/BallpadGameData/`. Audio's existence half is measured and its onset half is not: every 2026-09-15 run opens the device (`device 1`, `studios 1`, `underruns 0` on `frq 32000`) and the `r2-audio` scenario reaches a live mixer (`voices 2`, `bus 5589`), while F09's onset offset stays unmeasured, and the audio-recording row now reads its own WAV back and reports silence when the take is silent (see R2) |
 | N6 Performance/render/endurance | NOT_RUN | |
 | N7 Clean reproduction and handoff | NOT_RUN | |
 | Physical device validation | NOT_RUN | Outside Simulator completion; hardware evidence required |
@@ -825,10 +845,10 @@ that decides it, so that "solid" is a reading rather than a judgement:
 
 | The operator's words | What it decides here | Row |
 |---|---|---|
-| "control configs and options are as solid as something like my kartpad build" | Measured against that build rather than asserted. `~/GitHub/kartpad` at `a3747a4` vendors the *same* SunPad overlay, and the seven files the two projects share hash identically -- `SunPadGameOverlay.{h,mm}`, `SunPadInputMixer.{h,mm}`, `SunPadInputState.h` and `SunPadSettings.{h,mm}` -- so the control surface is literally the same one. What the comparison adds is the standard rather than a feature: an option is solid when a reading shows it reached the thing it configures. The three leaves that reach the runtime already have one; the six that do not yet are this item's owed work | 5 |
+| "control configs and options are as solid as something like my kartpad build" | Measured against that build rather than asserted. `~/GitHub/kartpad` at `a3747a4` vendors the *same* SunPad overlay, and the seven files the two projects share hash identically -- `SunPadGameOverlay.{h,mm}`, `SunPadInputMixer.{h,mm}`, `SunPadInputState.h` and `SunPadSettings.{h,mm}` -- so the control surface is literally the same one. What the comparison adds is the standard rather than a feature: an option is solid when a reading shows it reached the thing it configures. All nine touch settings now have one -- the three that reach the runtime from the port's own read-backs, and the six that reach the drawn overlay from its nineteen-number summary -- so this item is closed rather than owed | 5 |
 | "the R (right trigger) needs to look like the left one" | DONE and read back per frame: L and R are the same pill mirrored about the surface, on one row, with the vendored trigger's detent artwork hidden and the press supplied by Ballpad's own long-press gesture. `S.r1.settings-readback`'s mirror and outline families decide it at rest, and the new `S.f06.rotated-relayout` re-decides it after a turn | 2 |
 | "BallPad in game is stylized like that" | The capital P has one source: the menu header, the About surface, the importer's alerts and the bundle's own `CFBundleDisplayName` all read `BallpadAppDisplayName()`, and the port bundle carries **"BallPad Strikers"**. The legacy SwiftUI tree under `app/Ballpad/` still spells it `Ballpad`; it is preserved untouched and is not shipped | 4 |
-| "all experimental modes ... need to actually be something as opposed to whatever it is now" | Audited row by row against the handlers rather than the labels, and every row is bound to something real: the two aspect leaves pin the port's target aspect, the 60 FPS row drives `PortSetFrameLimit`, and the row that stands where the retired performance switch was records the exact bytes the audio device is handed. Four rows still *say* "Experimental" (the two vendored aspect leaves and Ballpad's two re-bound rows) and all four change the runtime; the one inert row, the emulated-clock performance switch, does not ship at all | 11, 12 |
+| "all experimental modes ... need to actually be something as opposed to whatever it is now" | Audited row by row against the handlers rather than the labels, and every row is bound to something real: the two aspect leaves pin the port's target aspect, the 60 FPS row drives `PortSetFrameLimit`, and the row that stands where the retired performance switch was records the exact bytes the audio device is handed, and reads its own take back off the disk so the alert has to say "silence" when the take is silent rather than calling a rising frame count a recording. Four rows still *say* "Experimental" (the two vendored aspect leaves and Ballpad's two re-bound rows) and all four change the runtime; the one inert row, the emulated-clock performance switch, does not ship at all | 11, 12 |
 | "the three dot menu is solid" | Order, leaves and handlers are asserted row-by-row (`S.uitest.menu-order`, `S.r1.menu-leaves`), and the two rows Ballpad re-bound are decided by readings taken off the port (`S.r1.frame-limit-row`, `S.r2.audio-row`) rather than by their titles | 3 |
 | "only have one simulator open at a time" | Operational, and already what the harness enforces: a run takes `build/native/sim-lock`, boots exactly one device by UDID, and the phone is shut down before the iPad run is started. Nothing here calls `shutdown all`, and no other task's Simulator is touched | rule |
 
@@ -840,7 +860,7 @@ What "exactly as they are" has already decided, and what is still owed:
 | 2 | GameCube control set: main stick, C-stick, D-pad, A/B/X/Y/Z, Start, L, R | DONE at N4-B (published through `SunPadInputMixer` -> `PADSetVirtualStatus`) | Prove game consumption per control at a state boundary where each mapping is observable, and stick + action **simultaneously** (F04) |
 | 3 | Three-dot button, 9-row menu, vendored order, vendored handlers | DONE at N4-C, both form factors, real touches. The order is asserted row-by-row by first sighting in `S.uitest.menu-order`, and every submenu now publishes exactly its own labelled leaves in `S.r1.menu-leaves` -- an exact comparison, so an unlabelled or placeholder row fails rather than vanishing | None. The three row titles/destinations N5 owed (items 9, 11, 12) are rewritten by vendored title in `-buildMenu`, and every row that was not named is passed through untouched |
 | 4 | Menu title | DONE at N4-C (`BallpadGameOverlay -buildMenu` re-wraps the vendored menu's children under the bundle's display name) | None. The stylisation the operator asked for has one source: the menu header, the About surface, the importer's alerts and the bundle's own `CFBundleDisplayName` all read `BallpadAppDisplayName()`, and the port bundle carries **"BallPad Strikers"**. The legacy SwiftUI tree under `app/Ballpad/` still spells the name `Ballpad`; it is protected owner work, is not shipped by this port, and was deliberately not edited |
-| 5 | Touch-control settings surface: render resolution, opacity, control size, hide-when-controller, modern C-stick, move/resize, reset | Surface DONE and exercised by real touches, and the three leaves that reach the runtime are now proven to: the resolution and aspect leaf taps are read back from the port as `WxH @scale aspect A window\|pinned logical N blend B` in `S.r1.display-readback`, and the FPS row turns the port's own counters on and off in `S.r1.fps-row`. The submenu spellings are pinned leaf-by-leaf in `S.r1.menu-leaves` | The six touch settings still owe a reading taken **from the overlay the port is consuming**, not from the store: opacity, control size, hide-when-controller, modern C-stick, the move/resize pair and reset each need the value the overlay actually publishes for the port, the way the display settings now have one |
+| 5 | Touch-control settings surface: render resolution, opacity, control size, hide-when-controller, modern C-stick, move/resize, reset | DONE, and closed as a reading taken from the overlay the port is handed rather than from the store that persists it. The three leaves that reach the runtime are proven to: the resolution and aspect leaf taps are read back from the port as `WxH @scale aspect A window\|pinned logical N blend B` in `S.r1.display-readback`, and the FPS row turns the port's own counters on and off in `S.r1.fps-row`. None. Each of the six now has the value the overlay actually published for the port. The adapter prints every settled drawn tree with its own header (`opacity A size S drawn D hidden H`) and a per-control suffix (`kK`), and `scripts/native/overlay-summary.awk` counts them into nineteen numbers that `S.r1.settings-readback` asserts clause by clause, each clause failing a vacuous pass rather than passing while measuring nothing: opacity must be tracked *below* unit on at least one line (the editor paints 1.0, which is why unit alpha is counted separately), at least two distinct sizes must each hold one constant width-per-size with a spread under 1.0, a solo `k` line must exist whose drawn width is that control's own width-per-size times the line's size times its `k`, a moved pair must be settled at one size and one control count with exactly one centre displaced, and a reset must restore every centre and every `k`. What the run shows is item 5's whole claim: the settings the panel offers are the settings the drawn control carries. `hide-values`/`hidden-lines`/`visible-lines` are reported but not asserted -- the Simulator compiles the controller half of `-applyControllerVisibility` out, so F12 stays `NOT_RUN` and no hardware claim is made |
 | 6 | `gameOverlayRequestsGameDataChange` / `…FolderImport` / `…Removal` | DONE: all three route to Ballpad's own store (`BallpadGameData.mm`) since commit `ace661b`; the fourth delegate action is row 7 | None outstanding for routing. The pre-`main()` `DVDInit()` ordering is solved on the port side (`c28a6d7`), and F01/F02 exercise all three paths on both form factors (fresh import, re-import/refusal, removal's consequence) |
 | 7 | `gameOverlayRequestsControllerMapping` | DONE as a decision, not as a stub: the row opens Ballpad's own read-only panel (`BallpadControllerMapping.{h,mm}`, proven by `S.f13.mapping-panel`), which reports the port's live button table including a re-read that has to survive a refresh | Nothing outstanding. The decision was made deliberately against evidence rather than by default: `~/GitHub/kartpad` at `a3747a4` has **no** iOS remapping UI at all -- `apple/ios/KartPadRuntimeOverlayHost.mm` answers the same row with an alert naming the connected-controller count, and only its Android port has real remapping (`KartPadControllerMapping.kt`). A read-only panel is therefore at parity with the interface this one is measured against, and it is honest about a map the native port owns |
 | 8 | `gameOverlayDiagnosticContext` / `gameOverlayPerformanceProfile` | DONE at N4-B (both answer from this build) | Keep truthful as the runtime gains features |
@@ -856,6 +876,57 @@ What "exactly as they are" has already decided, and what is still owed:
 Two of these are the reason the list is written down rather than tracked mentally: item 12 is a row
 that must disappear rather than be wired, and item 5 is the difference between a surface that
 persists a value and one whose value changes anything.
+
+### R1 audit — the three-dot menu, checked row by row (added 2026-09-15)
+
+The operator restated this item a third time, so it was audited against the handlers rather than
+against the row labels, and against the build the operator named as the standard.
+
+What the menu *is*: `BallpadGameOverlay -buildMenu` (`mobile/interface/BallpadHostUI.mm` ~921) takes
+the vendored `UIMenu` and walks it by **vendored title**, substituting six rows and leaving every
+other row -- and every submenu -- passed through by reference. The header is
+`BallpadAppDisplayName()`. The nine vendored first-page rows keep their vendored order and their
+vendored handlers, which is what `S.uitest.menu-order` asserts row-by-row by first sighting and
+`S.r1.menu-leaves` asserts leaf-by-leaf against each submenu's exact published list -- so an
+unlabelled or placeholder row fails rather than vanishing.
+
+The six substitutions, and what each one moves: `Render Resolution` becomes `ballpadRenderMenu`
+(both leaves call `PortSetRenderScale`); `Aspect Ratio` becomes `ballpadAspectMenu` (three distinct
+destinations -- `Original 4:3`, `16:9 (Experimental)`, `Fill Screen (Experimental)` at `-1.0f`);
+`Experimental Performance Mode (Restart Required)` is re-bound to the audio-recording row;
+`Experimental 60 FPS (Restart Required)` becomes `ballpadFrameLimitAction` (`PortSetFrameLimit`);
+`Game Data & Saves` becomes `ballpadGameDataMenu`; and `About` is appended last.
+
+Three findings this audit adds, each a thing a reader could otherwise get wrong:
+
+1. **Item 12's vocabulary.** Item 12 says the `Experimental Performance Mode` row does not ship at
+   all, and item 11's row stands in its slot. That is true of the *retired title*: the row is gone,
+   and its absence is asserted from two sides (`S.uitest.menu-order` on the first page and
+   `S.r1.menu-leaves` against each submenu). But the slot is not empty -- `-buildMenu` substitutes
+   `ballpadAudioRecordingAction` into it, so a row titled `Record Audio (Experimental)` does exist
+   and is exercised. Read as a claim about the title, item 12 is exact; read as a claim about the
+   slot, it is not, and the row that is there is live rather than inert. The test's
+   `vendoredMenuRows` already carries the substituted vocabulary, so the two agree.
+
+2. **The menu is a `UIMenu` popup, not a portrait list.** The nine rows the R1 table calls the
+   vendored menu are UIKit's ellipsis popup on the three-dot button, which is the shape the
+   operator's own reference uses. The vendored *list* lives behind `Touch Control Settings…` -- a
+   portrait panel laid out against a 1920x1080 virtual screen -- and that panel ships as vendored,
+   rows and order intact, with the editor bar's `Selected control size` slider and `Done`.
+
+3. **Nesting is a judgement call, raised rather than assumed.** `~/GitHub/kartpad` at `a3747a4`,
+   the build the operator named as the standard, does *not* ship a flat menu on iOS: its host
+   (`apple/ios/KartPadRuntimeOverlayHost.mm` ~1749-1910) nests `Multiplayer…`, `Show FPS Counter`,
+   a `Controls` submenu, a `Display` submenu, the game-data submenu and `Report a Problem…` under a
+   `KartPad` header, drops the two Sunshine rows rather than re-binding them, passes the vendored
+   submenus through by object (images and identifiers included) and adds its own rows under
+   `dev.kartpad.*` identifiers. Ballpad's adaptation is flat. The operator's instruction is that the
+   three-dot menu and controls are wanted exactly as they are, and flat *is* the vendored shape --
+   the vendored `SunPadGameOverlay` builds one flat `UIMenu`, and there is no vendored submenu for a
+   `Controls` or `Display` parent to hold. So the flat menu is the faithful reading of the
+   instruction, and nesting would be kartpad's own adaptation rather than SunPad's shape. Recorded
+   here because the two readings of kartpad-grade solidity differ, so the operator can say which
+   one is wanted.
 
 ### R2 — The operator's audio observation is unverified (added 2026-09-14; target N5/F09)
 
@@ -885,6 +956,45 @@ the retired performance switch in item 12's slot: it writes exactly the bytes th
 handed to a WAV next to Ballpad's own log, so "the game is making a sound" and "the sound is the one
 the models on screen are making" stop being the same question for anyone who wants to check. It is
 driven by a real tap in `S.r2.audio-row`.
+
+
+**The interface half took its own reading on 2026-09-15, and the reading corrected two things I had
+written down wrong.** The row's takes are real files. Two exist from this session's runs, one from
+each form factor, and both parse as canonical WAVs: `RIFF`/`WAVE`, a 16-byte `fmt` chunk naming 2
+channels, 32000 Hz and 16 bits, and a `data` chunk whose length is `size - 44` while the RIFF length
+is `size - 8`. Those are 458240 and 465760 frames, about 14.3 and 14.6 seconds. Nothing about the
+write is a stub.
+
+What they hold is silence. Every one of the 931520 samples across both files is zero, peak 0. That
+is not a broken write either, and the log says why: for the whole window of the take the read-back
+prints `voices 0 sample 0 env 0x0000 pan 0x0000 bus 0`, so the transport was handed silent frames
+and the file is an honest record of a silent stretch. The same run's mixer first goes live two
+minutes after launch (`voices 2 sample 2 env 0x7fff bus 5589`), well after the take had closed. A
+row that prints a rising frame count cannot tell those two cases apart, and that is the defect worth
+fixing, because the promise on the row is about the file.
+
+**Correction.** An earlier note in this file recorded `PortAudioDumpWrite` as having no call site
+outside its own definition and therefore possibly unwired. It is wired: `src/platform/audio_out.cpp`
+line 210 calls it inside `PortAudioUpdate`, on the `PORT_USE_AURORA` path, with the same bytes that
+go to `SDL_PutAudioStreamData`, under a comment that says exactly that. The "zero call sites"
+reading came from a mis-scoped search of this workspace, not from the source, and it is withdrawn.
+
+**Second correction, because it misled the reading.** The `silent` / `non-silent` word in the
+two-second audio line is a latch over the whole process (`s_everNonSilent`), not the current tick. A
+line can read `non-silent` while printing `voices 0 bus 0`, and in `uitest-phone-phone-r2-audio` one
+does, at line 232. The word answers "has this process ever made a sound"; the numbers beside it
+answer "is it making one now". Only the numbers may be read as current state.
+
+**Change, adapter only, no digest move.** The row now reads its own take back off the disk when it
+stops. `BallpadReadRecording` walks the WAV's chunks -- rather than trusting the offsets this app's
+own writer happens to use -- checks the tags, and measures the largest `|sample|`, and the stop
+alert says one of four things: the file's data length disagrees with the frame count the mixer
+reported (`is not the whole take`), no sample is louder than 31 of 32767 (`this take is silence
+rather than a failed recording`), the loudest sample by number, or that the file could not be read
+back at all. `S.r2.audio-row` now parses the path out of the start alert, opens that file, and
+requires the header to parse, the rate and width to be the mixer's, the `data` chunk to equal the
+length the stop alert named, and the alert's audibility sentence to be what the samples say. The
+counter alone used to pass all of that; it no longer can.
 
 ### R1 — N4 plan of record (recorded 2026-09-14, before implementation)
 
@@ -1931,6 +2041,99 @@ Next concrete action: F06 is closed. N4's remaining row is F04's per-control con
   disconnected from the models speaking them', which must be measured rather than judged by ear.
   After that, the three-dot-menu parity pass, with the layout-editor row and the leave rows still
   to audit.
+```
+```text
+Phase / gate: N4-C/N4-D and R1 row 5 follow-through -> F04/R2 (two readings taken from a witness
+  that could not falsify them, replaced by readings off the artefact; the three-dot menu audited
+  against its handlers)
+Date / build identity / patch digest: 2026-09-15; engine series a378c305bf60 (unmoved -- this
+  session's diff is adapter, test, runner, awk and doc only); app binary c25669ffeb5b
+  (simulator-release); disc da80883ba456 (the recorded baseline); seed save f7400a468e98 (the
+  recorded baseline).
+Source invariant and observed failure: two invariants. (1) A per-control size override reaches the
+  drawn tree as a *resize* -- the resized control's drawn width is its own width-per-size times the
+  line's size times its `k`. The reading that stood in for it asked whether a resized control kept
+  its *centre*, and that is not an invariant: on the iPhone the editor's Z is pinned to the surface
+  edge and grows inward, so its centre moves by design (right edge 848 both times, x 775 -> 746),
+  while on the iPad the same control grows about its centre (62 wide to 146, x 977 both times). The
+  phone run `phone-f08` published the field as `k-centre-kept` at **0 of 12** and
+  `S.r1.settings-readback` FAILed -- "no overlay: line shows a control resized by the editor drawn at
+  the centre the override-free lines keep it at, so a resize cannot be told from a move" -- while the
+  iPad run `pad-f07` passed the identical clause **2 of 2**, so the criterion was a form-factor
+  accident rather than the property it named. (2) The audio row's take is what the *file* holds, not
+  what the row asked for: the stop alert was built from the row's own bookkeeping, so it could not
+  tell a silent take from a wrong one. Separately, F06's `size-extremes` row had failed on the phone
+  at a slider stopped at exactly 97.0% of its maximum.
+Hypothesis: (1) judge the resize by the width it produced -- a solo-`k` line's control is drawn at
+  its own width-per-size times the line's size times its `k`, where the base is an *interval* because
+  the log writes whole-point widths and two-decimal sizes (worth 0.52pt on the iPad, 0.04pt on the
+  phone), and the tolerance is stated in drawn points at 0.75, well clear of that rounding. (2) The
+  editor's per-control slider can only be shown to reach its maximum by a drag that *begins inside*
+  the slider and is released past its far edge: UIKit clamps to the slider's own maximum rather than
+  to where the frame's outer hundredth lands, and because a gesture recognizer is handed a touch only
+  when it begins inside the owning view, the press has to start on the slider (a drag whose press
+  landed beyond it was taken by the control behind the editor and moved one). (3) The audio row can
+  only claim bytes if it reads the WAV back: RIFF/WAVE, a parsed `fmt `, a `data` chunk whose length
+  matches the frames the row named, and the loudest sample against a -60 dBFS floor.
+Change: `scripts/native/overlay-summary.awk` (new, untracked) -- field 13 renamed `k-centre-kept` ->
+  `k-scaled`, per-control `baseMinById`/`baseMaxById` filled from every override-free, visible line,
+  and the second pass checks width in [baseMin*size*k - 0.75, baseMax*size*k + 0.75]. The awk's
+  header and the runner's comment block now state that the centre is deliberately not the test and
+  why. `scripts/native/run-uitests.sh` carries the rename through the summary line, every `READBACK_
+  FAIL` clause and clause 13's own text. `tests/native/uitest/BallpadNativeUITests/BallpadSunPad
+  InterfaceTests.swift` -- the slider drive is now three mechanisms in order of how much slider
+  geometry each depends on (`adjust`, the drag past the far edge, the tap on the track), and returns
+  the slider's current state rather than a high-water mark; the audio row's stop branch reads the take
+  back through a new `readWav(at:)`. `mobile/interface/BallpadHostUI.mm` -- `BallpadRecordingReading`,
+  `BallpadReadRecording` and `kBallpadAudiblePeak = 32` (with `#include <string.h>` for the RIFF/WAVE
+  tags), the overlay line's own `hidden` and per-control `k` fields, and a cast of `data.bytes` to
+  `const unsigned char *`. doc 36's R1 row-5 paragraph and its item-5 table row now state the width
+  relation, and the current-state header names this build and these two proofs. The nine vendored
+  SunPad files are untouched.
+Command / exit status: `scripts/native/build.sh --platform simulator --no-bootstrap` -> SUCCESS, app
+  binary c25669ffeb5bb42d8cb12846c5399a6d225df09085ad339d80386dee04571c1a; `run-uitests.sh --run-id
+  phone-f09 --device 8619020B-...` -> exit 0, 26/26 rows PASS, `problems: []`; `run-uitests.sh
+  --run-id pad-f08 --device B3799189-...` -> exit 0, 26/26 rows PASS, `problems: []`. Exactly one
+  Simulator booted at a time throughout; each was shut down by UDID after its run, and none is booted
+  now.
+Runtime scene / duration / device-or-Simulator: real app, real touches. Phone `phone-f09`: menu-order
+  28.9 s, settings-panel 32.5 s, render-scale-persistence 21.2 s, layout-move-reset 38.7 s,
+  lifecycle-surface 16.6 s, r1 display-readback 41.8 s, touch-settings-drawn 39.8 s, menu-leaves
+  68.2 s, r2 audio-row 30.4 s, f13 notice-offline 56.1 s, f02 refusal 200.5 s, f06 size-extremes
+  46.1 s. iPad `pad-f08`: menu-order 10.4 s, settings-panel 32.4 s, display-readback 40.5 s,
+  touch-settings-drawn 40.0 s, menu-leaves 68.3 s, f01 89.6 s, f02 87.3 s, f06 size-extremes 45.8 s.
+Evidence bundle: `build/proofs/native-strikers/uitest-phone-phone-f09/` and
+  `build/proofs/native-strikers/uitest-pad-pad-f08/` -- `result.json` (26 rows, `problems: []`),
+  `rows.tsv`, `uitest.log`, `preflight.log`, `app-runtime.log`, `app-readbacks.txt`,
+  `store-inventory.txt`, and the xcresult. Two rows carry the change: the phone's
+  `S.r1.settings-readback` names the field `k-scaled` and publishes `...k-lines/k-solo/k-scaled/k-
+  values...: 48 0 3 43 5 43 4 3 3 0.70 2 2 2 1 10 5 1 0 48` (2 solo lines, 2 judged against their
+  own base width) and the iPad the same shape at `48 0 2 43 5 43 3 3 3 0.30 2 2 2 1 8 4 1 0 48`;
+  the two solo lines are Z at `146x146 @977,573 k1.75` on a size-1.35 line, and 146 lies inside the
+  [145.02, 147.75] the 62-point base gives it (the phone's 102 lies inside [100.75, 102.34]); and
+  `S.f06.size-extremes` PASSes at the top of the track where it had stopped at 97.0%. The same row
+  publishes the R/L twin on both: phone `238 146 146 0 146 92 0` and iPad `231 147 147 0 147 84 0`
+  (total/rest/mirrored/skew/on-L's-row/editor) -- 146/146 and 147/147 mirrored with zero skew.
+Result: PASS for R1 row 5's resize clause on both form factors and for F06's size-extremes row. The
+  three-dot-menu audit is source-level and found every shipped row bound to a real handler: the
+  render-resolution and aspect leaves pin the port's own scale and `PortSetTargetAspect`, the FPS row
+  drives `settings.showFPSCounter`, the 60 FPS row drives `PortSetFrameLimit`, the audio row records
+  and reads its own WAV back, and the retired emulated-clock performance row does not ship.
+What this result does and does not prove: proves the editor's own resize reaches the drawn tree as a
+  width on both form factors (0.25pt and 0.39pt inside what the rounding allows), and that the
+  criterion can now fail--a control drawn at anything but its own base width times the size times its
+  `k` is a fault on both devices rather than on one. Proves the audio take is judged by its bytes.
+  Does not prove: the audio onset offset behind the operator's "the sounds seem disconnected from the
+  models speaking them", which is still unmeasured and is why R2/F09 stays open; per-control
+  consumption on a live *match* (F04's remaining row); the controller's authored mapping (F12 stays
+  NOT_RUN, the Simulator compiles the vendored resolution out); or anything about performance, memory
+  or endurance (N6). The menu audit binds source to handler; it is not a per-row runtime consumption
+  proof.
+Next concrete action: F04's per-control consumption on a live match; then R2/F09's audio onset
+  offset, gated on `STRIKERS_LOG_NIS` at `Presentation.cpp:595`, `NisPlayer.cpp:169`,
+  `EndPlayTask.cpp:19`, `NetMeshModelLoader.cpp:536` and `GoalieSave.cpp:377`; then the rest of the
+  three-dot-menu parity audit; then N5/N7's unsigned device build, clean-reproduction proof and final
+  artefacts.
 ```
 
 ## Checkpoint template

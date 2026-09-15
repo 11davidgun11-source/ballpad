@@ -495,6 +495,13 @@ AUDIO_MIX_LINES=0
 OVERLAY_LINES=0
 CSTICK_LINES=0
 OVERLAY_ALPHAS=0
+# R1 item 5's reading: what the drawn touch controls say about the six touch settings, taken off
+# the overlay rather than off the store. Defaulted to its all-zero shape so a run that never wrote
+# an overlay: line reports a FAIL row rather than an empty string (total/unread/opacity-values/
+# opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/
+# size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/
+# hidden-lines/visible-lines).
+OVERLAY_SUMMARY="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
 CSTICK_SUMMARY="0 0 0 0 0"
 OUTLINE_SUMMARY="0 0 0 0 0"
 # F04's two readings: the mirror relation between the two shoulders on every line outside the
@@ -595,6 +602,17 @@ else
     consume_field() { printf '%s' "$CONSUME_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
     consume_explained() { printf '%s' "$CONSUME_SUMMARY" | awk '{ print $4 + $5 }'; }
     consume_missing() { printf '%s' "$CONSUME_SUMMARY" | awk -v n="$1" '{ print $n }'; }
+    # R1 item 5's reading. The line the app writes carries the drawn controls in draw order, each
+    # with its alpha, its drawn bounds, its centre and the per-control size override the editor
+    # writes, beside the two panel values those numbers are supposed to follow. Judging the settings
+    # off that tree rather than off the store is the item's actual ask: a store can hold an opacity
+    # no control was ever painted at, and the drawn tree is the only one a player touches. Four of
+    # the readings this program reports are relations between two lines (a move, the reset that
+    # undoes it, a resize read off the width the override produced, and one constant width-per-size
+    # across settings), which is why it is its own file with its own second pass rather than another
+    # inline program.
+    OVERLAY_SUMMARY="$(awk -f "${BALLPAD_ROOT}/scripts/native/overlay-summary.awk" "$LOG_COPY")"
+    overlay_field() { printf '%s' "$OVERLAY_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
     # F06's containment half. The line is written once per settled layout, and the fields this row
     # needs are the surface, the four safe-area insets and how many of the judged controls the
     # containment test put outside that inset rect. Three of the summary's counts are things a single
@@ -627,6 +645,58 @@ else
     [ "$OVERLAY_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no overlay: line, so the touch controls were never read back from the overlay the app drew"
     [ "$CSTICK_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no c-stick: line, so the camera stick's axis was never read back where the port was handed it"
     [ "$OVERLAY_ALPHAS" -ge 2 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the overlay: lines name ${OVERLAY_ALPHAS} alpha for the A control, so no opacity a row moved reached the drawn control"
+    # R1 item 5: the six touch settings judged off the drawn tree rather than off the store. Each
+    # clause below is one arrow that has to be non-empty for the item to be answered rather than
+    # merely reported, in the order the item names them:
+    #
+    #   opacity         the alpha every visible control is painted at against the line's own
+    #                   opacity setting, and at least one line painted below 1.00 so the reading is
+    #                   of the setting rather than of a tie between the setting and a constant one.
+    #                   The editor is the one pass that paints every control at 1.00 whatever the
+    #                   setting says, so its lines are counted separately (opacity-unit) rather than
+    #                   read as a mismatch.
+    #   control size    a global size setting that reached drawn widths -- two settings, two widths --
+    #                   and one constant width per unit of size across them, which is what tells a
+    #                   scaled control from a differently-placed one. The tolerance is the log's own
+    #                   rounding: a width is written to whole points and a size to two decimals.
+    #   hide            reported and not required, for the reason the read-back line gives: the
+    #                   vendored pass compiles the controller half of its resolution out under the
+    #                   Simulator, so a required drawn-hidden count would be a criterion this
+    #                   machine cannot satisfy. F12 stays NOT_RUN and no hardware claim is made.
+    #   modern C-stick  judged by the c-stick: family above, which is where the port is handed the
+    #                   axis and where both conventions are already required.
+    #   move/resize     a settled pair at one size where exactly one control's centre moved, and a
+    #                   line carrying exactly one per-control size override whose drawn width is
+    #                   that control's own width-per-size times the line's size times its k. The
+    #                   centre is deliberately not the test, and the reason is a measurement rather
+    #                   than a preference: a control pinned against the surface edge grows inward,
+    #                   so the iPhone's Z moves its centre under a resize (58 wide at x=768 to 100
+    #                   wide at x=747, right edge 797 both times) while the iPad's does not (62 wide
+    #                   to 146, at x=977 both times). The width is what an override is.
+    #   reset           a later line that put every control back on the centres of the line before
+    #                   the move with every override back at 1.00.
+    #
+    # The remaining counts stay in the summary as reported readings rather than criteria.
+    [ "$(overlay_field 1)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no readable overlay: line, so the six touch settings were never judged off the overlay the app drew"
+    [ "$(overlay_field 2)" -eq 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }$(overlay_field 2) overlay: line(s) carry a field this program could not read, so the drawn tree was judged on a smaller sample than the app wrote (total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: ${OVERLAY_SUMMARY})"
+    [ "$(overlay_field 4)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }no overlay: line shows a control painted at the opacity setting the same line published, so the control opacity a row moved did not reach the drawn controls (total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: ${OVERLAY_SUMMARY})"
+    [ "$(overlay_field 6)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }every overlay: line whose controls tracked the opacity setting was drawn at an opacity of 1.00, so the tracking reading is a tie between the setting and a constant rather than a reading of the setting (total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: ${OVERLAY_SUMMARY})"
+    { [ "$(overlay_field 8)" -ge 2 ] && [ "$(overlay_field 9)" -ge 2 ]; } \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the overlay: lines show $(overlay_field 8) control size(s) drawing $(overlay_field 9) width(s) for the A control outside the editor, so no global control size a row moved reached a drawn width (total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: ${OVERLAY_SUMMARY})"
+    awk -v spread="$(overlay_field 10)" 'BEGIN { exit ((spread + 0) < 1.0) ? 0 : 1 }' \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the drawn width of the A control is not one ratio of the size setting across the run: the ratio varies by $(overlay_field 10), so the size setting moved the drawn bounds by something other than scaling (total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: ${OVERLAY_SUMMARY})"
+    [ "$(overlay_field 12)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }no overlay: line carries exactly one per-control size override, so the editor's own resize never reached the drawn tree (total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: ${OVERLAY_SUMMARY})"
+    [ "$(overlay_field 13)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }no overlay: line shows a control the editor resized drawn at the width that control's own width-per-size gives it for that line's size and its own k, so no resize reached the drawn tree as a resize (total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: ${OVERLAY_SUMMARY})"
+    [ "$(overlay_field 15)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }no overlay: pair at one published size differs by exactly one control's centre, so no drag reached the drawn tree as a move on its own (total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: ${OVERLAY_SUMMARY})"
+    [ "$(overlay_field 16)" -gt 0 ] \
+        || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }no overlay: line put every control back on the centres of the line before the move with every override back at 1.00, so the reset a row drove was never read back off the drawn tree (total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: ${OVERLAY_SUMMARY})"
     [ "$(printf '%s' "$CSTICK_SUMMARY" | awk '{print ($1 > 0 && $1 == $2) ? 1 : 0}')" = "1" ] \
         || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }no c-stick: line shows the port handed the mixer's own value with the modern convention off (off/agree/on/flipped/unreadable: ${CSTICK_SUMMARY})"
    [ "$(printf '%s' "$CSTICK_SUMMARY" | awk '{print ($3 > 0 && $3 == $4) ? 1 : 0}')" = "1" ] \
@@ -720,7 +790,7 @@ else
         || LAYOUT_FAIL="${LAYOUT_FAIL:+$LAYOUT_FAIL; }a layout: line put $(layout_field 6) drawn control(s) outside the rect the surface called safe, so the landscape layout does not fit the safe areas (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines: ${LAYOUT_SUMMARY})"
 fi
 if [ -z "$READBACK_FAIL" ]; then
-    printf "S.r1.settings-readback\tPASS\t%s display, %s settings, %s shoulder, %s audio (of which %s name the mixer's own fields) and %s overlay lines (over %s alpha for the A control) plus %s c-stick lines, %s shoulder-outline lines (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable) and %s shoulder-mirror readings (total/rest/mirrored/skew/on-L's-row/editor/unreadable), written by the app itself\tapp-readbacks.txt\n" "$DISPLAY_LINES" "$SETTINGS_LINES" "$SHOULDER_LINES" "$AUDIO_LINES" "$AUDIO_MIX_LINES" "$OVERLAY_LINES" "$OVERLAY_ALPHAS" "$CSTICK_LINES" "$OUTLINE_SUMMARY" "$MIRROR_SUMMARY" >> "$ROWS"
+    printf "S.r1.settings-readback\tPASS\t%s display, %s settings, %s shoulder, %s audio (of which %s name the mixer's own fields) and %s overlay lines (over %s alpha for the A control; the six touch settings read off the drawn tree as total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: %s) plus %s c-stick lines, %s shoulder-outline lines (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable) and %s shoulder-mirror readings (total/rest/mirrored/skew/on-L's-row/editor/unreadable), written by the app itself\tapp-readbacks.txt\n" "$DISPLAY_LINES" "$SETTINGS_LINES" "$SHOULDER_LINES" "$AUDIO_LINES" "$AUDIO_MIX_LINES" "$OVERLAY_LINES" "$OVERLAY_ALPHAS" "$OVERLAY_SUMMARY" "$CSTICK_LINES" "$OUTLINE_SUMMARY" "$MIRROR_SUMMARY" >> "$ROWS"
 else
     printf "S.r1.settings-readback\tFAIL\t%s\tapp-readbacks.txt\n" "$READBACK_FAIL" >> "$ROWS"
 fi

@@ -22,6 +22,8 @@
 // getenv, for the STRIKERS_LOG_ poll gates further down. Included rather than reached for through
 // UIKit: the port's own files spell it this way, and this one reads the same variables they do.
 #include <stdlib.h>
+// memcmp, for the RIFF and WAVE tags the audio row's read-back checks before it trusts a chunk.
+#include <string.h>
 
 // The port's plain-C headers, included rather than restated: aspect, the frame limiter, and the
 // frame-time benchmark the FPS row reads. include/port/input.h is here for the same reason -- it is
@@ -317,10 +319,11 @@ static void BallpadLogSettingsIfPanelChanged(void)
 // the identifiers walked here are the overlay's own layout keys -- the same ones it persists a
 // moved control under, and the same ones a UI test sees as elements.
 //
-// hide-when-controller has no drawn effect on this machine: with no hardware controller the
-// vendored resolution cannot reach hidden, so this line reports the two inputs it resolves from
-// (the setting, and the controller count this build can see) beside the drawn result. The hardware
-// merge itself stays F12/NOT_RUN rather than being claimed from a Simulator.
+// Whether a control is hidden is the one drawn fact whose input is not on this machine. The
+// vendored `-applyControllerVisibility` compiles the controller half of its resolution out under
+// `TARGET_OS_SIMULATOR`, so the count this build can read is *not* the value the overlay resolved
+// from, and the line says so by publishing the setting, the count and the drawn hidden count as
+// three separate fields rather than one verdict. The hardware merge itself stays F12/NOT_RUN.
 static NSArray<UIView *> *BallpadTouchControlsInDrawOrder(SunPadGameOverlay *overlay)
 {
     NSArray<NSString *> *order = @[ @"move", @"c", @"D_U", @"D_D", @"D_L", @"D_R",
@@ -346,21 +349,44 @@ static NSArray<UIView *> *BallpadTouchControlsInDrawOrder(SunPadGameOverlay *ove
 static NSString *BallpadOverlayTouchReadBack(SunPadGameOverlay *overlay)
 {
     NSArray<UIView *> *controls = BallpadTouchControlsInDrawOrder(overlay);
+    SunPadSettings *settings = [SunPadSettings sharedSettings];
     NSMutableArray<NSString *> *drawn = [NSMutableArray array];
+    NSUInteger hidden = 0;
     for (UIView *control in controls)
+    {
+        if (control.hidden)
+            hidden++;
         // The identifier first and the drawn numbers after it, so a reader can line the reading up
         // with the control it came from. A control the overlay has hidden is named as hidden rather
-        // than left with an alpha of zero and no explanation.
-        [drawn addObject:[NSString stringWithFormat:@"%@ %.2f %.0fx%.0f @%.0f,%.0f%@",
+        // than left with an alpha of zero and no explanation. The trailing k is the *per-control*
+        // size override the editor writes, 1.0 when there is none, and it is published because it
+        // is the only thing that tells the editor's own resize apart from the panel's global size
+        // setting, which moves every control's drawn bounds with it: two different settings that
+        // both show up as a drawn size changing, and only one of them is item 5's move/resize pair.
+        [drawn addObject:[NSString stringWithFormat:@"%@ %.2f %.0fx%.0f @%.0f,%.0f k%.2f%@",
                           control.accessibilityIdentifier, (double)control.alpha,
                           (double)control.bounds.size.width, (double)control.bounds.size.height,
                           (double)control.center.x, (double)control.center.y,
+                          (double)[settings sizeScaleForControl:control.accessibilityIdentifier],
                           control.hidden ? @" hidden" : @""]];
+    }
 
-    return [NSString stringWithFormat:@"controllers %lu hide-requested %d drawn %lu | %@",
+    // The two panel values the drawn numbers above are supposed to follow, published beside them so
+    // a reader can tie a drawn alpha or a drawn size to the setting that asked for it. The store's
+    // own line is a different witness -- it can hold an opacity no control was ever drawn at -- and
+    // these are the values the overlay resolved at the moment it laid the tree out.
+    // `hidden` is the count of the drawn controls the overlay has hidden, which is the resolved half
+    // of the visibility setting above it: the vendored pass paints a hidden control at an alpha of
+    // zero and flags the view, and only a count taken off those views says whether the resolution
+    // reached the drawing. The editor paints every control at full alpha while it is open, which is
+    // why a reader comparing a drawn alpha with the opacity setting has to allow that one state.
+    return [NSString stringWithFormat:@"controllers %lu hide-requested %d opacity %.2f size %.2f drawn %lu hidden %lu | %@",
             (unsigned long)GCController.controllers.count,
-            [SunPadSettings sharedSettings].hideTouchControlsWhenControllerConnected ? 1 : 0,
+            settings.hideTouchControlsWhenControllerConnected ? 1 : 0,
+            (double)settings.controlOpacity,
+            (double)settings.controlSizeScale,
             (unsigned long)controls.count,
+            (unsigned long)hidden,
             drawn.count > 0 ? [drawn componentsJoinedByString:@" | "]
                             : @"no control is drawn"];
 }
@@ -1122,6 +1148,89 @@ static NSString *BallpadAudioRecordingPath(void)
                                             [formatter stringFromDate:NSDate.date]]];
 }
 
+// What the file the row just closed actually holds, read back out of the file rather than
+// remembered from what the row asked for. The dump's own bookkeeping -- "dumping 1" and a rising
+// frame count -- is what the mixer handed to the device, and it says nothing about whether any of
+// it was audible: a silent transport hands over silent frames. The bytes are the only thing that
+// says, so the stop alert is built from this reading, and it can say "silent" when the take is.
+typedef struct
+{
+    BOOL readable;          // a RIFF/WAVE file whose fmt and data chunks both parsed
+    unsigned long frames;   // the data chunk's own length, in frames
+    unsigned int sampleRate;
+    unsigned int channels;
+    unsigned int peak;      // largest |sample| in the file, 0 when every sample is zero
+} BallpadRecordingReading;
+
+// The path the current take is being written to. The stop tap has to read that file back, and the
+// engine keeps no record of where it was told to write.
+static NSString *s_ballpadRecordingPath;
+
+static unsigned int BallpadReadLE(const unsigned char *p, unsigned int bytes)
+{
+    unsigned int value = 0;
+    for (unsigned int i = 0; i < bytes; ++i)
+        value |= (unsigned int)p[i] << (8 * i);
+    return value;
+}
+
+// The audible floor. A 32nd-magnitude step out of 32767 is about -60 dBFS: below the noise floor
+// of anything a person would call a recording, and above the stray single-bit value a silent device
+// buffer can still hand over.
+static const unsigned int kBallpadAudiblePeak = 32;
+
+static BallpadRecordingReading BallpadReadRecording(NSString *path)
+{
+    BallpadRecordingReading reading = { NO, 0, 0, 0, 0 };
+    if (path.length == 0)
+        return reading;
+
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (data.length < 44)
+        return reading;
+
+    const unsigned char *bytes = (const unsigned char *)data.bytes;
+    if (memcmp(bytes, "RIFF", 4) != 0 || memcmp(bytes + 8, "WAVE", 4) != 0)
+        return reading;
+
+    // The chunks are walked the way any reader walks them rather than by the offsets this app's own
+    // writer happens to use, so a file that reached disk with its chunks in another order still
+    // reads as a file.
+    BOOL haveFormat = NO;
+    unsigned long offset = 12;
+    while (offset + 8 <= (unsigned long)data.length)
+    {
+        const unsigned int chunkBytes = BallpadReadLE(bytes + offset + 4, 4);
+        if (memcmp(bytes + offset, "fmt ", 4) == 0 && offset + 24 <= (unsigned long)data.length)
+        {
+            reading.channels = BallpadReadLE(bytes + offset + 10, 2);
+            reading.sampleRate = BallpadReadLE(bytes + offset + 12, 4);
+            haveFormat = YES;
+        }
+        else if (memcmp(bytes + offset, "data", 4) == 0)
+        {
+            reading.frames = chunkBytes / (2 * sizeof(short));   // 2 channels of 16-bit samples
+            const unsigned char *pcm = bytes + offset + 8;
+            unsigned long samples = (unsigned long)reading.frames * 2;
+            const unsigned long available = ((unsigned long)data.length - (offset + 8)) / 2;
+            if (samples > available)
+                samples = available;                              // a short file reads short, not past its end
+            for (unsigned long i = 0; i < samples; ++i)
+            {
+                const short sample = (short)BallpadReadLE(pcm + i * 2, 2);
+                const unsigned int magnitude = sample < 0 ? (unsigned int)(-(int)sample)
+                                                           : (unsigned int)sample;
+                if (magnitude > reading.peak)
+                    reading.peak = magnitude;
+            }
+            reading.readable = haveFormat;
+            return reading;
+        }
+        offset += 8 + chunkBytes + (chunkBytes & 1);   // chunks are word-aligned
+    }
+    return reading;
+}
+
 // The slot the vendored menu spends on an emulated CPU clock, re-bound to the thing a native port
 // can actually do with it. That row's switch slowed an emulator down by 10 per cent, and this
 // runtime has no emulated clock to slow, so shipping it would be the inert switch doc 33 forbids
@@ -1158,12 +1267,37 @@ static NSString *BallpadAudioRecordingPath(void)
             // header and the count afterwards belongs to no file.
             const unsigned long frames = mix.dumpFrames;
             PortAudioDumpStop();
+
+            // Then the file is read back, because that counter is what the mixer handed over and
+            // not what the take sounds like. The Simulator showed the difference: a run where the
+            // transport was silent throughout wrote a well-formed WAV whose every sample was zero,
+            // and a row that stopped at the count called it a recording.
+            const BallpadRecordingReading file = BallpadReadRecording(s_ballpadRecordingPath);
+            NSString *audibility = nil;
+            if (!file.readable)
+                audibility = @"The file could not be read back to check what is in it, so its "
+                              "length is the mixer's alone.";
+            else if (file.frames != frames)
+                audibility = [NSString stringWithFormat:
+                    @"The file holds %lu frames where the mixer reported %lu, so what reached the "
+                     "disk is not the whole take.",
+                    file.frames, frames];
+            else if (file.peak < kBallpadAudiblePeak)
+                audibility = @"Nothing audible was playing while it ran: no sample in it is louder "
+                              "than 31 of 32767, so this take is silence rather than a failed "
+                              "recording.";
+            else
+                audibility = [NSString stringWithFormat:@"Its loudest sample is %u of 32767.",
+                                                        file.peak];
+
             title = @"Recording Stopped";
             message = [NSString stringWithFormat:
-                @"%lu frames, %.1f seconds at 32000 Hz. The file is complete and sits with "
+                @"%lu frames, %.1f seconds at 32000 Hz. %@ The file is complete and sits with "
                  "BallPad's own log, where the Files app can reach it.",
-                frames, (double)frames / 32000.0];
-            BallpadLog(@"menu: audio recording stopped after %lu frames", frames);
+                frames, (double)frames / 32000.0, audibility];
+            BallpadLog(@"menu: audio recording stopped after %lu frames; read back %lu frames, "
+                        "peak %u, %u Hz",
+                       frames, file.frames, file.peak, file.sampleRate);
         }
         else if (!deviceOpen)
         {
@@ -1177,6 +1311,10 @@ static NSString *BallpadAudioRecordingPath(void)
         else
         {
             NSString *path = BallpadAudioRecordingPath();
+            // Kept because the stop tap reads this file back, and reading it back is the point:
+            // the engine puts the length in the header when it closes, and only the bytes say
+            // whether the take is audible.
+            s_ballpadRecordingPath = path;
             if (PortAudioDumpStart(path.UTF8String))
             {
                 title = @"Recording";
