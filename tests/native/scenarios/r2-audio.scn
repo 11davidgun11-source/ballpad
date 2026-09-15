@@ -1,0 +1,50 @@
+# R2: what the mixer is doing while the game is on screen.
+#
+# The operator's report is that the sounds "seem disconnected from the models speaking
+# them". That sentence has three different failures hiding inside it, and they are told
+# apart by different fields rather than by one verdict:
+#
+#   nothing is sounding          -> the mixer's own voice and bus counts stay zero
+#   sound is sounding, but the    -> voices and busPeak are non-zero while the per-voice
+#     wrong sample                  smp_id lines name a sample nobody on screen is using
+#   sound is late or gap-toothed  -> the device transport reports underruns
+#
+# The transport side of that is Ballpad's own read-back, written to the app's log every
+# two seconds whether or not anything is on screen. The mixer side is the port's, and it
+# only prints under STRIKERS_LOG_AUDIO, which is what this scenario switches on; the
+# driver merges the port's stderr into app.stdout.log, so the [port] mix: lines and the
+# per-voice smp_id lines land next to the scene lines that say what is being rendered.
+#
+# The route and its presses are n3-sim-replay's, verbatim: this scenario exists to look at
+# the same match through a different window, not to drive the game any differently. Goal
+# timing is not reproducible run to run, so the goal waits are armed while the match is
+# goalless and the match scores when it scores.
+#
+# health -> saving/loading -> legal -> intro movie -> title -> main menu -> mariobg ->
+# choose captains (both sides) -> stadium select -> loading -> live match -> goal ->
+# goal presentation -> auto replay -> kickoff.
+env STRIKERS_LOG_SCENES=1
+env STRIKERS_LOG_MATCH=1
+env STRIKERS_LOG_NIS=1
+env STRIKERS_LOG_AUDIO=1
+env STRIKERS_AUTOPRESS=A@s51+180,A@s2+240,A@s53+120,A@s3+240,A@s8+300,A@s8+420,A@s8+540,A@s8+660,LEFT@s8+780,A@s8+900,A@s8+1020,A@s9+300
+require-scene choose_captains
+wait-log state=4 ot=0 score @420
+shot r2_live
+dump r2_live
+expect [port] mix: studios=
+wait-log state=2 ot=0 @540
+shot r2_goal
+dump r2_goal
+wait-log [task] state=0x100 renderWorld @240
+shot r2_goal_pres
+dump r2_goal_pres
+wait-log [task] state=0x10 renderWorld @180
+shot r2_replay0
+dump r2_replay0
+wait-log [task] state=0x2 renderWorld @180
+shot r2_back_to_play
+dump r2_back_to_play
+require-frame 9000
+dump r2_middlegame
+quit
