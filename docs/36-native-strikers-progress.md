@@ -2,6 +2,22 @@
 
 ## Current state
 
+N4's Files-import half is closed, on both form factors, and with it doc 34's F01 and F02. Ballpad's
+own store and importer, `mobile/interface/BallpadGameData.mm`, implements the port's two host hooks
+over `<container>/Documents/BallpadGameData/` (a `current` file naming the active staged copy under
+`import-<uuid>/<name>`), and the app pulls both symbols into its link explicitly -- which is the trap
+hypothesis 15 identified. Three of the four vendored delegate actions (re-import/change, folder
+import, removal) route there; only controller mapping is still log-only, which is R1 row 7. Doc 34's
+F01 and F02 now PASS on the phone (`f01f02-phone-r4`) and on the iPad (`f01f02-pad-r1`), each run
+10/10 rows PASS with `problems: []` on the current build (`app 90f7a37767fc`), driven only by real
+touches through `scripts/native/run-uitests.sh`. What those rows decide: a fresh install with no data
+presents Ballpad's own importer rather than the port's refusal; a valid image chosen in the *Files*
+picker stages and activates with the staged bytes byte-identical to the fixture the picker offered
+(`S.f01f02.store-bytes`, `da80883ba456`); and a truncated or wrong-game image is refused while the
+previously installed data keeps working. Closing F02 needed one harness fix, hypothesis 21: the picker
+publishes its container under an identifier no exact match could ever equal, so the walk was looking
+for the wrong string rather than failing to scroll.
+
 N0, N1, N2 and N3 are complete. Both pinned mobile dependencies (SDL3, FFmpeg) are built for the
 Simulator, the pinned Dawn source is extracted, the attribution/notices package exists and its
 integrity gate passes, both Simulator bundles link and are asserted in place (`build.sh --platform
@@ -151,18 +167,22 @@ evidenced (N3, above); the device platform and N4 onward are still open.
   `patches/native-strikers/` is 9 patches, SHA-256 `bc19ccd92c75...`; earlier fork heads were
   `3f7b48c` (pin + 7), `450e5c00` (pin + 6), `431de3bb` (pin + 5) and `cd8640b` (pin + 4).
 - Authority: docs 33, 34, 35 and the runbook in the goal objective
-- Active phase: N4 (Ballpad interface integration). N4-A, N4-B and N4-C are DONE, the interface
-  half of N4-D is DONE on both form factors, and the match half of N4-D is DONE on both form
-  factors. N4 is open only on its Files-import half plus F04 and F06. The port side of that
-  Files-import half now exists (the disc seam above, `c28a6d7`), so what remains there is
-  Ballpad's own store and importer rather than a port change.
-- Next action: Ballpad's own Files importer -- `mobile/interface/BallpadGameData.mm` implementing
-  the two new hooks over the store at `<container>/Documents/BallpadGameData/`, with validation
-  reusing the port's own reader and with both symbols added to the app's whole-archive/`-Wl,-u`
-  pull (hypothesis 15 and its extension) -- which is also what closes N4-D. Then the R1 to-do
-  list's remaining rows (5-7 and 9-15: the runtime settings bridge, the three rewritten menu rows,
-  the diagnostics directory, About/Credits, and the row that must disappear), F04's per-control
-  touch drive and F06's rotated relayout, and the R2 audio measurement path. Scenarios
+- Active phase: N5, with N4 open on two gate rows. N0-N3 are complete. N4-A, N4-B and N4-C are
+  DONE; N4-D's interface half and its match half are DONE on both form factors; and N4-D's
+  Files-import half is now DONE as well -- doc 34's F01 and F02 PASS on both phone and iPad
+  (`f01f02-phone-r4`, `f01f02-pad-r1`, 10/10 rows each). N4 is therefore open only on F04's
+  per-control game-consumption row and F06's rotated relayout, which are gate rows rather than
+  interface work.
+- Next action: the R1 full-adaptation list's remaining rows -- **5** (prove each touch setting has
+  a real effect on this runtime: render scale and aspect must reach Ballpad's renderer, the FPS row
+  must drive the port's own `PortSetFrameLimit`, and the six touch settings must be reflected by the
+  overlay the port reads), **7** (decide the controller-mapping destination), **9-11** (rewrite the
+  folder-import title, the report destination and the FPS row), **12** (remove the emulated-CPU row
+  that must not ship), **13-14** (diagnostics directory and settings-key domain) and **15**
+  (About/Credits) -- then F04's per-control touch drive, F06's rotated relayout, and the R2 audio
+  measurement path. Render scale comes before aspect: aspect has a shipped resolve-once latch
+  (`src/platform/aspect.c`), so a runtime aspect change needs a small port-side setter first, which
+  changes the patch digest. Scenarios
   now run through one durable entry point -- `scripts/native/run-scenario.sh --scenario <name>
   --run-id <id> --device <UDID> [--budget SECONDS] [--form-factor phone|pad] [--force]` -- which
   resolves the app from `ballpad-bundles.txt`, seeds the memory card the front end needs, takes
@@ -182,8 +202,8 @@ evidenced (N3, above); the device platform and N4 onward are still open.
 | N1 Native desktop baseline | PASS | Build+tests PASS (`build/native/macos-release/strikers`, 12/12 checks, 265 gtests, proof `unit-macos-20260914T093026Z`); desktop runtime presents ~63 Hz on M2 with Dawn/Metal; real gameplay capture PASS in `n1-nav-v12` (whole front end to a match, clock 0 -> 75.69 s, score 0-0 -> 0-1, `valid=1`). Desktop only: no Simulator or device gameplay is implied |
 | N2 Mobile builds and dependencies | PASS | SDL3 + FFmpeg + zstd staged for Simulator and now for device, Dawn extracted once from the pinned ref and built from source for each platform, notices gate passing and scoped with an `add_custom_target`. The bundles are fully static and correctly located: hypotheses 5-8 are fixed, so no host zstd and no shared libpng enter the link, `build.sh` exits 0 on the bundle CMake actually produces, and the Simulator lock releases at run end. Simulator bundles are IOSSIMULATOR Mach-O; the device bundle is now built and asserts platform IOS, minos 17.0, sdk 26.5, arm64, unsigned, no `@rpath` and no Homebrew or `/usr/local` link. The smoke gate PASSES all five rows (`smoke-phone-smoke-phone-retry1`: probe presented 90/90 frames on Metal). Device runtime behaviour is not tested -- no hardware is present |
 | N3 Complete native Simulator match | PASS | Real native-engine match on the iPhone 17e Simulator: `BallpadStrikers.app` runs the whole front end to live play, the match scores on its own, and the engine's goal presentation, scorer credit, automatic replay and return to play follow. Proof `build/proofs/native-strikers/n3-sim-replay-phone-n3-sim-replay-r1/` has `S.run` and `S.provenance` both PASS, driver verdict PASS over 31 steps; see checkpoint N3 |
-| N4 Ballpad interface integration | IN_PROGRESS | N4-A PASS and N4-B PASS: SunPad's interface vendored byte-for-byte (9 files, hashes unchanged) and compiled into the app; a port-side host-UI seam plus the `BallpadHostUI.mm` adapter place SunPad's GameCube controls and three-dot menu over a real game frame, and a real tap on the overlay's A button advanced the game's memory-card screen. Proofs `n4b-hostui-seam-phone-n4b-hostui-seam-r2` (S.run + S.provenance PASS) and `n3-sim-replay-phone-n3-regress-after-n4b` (no regression in the record/replay path). N4-C's host/lifecycle surface PASSES on both form factors through real touches -- phone `n4d-phone-uitest-r2` and pad `n4d-pad-uitest-r3`, all five `S.uitest.*` rows PASS on a freshly installed `app 5b22cec45b79` (superseded by `app 30f2d3eb13ca`, the bounded-capture build, and now by `app 7e526c45f9b6`, which adds the disc seam and the GL fix) -- and the N4-D match half is PASS on **both** form factors (`n3-sim-replay-pad-n4d-ipad-match-r1`, `n3-sim-replay-phone-n4d-phone-match-r2`, both on the current build). The capture-path question the iPad run raised is closed as a readback artifact rather than a fade or a presented flash (`n4d-kickoff-fade-r1`, `n4d-dense-r2`, `n4d-video-r1`; hypotheses 16 and 19). Doc 33's N4 gate is still open on its Files-import half, deliberately deferred to N5 as its first work item (the port reaches `DVDInit()` from a static initializer before `main()`, so an importer the app runs cannot be ordered ahead of it from the app side -- that ordering is now solved on the port side by `c28a6d7`'s deferred refusal plus `PortHostUIRunGameDataImport`, so what remains is Ballpad's own store and importer rather than a port change), and on F04's per-control game-consumption row and F06's rotated relayout. The delegate actions are still log-only on purpose, per the N4-C/N5 split below |
-| N5 Audio, saves and lifecycle | NOT_RUN | |
+| N4 Ballpad interface integration | IN_PROGRESS | N4-A PASS and N4-B PASS: SunPad's interface vendored byte-for-byte (9 files, hashes unchanged) and compiled into the app; a port-side host-UI seam plus the `BallpadHostUI.mm` adapter place SunPad's GameCube controls and three-dot menu over a real game frame, and a real tap on the overlay's A button advanced the game's memory-card screen. Proofs `n4b-hostui-seam-phone-n4b-hostui-seam-r2` (S.run + S.provenance PASS) and `n3-sim-replay-phone-n3-regress-after-n4b` (no regression in the record/replay path). N4-C's host/lifecycle surface PASSES on both form factors through real touches -- phone `n4d-phone-uitest-r2` and pad `n4d-pad-uitest-r3`, all five `S.uitest.*` rows PASS on a freshly installed `app 5b22cec45b79` (superseded by `app 30f2d3eb13ca`, the bounded-capture build, and now by `app 7e526c45f9b6`, which adds the disc seam and the GL fix) -- and the N4-D match half is PASS on **both** form factors (`n3-sim-replay-pad-n4d-ipad-match-r1`, `n3-sim-replay-phone-n4d-phone-match-r2`, both on the current build). The capture-path question the iPad run raised is closed as a readback artifact rather than a fade or a presented flash (`n4d-kickoff-fade-r1`, `n4d-dense-r2`, `n4d-video-r1`; hypotheses 16 and 19). Doc 33's N4 gate's Files-import half is now CLOSED on both form factors: the port side was solved by `c28a6d7`'s deferred refusal plus `PortHostUIRunGameDataImport`, Ballpad's own store and importer (`BallpadGameData.mm`) answers both hooks, and doc 34's F01 and F02 both PASS on phone (`f01f02-phone-r4`) and iPad (`f01f02-pad-r1`), 10/10 rows each with `problems: []` and real touches only. N4 is open only on F04's per-control game-consumption row and F06's rotated relayout. Three of the four delegate actions now route into Ballpad's own store (re-import/change, folder import and removal, commit `ace661b`); only controller mapping is still log-only, which is R1 row 7 |
+| N5 Audio, saves and lifecycle | IN_PROGRESS | F01 and F02 PASS on phone and iPad (`f01f02-phone-r4`, `f01f02-pad-r1`, 10/10 rows each): a fresh install presents Ballpad's own importer, a valid image picked through the Files picker stages byte-identically, and a truncated/wrong-game image is refused while the previous data keeps working. The store is `<container>/Documents/BallpadGameData/`. Audio (F09 / R2) is still unrun -- no run so far contains an audio-device open, a MusyX init or an underrun line |
 | N6 Performance/render/endurance | NOT_RUN | |
 | N7 Clean reproduction and handoff | NOT_RUN | |
 | Physical device validation | NOT_RUN | Outside Simulator completion; hardware evidence required |
@@ -659,6 +679,21 @@ desktop reference and the Simulator. Do not close it by ear on one machine.
 
 ### 9. Command mapping
 
+21. **The F02 picker walk was not failing to scroll -- it was looking for a string no element could
+   ever have.** Observation: the run's own attached hierarchies show Files publishing the app's
+   folder as `identifier: 'Ballpad Strikers, Container'` with `label: 'Ballpad Strikers, 4 items'`,
+   so an exact-match `pickerMatch(["Ballpad Strikers"])` could never resolve: both strings that
+   exist are the display name *plus a suffix*, and the label additionally carries the item count.
+   A second measured detail: tapping `Browse` lands on the locations root (`Title: On My iPhone`),
+   not on the folder, so reaching the folder is two hops rather than one. Smallest change: add
+   `pickerContainer(named:timeout:)` -- a BEGINSWITH match that excludes `BackButton` -- and use it
+   as the third pass's fallback, with both measured `Browse` outcomes recorded in the method comment.
+   Outcome: `--only testRefusedImportKeepsThePreviousInstallationUsable` PASSes in 209 s with all
+   three picker selections landing, and the full phone (`f01f02-phone-r4`) and iPad
+   (`f01f02-pad-r1`) suites then pass 10/10 rows each with `problems: []`. Recorded because the
+   earlier attempts were spent on timeout wording and scroll strategy for a mismatch no wait could
+   fix: a harness that cannot see an element is not evidence that the element is absent.
+
 The required surface is exactly `bootstrap.sh`, `build.sh --platform macos|simulator|device
 --configuration Release`, `test.sh --suite unit|smoke|acceptance --device <UDID>`,
 `export-patches.sh`, `verify-notices.sh` and `verify-clean.sh` — all under `scripts/native/`.
@@ -738,8 +773,8 @@ What "exactly as they are" has already decided, and what is still owed:
 | 3 | Three-dot button, 9-row menu, vendored order, vendored handlers | DONE at N4-C, both form factors, real touches | None for geometry; N5 rewrites three row titles/destinations (rows 6-8 below) and the untitled rows stay untouched |
 | 4 | Menu title | DONE at N4-C (`BallpadGameOverlay -buildMenu` re-wraps the vendored menu's children under the bundle's display name) | None |
 | 5 | Touch-control settings surface: render resolution, opacity, control size, hide-when-controller, modern C-stick, move/resize, reset | Surface DONE and exercised by real touches | Prove each setting has a **real effect on this runtime** rather than only persisting: render scale and aspect must reach Ballpad's renderer, the FPS row must drive Ballpad's frame stats, and the six touch settings must be reflected by the overlay the port is reading |
-| 6 | `gameOverlayRequestsGameDataChange` / `…FolderImport` / `…Removal` | Log-only on purpose (N4-C/N5 split) | Route to Ballpad's own importer and removal, with the pre-`main()` `DVDInit()` ordering solved first (N5's first work item) |
-| 7 | `gameOverlayRequestsControllerMapping` | Log-only | Decide at N5 whether Ballpad adopts SunPad's narrow A/B/X/Y/Z remap (`SunPadControllerMapping` was deliberately not vendored at N4) or answers with Aurora's own mapping surface |
+| 6 | `gameOverlayRequestsGameDataChange` / `…FolderImport` / `…Removal` | DONE: all three route to Ballpad's own store (`BallpadGameData.mm`) since commit `ace661b`; the fourth delegate action is row 7 | None outstanding for routing. The pre-`main()` `DVDInit()` ordering is solved on the port side (`c28a6d7`), and F01/F02 exercise all three paths on both form factors (fresh import, re-import/refusal, removal's consequence) |
+| 7 | `gameOverlayRequestsControllerMapping` | Still log-only, and the only one of the four delegate actions that is (see the comment in `BallpadHostUI.mm`) | Decide at N5 whether Ballpad adopts SunPad's narrow A/B/X/Y/Z remap (`SunPadControllerMapping` was deliberately not vendored at N4) or answers with Aurora's own mapping surface. There is no remap store to route into until that decision is made, so the log line names the open decision rather than hiding a missing route |
 | 8 | `gameOverlayDiagnosticContext` / `gameOverlayPerformanceProfile` | DONE at N4-B (both answer from this build) | Keep truthful as the runtime gains features |
 | 9 | Row "Import from SunPad Folder" | Untouched, N5 | Rename against the same handler |
 | 10 | Row "Report a Problem…" and its alert copy; GitHub issue destination | Untouched, N5 | Correctness problem, not cosmetics: as-is a Ballpad report lands on SunPad. Ballpad has no issue template and messaging maintainers is outside this assignment, so N5 writes the local diagnostic report and chooses the destination deliberately |
@@ -1734,6 +1769,72 @@ Next concrete action: write mobile/interface/BallpadGameData.mm -- PortHostUIGam
 ```
 
 ## Checkpoint template
+
+```text
+Phase / gate: N4-D Files-import half -> N5 (Ballpad's own importer; doc 34 F01 + F02)
+Date / build identity / patch digest: 2026-09-15; engine fork c28a6d7, tree
+  15d79868707266c914904c5a487f62d88a44f2ea clean; patch series bc19ccd92c75 (9 patches); disc
+  da80883ba456 (the recorded baseline); app binary 90f7a37767fc (simulator-release, unchanged by
+  this session's harness work)
+Source invariant and observed failure: a fresh install with no game data must present Ballpad's own
+  importer rather than the port's refusal, a valid local raw USA image chosen through the Files
+  picker must stage and activate, and an invalid image must be refused without disturbing the
+  installation that was already working. The port had already stopped exiting when it could not
+  resolve a disc (c28a6d7), but no host implemented the two hooks, so the app still had nothing to
+  show. Separately, F02's refusal walk had failed repeatedly: the suite could not find the app's
+  folder in the picker.
+Hypothesis: (1) the app's own store, not a port change, is what closes this -- validation through
+  the port's own reader, activation as a single write of `current`, and both host symbols pulled
+  into the link explicitly, since a static-archive implementation is otherwise silently satisfied
+  by the port's weak no-op (hypothesis 15); (2) F02's failure was a picker-match defect rather than
+  a scroll or timing problem (hypothesis 21).
+Change: `mobile/interface/BallpadGameData.{h,mm}` -- `PortHostUIGameDataPath()` as pure C over
+  `<container>/Documents/BallpadGameData/` (it is called from a static initialiser, so it must not
+  touch a UI framework), `PortHostUIRunGameDataImport()` driving the Files picker, staged copies in
+  `import-<uuid>/<name>` named by a `current` file, and both symbols added to the app's existing
+  whole-archive/`-Wl,-u` pull. `mobile/CMakeLists.txt` adds the file and
+  `-framework UniformTypeIdentifiers`. `mobile/interface/BallpadHostUI.mm` routes three of the four
+  vendored delegate actions there (re-import/change, folder import, removal); controller mapping
+  stays log-only by decision (R1 row 7). Harness: `pickerContainer(named:timeout:)` and its
+  documented `Browse` outcomes in the UI suite. The nine vendored SunPad files are untouched.
+Command / exit status: build-for-testing of BallpadNativeUITests -> TEST BUILD SUCCEEDED (the cheap
+  check before spending simulator time); `run-uitests.sh --run-id f02-only-r1 --only
+  testRefusedImportKeepsThePreviousInstallationUsable` -> F02 PASS in 209 s;
+  `run-uitests.sh --run-id f01f02-phone-r4 --device 8619020B-...` -> exit 0, 10/10 rows PASS,
+  `problems: []`; `run-uitests.sh --run-id f01f02-pad-r1 --device B3799189-...` -> exit 0, 10/10
+  rows PASS, `problems: []`. Exactly one Simulator was booted at a time throughout: the idle device
+  was shut down before each run, and both are shut down now.
+Runtime scene / duration / device-or-Simulator: real app, real touches. Phone `f01f02-phone-r4`:
+  menu-order 28.3 s, settings-panel 98.2 s, render-scale-persistence 86.4 s,
+  layout-move-reset-persistence 104.3 s, lifecycle-surface 41.7 s, F01 11.3 s, F02 200.7 s. iPad
+  `f01f02-pad-r1`: menu-order 9.6 s, settings-panel 32.7 s, render-scale-persistence 21.0 s,
+  layout-move-reset-persistence 38.9 s, lifecycle-surface 20.0 s, F01 89.1 s, F02 87.8 s.
+Evidence bundle: `build/proofs/native-strikers/uitest-phone-f01f02-phone-r4/` and
+  `build/proofs/native-strikers/uitest-pad-f01f02-pad-r1/` -- `result.json` (rows + problems),
+  `uitest.log`, `preflight.log` (device, app binary hash, fixtures and their fixtures' hashes),
+  `store-inventory.txt`, and the xcresult with the picker/menu hierarchy attachments. F02's
+  `S.f01f02.store-bytes` row checks the staged file against the fixture the picker offered, and
+  confirms the three chosen files were left unchanged.
+Result: PASS for doc 34's F01 and F02 on phone and iPad, and for the N4-D Files-import half.
+  N4 remains open only on F04's per-control game-consumption row and F06's rotated relayout.
+What this result does and does not prove: proves the app presents its own importer with no data at
+  all, that an image chosen through the real Files picker is staged byte-identically and becomes
+  the active install, that a truncated or wrong-game image is refused with the previous install
+  still usable and the source files unchanged, and that the vendored interface's rows and handlers
+  still behave on both form factors. Does not prove: that the store survives a reinstall or a
+  device restore (F09/F10's saves work is unrun), that audio is correct or even present (R2/F09 is
+  unrun -- no run so far contains an audio-device open, a MusyX init or an underrun line), that any
+  Setting changes the runtime rather than only persisting (R1 row 5), or anything about
+  performance, memory or endurance (N6).
+Next concrete action: R1 rows 5, 7 and 9-15. Row 5 first: prove each touch setting reaches the
+  runtime -- render scale through `PortSetRenderScale`, the FPS row through the port's own
+  `PortSetFrameLimit` (not a speed change: the port's logic advances once per retrace, so the row
+  must be named as the port's limiter), and the six touch settings by reading back what the overlay
+  the port reads. Aspect needs a small port-side setter first, because `src/platform/aspect.c`
+  resolves once behind `STRIKERS_ASPECT` and caches, and that changes the patch digest. Then row 12
+  (remove the emulated-CPU row, which doc 33 forbids shipping), rows 9-11 and 13-15, F04's
+  per-control touch drive, F06's rotated relayout, and R2's audio measurement.
+```
 
 ```text
 Phase / gate:
