@@ -1,0 +1,38 @@
+# F12 at the bridge boundary: does the app's own physical-controller bridge -- connect, per-control
+# merge, release, disconnect -- drive the same pad-assembly boundary a finger does, once per port
+# frame?
+#
+# What is synthetic and what is not. A Simulator cannot be handed a physical pad, so the injector is
+# the framework's own GCVirtualController: a real GCController in GCController.controllers that
+# posts the real connect and disconnect notifications and delivers through the real
+# valueChangedHandler. The connect, the sample delivery and the disconnect therefore travel the
+# framework's own path into `BallpadPhysicalControllers.mm`'s handler, and only the hand holding the
+# pad is scripted. The virtual pad is configured `hidden`, so the framework does not draw its own
+# touch surface over the game and the run is not exercising a second visible interface.
+#
+# Where the sweep lands, stated rather than glossed. The injector is counted in the *port's* frames
+# from the frame the app is past launch, so its fourteen steps run over roughly the first 440 port
+# frames and the sweep is over while the front end is still drawing its first screen. That is the
+# honest reading of what is being measured, and it is enough for this row because the boundary doc
+# 34's F12 names is scene-independent: `PortHostUIPollPad` runs once per frame from
+# `PortUpdateSyntheticInput` before the VBlank pad pass, in every scene, and `PadStatus::s_Current[0]`
+# is the pad the game's own tasks read whenever they read one. What this row does *not* claim is that
+# a scripted press reached gameplay -- that reading is F04's, taken inside the port's own match
+# bracket, and the two rows are deliberately separate.
+#
+# How the claims are read. The adapter's sampler prints one `controller:` line per change: what the
+# bridge published into the mixer's controller half (`pub`), what the host's per-frame poll made of
+# that mixer (`offer`), and the engine's own pad (`engine`). The reduction is
+# scripts/native/f12-pad-summary.awk and the clauses are stated in scripts/native/run-scenario.sh.
+# Every claim about the stops in between is read out of the same log by that reduction; the single
+# `wait-log` below is the sweep's end rather than a second opinion on them. One wait, on the last
+# line the script can print, because a wait begins where the log ends when it starts: the bridge
+# prints its connect forty milliseconds after its mapping line and its disconnect fifteen
+# milliseconds after `done`, and the driver samples the file every fifty, so a second wait would
+# begin past the line it was looking for no matter how early it was reached. The end-of-sweep line
+# is also the one that cannot be matched early, since nothing else in the log carries it.
+env STRIKERS_LOG_CONTROLLER=1
+env STRIKERS_FAKE_PAD=controller
+wait-log done, 14 steps, disconnecting
+require-frame 460
+quit

@@ -178,7 +178,7 @@ NSString *BallpadAppDisplayName(void)
     NSBundle *bundle = NSBundle.mainBundle;
     return [bundle objectForInfoDictionaryKey:@"CFBundleDisplayName"]
         ?: [bundle objectForInfoDictionaryKey:@"CFBundleName"]
-        ?: @"BallPad Strikers";
+        ?: @"BallPad";
 }
 
 NSURL *BallpadDiagnosticsReportURL(

@@ -217,11 +217,19 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 
     /// Launches the app and waits for the host overlay. A missing three-dot button after a
     /// generous bounded wait is a real failure: it means the overlay never reached the screen.
-    private func launchAndWaitForOverlay(timeout: TimeInterval = 240) {
+    ///
+    /// `extraEnvironment` is the caller's own additions on top of the shared launch environment, and
+    /// it exists for the one row that has to launch the app the way a pad-producing run does -- the
+    /// F12 scripted controller and its per-frame log. It is additive on purpose: the disc, the
+    /// writable directories and the log gates every other row relies on stay exactly as they are.
+    private func launchAndWaitForOverlay(timeout: TimeInterval = 240,
+                                         extraEnvironment: [String: String] = [:]) {
         // The interface rows judge the overlay over a running game, so they hand the engine the
         // disc and the writable directories they were built with. F01/F03's import rows are the
         // opposite case and launch without them, which is why this is here and not in setUp.
-        app.launchEnvironment = Self.launchEnvironment()
+        var environment = Self.launchEnvironment()
+        environment.merge(extraEnvironment) { _, addition in addition }
+        app.launchEnvironment = environment
         app.launch()
         XCTAssertTrue(menuButton.waitForExistence(timeout: timeout),
                       "the SunPad three-dot menu button is on screen")
@@ -1018,6 +1026,167 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         XCTAssertTrue(menuButton.waitForExistence(timeout: 15),
                       "the overlay is underneath again")
     }
+
+    /// The physical button the panel currently binds `gameButton` to, read off the row it drew for
+    /// it. The row reads `Z  ←  Left Shoulder`, so the whole row is returned rather than the
+    /// right-hand name: assigning is a swap, and two rows moving is what tells a swap from a write.
+    private func mappingRowText(_ gameButton: String) -> String? {
+        guard let row = identifierElement("BallpadMappingBind." + gameButton) else { return nil }
+        return publishedText(row)
+    }
+
+    /// Taps one of the panel's rebind rows, scrolling the panel when the row is below the sheet's
+    /// fold. The panel is a page sheet on both form factors and its content is taller than the
+    /// phone's sheet, so a row one wants can be published and not yet on screen.
+    private func tapMappingBindRow(_ gameButton: String) {
+        guard let row = identifierElement("BallpadMappingBind." + gameButton) else {
+            attachHierarchy("mapping-bind-" + gameButton + "-missing")
+            XCTFail("the panel draws a rebind row for " + gameButton)
+            return
+        }
+        if !row.isHittable {
+            // The presented sheet's own scroll view, which is what a person swipes to reach a row
+            // past the fold. Bounded, so a row that is genuinely unreachable fails below instead of
+            // scrolling until the budget runs out.
+            let panel = app.scrollViews.firstMatch
+            for _ in 0..<6 where !row.isHittable {
+                guard panel.exists else { break }
+                panel.swipeUp()
+            }
+        }
+        XCTAssertTrue(row.isHittable, "the " + gameButton + " rebind row is reachable in the panel")
+        row.tap()
+    }
+
+    /// Taps a choice in the action sheet a rebind row raises. The sheet is a `UIAlertController`, so
+    /// the choice is named by its title and the surface it lands on is what varies: an action sheet is
+    /// a popover on the iPad and a sheet on the phone, and the presenting panel is itself a page
+    /// sheet. The two titled surfaces are asked first so the choice cannot be confused with a control
+    /// of the panel or of the overlay underneath, and the whole-app query is only reached for when
+    /// neither surface is on screen at all.
+    private func tapMappingChoice(_ title: String, inSheetTitled sheetTitle: String) {
+        let owners: [XCUIElement] = [app.sheets[sheetTitle], app.alerts[sheetTitle],
+                                     app.sheets.firstMatch, app.alerts.firstMatch]
+        for owner in owners where owner.exists {
+            let choice = owner.buttons[title]
+            if choice.waitForExistence(timeout: 5) {
+                choice.tap()
+                return
+            }
+        }
+        let bare = app.buttons[title]
+        if bare.waitForExistence(timeout: 5) && bare.isHittable {
+            bare.tap()
+            return
+        }
+        attachHierarchy("mapping-choice-" + title)
+        XCTFail("the sheet titled \"" + sheetTitle + "\" offers " + title)
+    }
+
+    /// Opens the mapping panel from the three-dot menu. The row is on the menu's second page on the
+    /// phone, so the bounded scroll is what reaches it on both form factors.
+    private func openMappingPanel() {
+        openMenu()
+        guard let row = scrollMenuForElement("Controller Button Mapping…", timeout: 25) else {
+            attachHierarchy("mapping-row-missing")
+            XCTFail("the Controller Button Mapping row is present in the menu")
+            return
+        }
+        row.tap()
+        XCTAssertNotNil(waitForIdentifier("BallpadMappingTitle", timeout: 30),
+                        "the mapping panel opens")
+    }
+
+    /// The launch a pad-producing run has: the shared environment every other row uses, plus the F12
+    /// scripted controller and the per-frame chain it logs. Named once so the two scripted launches
+    /// below cannot drift apart in what they ask the app to do.
+    private static let scriptedPadLaunch: [String: String] = [
+        "STRIKERS_FAKE_PAD": "controller", "STRIKERS_LOG_CONTROLLER": "1",
+    ]
+
+    /// R1 item 7's editable half, and F12 taken from the interface's side. The five rows under the
+    /// panel's bridge heading are the vendored A/B/X/Y/Z store, which is the map the app's own bridge
+    /// reads once per sample when it translates a controller; assigning is a swap, so the five
+    /// physical buttons stay a permutation and no row can leave another unbound. This row drives that
+    /// edit through the panel's real taps and reads the result back off the panel every time it
+    /// opens, twice across a termination, and then puts the interface's default back through the
+    /// panel's own Reset. Every launch is a fresh process, which is what makes a reading a read of
+    /// the store rather than of the edit this process made.
+    ///
+    /// The two scripted launches are the half a label cannot prove: with the scripted pad running the
+    /// app's own log carries the map the *bridge* read at start-up and the bits it published for the
+    /// script's own press-y -- a press of the physical Y button -- on every step it ran. The
+    /// S.f13.mapping-applied row fails unless that press travelled through the swapped map, which is
+    /// the one thing this panel claims about the game rather than about itself.
+    func testControllerMappingPanelRebindIsTheMapTheBridgeApplies() throws {
+        launchAndWaitForOverlay()
+        openMappingPanel()
+
+        XCTAssertNotNil(identifierElement("BallpadMappingBridgeHeading"),
+                        "the panel says which map its editable rows are")
+        XCTAssertNotNil(identifierElement("BallpadMappingBridgeNote"),
+                        "the panel states what a rebind does to the button it swaps with")
+
+        // Read per button rather than as one string: assigning is a swap, so the pair of rows that
+        // move is what tells a swap from a write.
+        XCTAssertEqual(mappingRowText("A"), "A  ←  A", "the store starts at the interface's default")
+        XCTAssertEqual(mappingRowText("B"), "B  ←  B", "the store starts at the interface's default")
+        XCTAssertEqual(mappingRowText("X"), "X  ←  X", "the store starts at the interface's default")
+        XCTAssertEqual(mappingRowText("Y"), "Y  ←  Y", "the store starts at the interface's default")
+        XCTAssertEqual(mappingRowText("Z"), "Z  ←  Left Shoulder",
+                       "the store starts at the interface's default")
+        attach("mapping-before-rebind")
+
+        tapMappingBindRow("Z")
+        tapMappingChoice("Y", inSheetTitled: "Bind GameCube Z to")
+
+        XCTAssertEqual(mappingRowText("Z"), "Z  ←  Y",
+                       "choosing a physical button for Z binds Z to it")
+        XCTAssertEqual(mappingRowText("Y"), "Y  ←  Left Shoulder",
+                       "and the row that held Z's binding takes the one it swapped with")
+        attach("mapping-after-rebind")
+
+        app.terminate()
+        launchAndWaitForOverlay(extraEnvironment: Self.scriptedPadLaunch)
+        openMappingPanel()
+        XCTAssertEqual(mappingRowText("Z"), "Z  ←  Y",
+                       "the rebind survived a termination and a fresh launch")
+        XCTAssertEqual(mappingRowText("Y"), "Y  ←  Left Shoulder",
+                       "the swap survived with it, so the stored map is still a permutation")
+        attach("mapping-after-relaunch")
+
+        app.terminate()
+        launchAndWaitForOverlay()
+        openMappingPanel()
+        XCTAssertEqual(mappingRowText("Z"), "Z  ←  Y",
+                       "the store still holds the rebind before the default is asked for")
+        guard let reset = identifierElement("BallpadMappingReset") else {
+            attachHierarchy("mapping-reset-missing")
+            XCTFail("the panel offers the interface's own default")
+            return
+        }
+        reset.tap()
+        XCTAssertEqual(mappingRowText("Z"), "Z  ←  Left Shoulder",
+                       "Reset restores the interface's default")
+        XCTAssertEqual(mappingRowText("Y"), "Y  ←  Y",
+                       "and puts every row it moved back")
+        attach("mapping-after-reset")
+
+        app.terminate()
+        launchAndWaitForOverlay(extraEnvironment: Self.scriptedPadLaunch)
+        openMappingPanel()
+        XCTAssertEqual(mappingRowText("Z"), "Z  ←  Left Shoulder",
+                       "the default survived a termination and a fresh launch")
+        XCTAssertEqual(mappingRowText("Y"), "Y  ←  Y",
+                       "so the next session starts where the interface's default says it does")
+
+        app.buttons["BallpadMappingClose"].tap()
+        XCTAssertFalse(app.staticTexts["BallpadMappingTitle"].waitForExistence(timeout: 5),
+                       "closing the panel dismisses it")
+        XCTAssertTrue(menuButton.waitForExistence(timeout: 15),
+                      "the overlay is underneath again")
+    }
+
 
     /// F13/item 7. The Controller Button Mapping row opens a panel that reports the port's own map
     /// for its port, or the port's own reason there is none. The panel is read-only on purpose, so
@@ -1892,6 +2061,11 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// driven to its maximum has to come back to the default the layout started at, and the control
     /// with it. The starting state is normalized to that default first, so "at the default" is a
     /// frame this test measured rather than one it assumed.
+    ///
+    /// One flake is on record and it is not unexplained: `uitest-pad-pad-final-r1` read this row
+    /// short of its band once, before the orientation pin above was in the bundle, and it passed on
+    /// the immediate re-run and on every run since (`pad-final-r2`, `phone-final-r1`). The band was
+    /// left where it was; the fix was the ruler, per the note at the top of this file.
     func testTheLargestControlSizeThePanelOffersIsStillInsideTheSafeArea() throws {
         launchAndWaitForOverlay()
         openMenu()
@@ -2412,10 +2586,19 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     private static let truncatedImageName = "uitest-truncated.iso"
     private static let wrongGameImageName = "uitest-wronggame.iso"
 
-    /// The heading the port itself asks for when its disc search finds nothing, verbatim from
-    /// src/platform/dvd.c. Asserting this exact string is what makes the row "the app shows the
-    /// port's own explanation" rather than "the app shows some screen".
-    private static let portRefusalHeading = "Super Mario Strikers: game data not found"
+    /// The heading BallPad's own importer carries on a fresh install. The screen speaks in the
+    /// app's voice: the headline, the copy and the quiet line under them are all BallPad's own
+    /// sentences, which is why asserting this exact string is what makes the row "the app shows
+    /// BallPad's own first-run screen" rather than "the app shows some screen".
+    ///
+    /// What the port says about a disc it could not find is deliberately *not* on the screen. Its
+    /// refusal (src/platform/dvd.c) names every container path the search tried -- on a Simulator an
+    /// absolute `/Users/.../CoreSimulator/Devices/<UDID>/...` path -- and then tells the reader to
+    /// set the `STRIKERS_DATA` variable or the `data` key in `strikers.ini`. Neither is a thing a
+    /// player holding an iPad can do, and on the iPad the block filled most of the first screen. It
+    /// goes to the app's log instead; `app-runtime.log` carries it on one line under
+    /// `game data: the port's own not-found text`.
+    private static let importHeading = "Add your game"
 
     /// No disc, no writable directories, no seed: the launch of a fresh install. This is the
     /// launch the old build answered by printing its refusal and exiting before UIKit existed.
@@ -2427,8 +2610,10 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     private var importScreenTitle: XCUIElement { app.staticTexts["BallpadGameDataImportTitle"] }
     private var importScreenChoose: XCUIElement { app.buttons["BallpadGameDataImportChoose"] }
 
-    /// The body is a multi-line text view, not a label, so it is looked up by whatever type the
-    /// interface actually published rather than by the one this bundle assumed.
+    /// The screen's copy is a label, but the element is looked up by whatever type the interface
+    /// actually published rather than by the one this bundle assumed: the body was a text view until
+    /// it became BallPad's own centred copy, and a row that asserts a string is on screen has no
+    /// business failing over which view class drew it.
     private func importScreenElement(_ identifier: String) -> XCUIElement? {
         let candidates = [app.staticTexts[identifier], app.textViews[identifier],
                           app.buttons[identifier], app.otherElements[identifier]]
@@ -2505,8 +2690,9 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 
     /// A row in the picker's *list* of places rather than in its sidebar. The list decorates the
     /// name it was given, and the decoration is not part of the name: the app's own folder is
-    /// published as `identifier: 'BallPad Strikers, Container', label: 'BallPad Strikers, 4 items'`
-    /// (measured, run f01f02-phone-r3, attached as files-picker-in-On-My-iPhone), so an exact
+    /// published as `identifier: 'BallPad, Container', label: 'BallPad, 4 items'` (the shape
+    /// measured in run f01f02-phone-r3, attached as files-picker-in-On-My-iPhone, under the display
+    /// name the bundle then carried), so an exact
     /// comparison against the folder's name can never find the row. The prefix is the identity;
     /// the suffix is the picker's own annotation of what is inside.
     private func pickerContainer(named name: String, timeout: TimeInterval = 8) -> XCUIElement? {
@@ -2640,7 +2826,7 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         // a Locations list). The sidebar entries carry their own name, but the folder list below
         // them decorates it, so both spellings are looked for.
         for container in ["On My iPhone", "On My iPad", "This iPhone", "This iPad",
-                          "BallPad Strikers"] {
+                          "BallPad"] {
             guard let inside = pickerMatch([container])
                                   ?? pickerContainer(named: container, timeout: 6) else { continue }
             inside.tap()
@@ -2664,10 +2850,13 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
                        + "instead of exiting")
         guard outcome == .importer else { return }
 
-        XCTAssertEqual(importScreenTitle.label, Self.portRefusalHeading,
-                       "the importer carries the port's own heading, verbatim")
+        XCTAssertEqual(importScreenTitle.label, Self.importHeading,
+                       "the importer leads with BallPad's own heading")
         XCTAssertNotNil(importScreenElement("BallpadGameDataImportBody"),
-                        "the importer carries the port's own body text")
+                        "the importer carries BallPad's own copy")
+        XCTAssertNotNil(importScreenElement("BallpadGameDataImportDetail"),
+                        "the quiet line naming the disc BallPad accepts is on the screen, under the "
+                        + "copy -- BallPad's own sentence, not the port's developer-facing refusal")
         XCTAssertTrue(importScreenChoose.isHittable,
                       "the choose button is hittable without scrolling the explanation")
         attach("f01-import-screen")
@@ -2698,8 +2887,8 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// than of another method's leftovers.
     private func ensureStoredGameData() {
         guard classifyNoEnvironmentLaunch() == .importer else { return }
-        XCTAssertEqual(importScreenTitle.label, Self.portRefusalHeading,
-                       "the importer carries the port's own heading, verbatim")
+        XCTAssertEqual(importScreenTitle.label, Self.importHeading,
+                       "the importer leads with BallPad's own heading")
         importScreenChoose.tap()
         pickImageThroughFiles(named: Self.validImageName)
         let ready = app.alerts["Game Data Ready"]

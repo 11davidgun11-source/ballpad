@@ -181,6 +181,7 @@ TEST_ROW_SPECS=(
     "S.f13.about-inventory=testAboutScreenNamesUpstreamContributorsAndTheirNotices"
     "S.f13.notice-offline=testAboutNoticeOpensInFullOffline"
     "S.f13.mapping-panel=testControllerMappingPanelReportsThePortsOwnMap"
+    "S.f13.mapping-rebind=testControllerMappingPanelRebindIsTheMapTheBridgeApplies"
     "S.f01.import-through-files=testFreshInstallShowsImportScreenAndActivatesAPickedImage"
     "S.f02.refusal-keeps-previous=testRefusedImportKeepsThePreviousInstallationUsable"
     "S.f04.ui-touch-sweep=testEveryControlReachesTheEnginesOwnPad"
@@ -521,11 +522,17 @@ CONSUME_FAIL=""
 # F06's row reads the layout: family rather than the read-back family, so it keeps its own failure
 # list too, set the same two ways.
 LAYOUT_FAIL=""
+# F13's rebind row is decided against the two scripted launches the rebind test makes, which are
+# read off the controller: family, so it keeps its own too. The summary is a zeroed line rather than
+# an empty string for the same reason as the two above.
+MAPPING_SUMMARY="0 0 0 0 0 0 0"
+MAPPING_FAIL=""
 log_new "$READBACK_LINES"
 if [ ! -f "$RUNTIME_LOG" ]; then
     READBACK_FAIL="the app left no log at ${RUNTIME_LOG}"
     CONSUME_FAIL="the app left no log at ${RUNTIME_LOG}, so the engine's own pad was never read back beside the host's offer"
     LAYOUT_FAIL="the app left no log at ${RUNTIME_LOG}, so no drawn control was ever judged against the surface's safe area"
+    MAPPING_FAIL="the app left no log at ${RUNTIME_LOG}, so no scripted launch's map was ever joined to the presses that launch published"
 else
     cp "$RUNTIME_LOG" "$LOG_COPY"
     DISPLAY_LINES="$(grep -cE ' display: ' "$LOG_COPY" || true)"
@@ -631,11 +638,26 @@ else
     # judge the whole inset rect by its left edge.
     LAYOUT_SUMMARY="$(awk '/ layout: / { surface = ""; sv = ""; judged = ""; out = ""; for (i = 1; i <= NF; i++) { if ($i == "surface") surface = $(i + 1); if ($i == "safe") sv = $(i + 1); if ($i == "judged") { judged = $(i + 1); out = $(i + 3) } } if (surface == "" || sv == "" || judged == "" || out == "") { unread++; next } if (split(sv, p, ",") != 4) { unread++; next } total++; insets[sv] = 1; if ((p[1] + 0) > 0 || (p[2] + 0) > 0 || (p[3] + 0) > 0 || (p[4] + 0) > 0) insetLines++; if ((p[1] + 0) > (p[3] + 0)) leftHeavy++; else if ((p[3] + 0) > (p[1] + 0)) rightHeavy++; if ((out + 0) > worst) worst = out + 0; if ((out + 0) == 0) clean++; if ((judged + 0) > most) most = judged + 0 } END { n = 0; for (k in insets) n++; printf "%d %d %d %d %d %d %d %d %d\n", total + 0, n + 0, leftHeavy + 0, rightHeavy + 0, clean + 0, worst + 0, most + 0, unread + 0, insetLines + 0 }' "$LOG_COPY")"
     layout_field() { printf '%s' "$LAYOUT_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
+    # F13's rebind row, and the only row in this suite that is judged against a launch the app made
+    # with a scripted pad. The rebind test relaunches with STRIKERS_FAKE_PAD=controller twice: once
+    # while its own edit (GameCube Z on the physical Y button) is in the store, once after its Reset
+    # put the interface's default back. Each of those launches prints the map it read at start-up and
+    # then presses all five mapped physical buttons one at a time, so the log holds the map a launch
+    # was working from beside the GameCube bits its bridge published and the engine's own pad held.
+    # Judging that join is arithmetic over two families of line -- the map's five buttons become an
+    # expectation per press step, and each step's records are read against it -- and it is written
+    # out in its own file rather than inline because the expectation has to be derived from the map
+    # line's own bytes rather than restated as a constant: a constant would be a second copy of the
+    # map and would pass a build that ignored the store.
+    MAPPING_SUMMARY="$(awk -f "${BALLPAD_ROOT}/scripts/native/mapping-summary.awk" "$LOG_COPY")"
+    mapping_field() { printf '%s' "$MAPPING_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
     {
         printf 'source: %s\n' "$RUNTIME_LOG"
         printf 'whole log: %s lines, copied to %s\n\n' "$(wc -l < "$LOG_COPY" | tr -d ' ')" "$LOG_COPY"
         grep -E ' (display|settings|shoulder|shoulder outline|audio|overlay|consume|c-stick|layout): ' "$LOG_COPY" \
             || printf 'no display, settings, shoulder, shoulder-outline, audio, overlay, consume, c-stick or layout line is in the log\n'
+        grep -E ' (controller: (mapping|script)|mapping panel): ' "$LOG_COPY" \
+            || printf 'no controller mapping, scripted press or mapping-panel line is in the log\n'
     } >> "$READBACK_LINES"
     [ "$DISPLAY_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no display: line, so no display row was read back from the port"
     [ "$SETTINGS_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no settings: line, so no setting was read back from the store"
@@ -788,6 +810,25 @@ else
         || LAYOUT_FAIL="${LAYOUT_FAIL:+$LAYOUT_FAIL; }every layout: line published a zero safe area, so containment was measured against the whole surface and says nothing about the insets (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines: ${LAYOUT_SUMMARY})"
     [ "$(layout_field 6)" -eq 0 ] \
         || LAYOUT_FAIL="${LAYOUT_FAIL:+$LAYOUT_FAIL; }a layout: line put $(layout_field 6) drawn control(s) outside the rect the surface called safe, so the landscape layout does not fit the safe areas (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines: ${LAYOUT_SUMMARY})"
+    # F13's rebind row. Six clauses, and the last is what keeps the others from being a restatement
+    # of the map's own line: a session's expectation is derived from what that launch said it was
+    # working from. A build that printed a map and then ignored it in the bridge fails the join, and
+    # a build whose launches never differed fails the distinct count, because then nothing in the log
+    # shows a stored map reaching a launch at all.
+    [ "$(mapping_field 1)" -gt 0 ] \
+        || MAPPING_FAIL="${MAPPING_FAIL:+$MAPPING_FAIL; }the log holds no controller: mapping line, so no scripted launch was ever made and the app-side map was never joined to a press (sessions/maps/sweeps/applies/engines/distinct/unreadable: ${MAPPING_SUMMARY})"
+    [ "$(mapping_field 7)" -eq 0 ] \
+        || MAPPING_FAIL="${MAPPING_FAIL:+$MAPPING_FAIL; }$(mapping_field 7) controller: frame record(s) could not be read or arrived before any map line, so the presses they carried could not be judged (sessions/maps/sweeps/applies/engines/distinct/unreadable: ${MAPPING_SUMMARY})"
+    [ "$(mapping_field 2)" -eq "$(mapping_field 1)" ] \
+        || MAPPING_FAIL="${MAPPING_FAIL:+$MAPPING_FAIL; }only $(mapping_field 2) of $(mapping_field 1) scripted launch(es) printed the app-side map in the vendored shape with the five physical buttons one for one, so what that launch applied could not be read from its own line (sessions/maps/sweeps/applies/engines/distinct/unreadable: ${MAPPING_SUMMARY})"
+    [ "$(mapping_field 3)" -eq "$(mapping_field 1)" ] \
+        || MAPPING_FAIL="${MAPPING_FAIL:+$MAPPING_FAIL; }only $(mapping_field 3) of $(mapping_field 1) scripted launch(es) ran all five of the mapped press steps, so the sweep did not carry every button the map names (sessions/maps/sweeps/applies/engines/distinct/unreadable: ${MAPPING_SUMMARY})"
+    [ "$(mapping_field 4)" -eq "$(mapping_field 1)" ] \
+        || MAPPING_FAIL="${MAPPING_FAIL:+$MAPPING_FAIL; }only $(mapping_field 4) of $(mapping_field 1) scripted launch(es) published, for every mapped press, exactly the one GameCube bit that launch's own map binds that physical button to, so the bridge did not apply the map its launch reported (sessions/maps/sweeps/applies/engines/distinct/unreadable: ${MAPPING_SUMMARY})"
+    [ "$(mapping_field 5)" -eq "$(mapping_field 1)" ] \
+        || MAPPING_FAIL="${MAPPING_FAIL:+$MAPPING_FAIL; }only $(mapping_field 5) of $(mapping_field 1) scripted launch(es) had the engine's own pad carry that bit in the same step, so a mapped press was published and not read by the game (sessions/maps/sweeps/applies/engines/distinct/unreadable: ${MAPPING_SUMMARY})"
+    [ "$(mapping_field 6)" -ge 2 ] \
+        || MAPPING_FAIL="${MAPPING_FAIL:+$MAPPING_FAIL; }the scripted launches carried $(mapping_field 6) distinct map(s), so no stored edit is shown reaching a launch and the join above is satisfied by one unchanged map (sessions/maps/sweeps/applies/engines/distinct/unreadable: ${MAPPING_SUMMARY})"
 fi
 if [ -z "$READBACK_FAIL" ]; then
     printf "S.r1.settings-readback\tPASS\t%s display, %s settings, %s shoulder, %s audio (of which %s name the mixer's own fields) and %s overlay lines (over %s alpha for the A control; the six touch settings read off the drawn tree as total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: %s) plus %s c-stick lines, %s shoulder-outline lines (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable) and %s shoulder-mirror readings (total/rest/mirrored/skew/on-L's-row/editor/unreadable), written by the app itself\tapp-readbacks.txt\n" "$DISPLAY_LINES" "$SETTINGS_LINES" "$SHOULDER_LINES" "$AUDIO_LINES" "$AUDIO_MIX_LINES" "$OVERLAY_LINES" "$OVERLAY_ALPHAS" "$OVERLAY_SUMMARY" "$CSTICK_LINES" "$OUTLINE_SUMMARY" "$MIRROR_SUMMARY" >> "$ROWS"
@@ -838,6 +879,27 @@ if [ -z "$LAYOUT_FAIL" ]; then
     printf "S.f06.safe-area\tPASS\t%s layout: readings, %s of them publishing a non-zero safe area, over %s distinct safe-area shape(s) (%s with the left inset the greater, %s with the right, %s clean), judging up to %s drawn controls on every settled layout and finding none outside the inset rect the surface published, written by the app against its own -safeAreaInsets rather than read off a screenshot; the readings include the panel's two size controls held at their maxima, which is the state a default placement can leave the safe area in; the two landscape sides report the same view-space insets on this device, which is why a single shape is the reading here rather than a fault (total/distinct-insets/left-heavy/right-heavy/clean/worst-outside/most-judged/unreadable/inset-lines: %s)\tapp-readbacks.txt\n" "$(layout_field 1)" "$(layout_field 9)" "$(layout_field 2)" "$(layout_field 3)" "$(layout_field 4)" "$(layout_field 5)" "$(layout_field 7)" "$LAYOUT_SUMMARY" >> "$ROWS"
 else
     printf "S.f06.safe-area\tFAIL\t%s\tapp-readbacks.txt\n" "$LAYOUT_FAIL" >> "$ROWS"
+fi
+
+# -- Whether the map the panel edits is the map the bridge applies (F13) --
+# The row the rebind test's second half stands on, and the only one in this suite that joins two
+# launches of the same build through the store between them. The test's taps prove the panel writes
+# the vendored store and re-reads it across a termination; this row is what keeps that from being a
+# claim about the panel alone. Each of the test's two scripted launches printed the map it read from
+# the store at start-up and then pressed all five mapped physical buttons through a real
+# GCVirtualController, so the app's own log carries the map a launch was working from beside the
+# GameCube bits its bridge published and the engine's own pad held one pad-assembly pass later. The
+# summary derives each launch's expectation from that launch's own map line and requires every press
+# to have landed on it, in the engine as well as at the bridge, and requires the two launches to have
+# carried different maps -- which is what the panel's own edit and Reset produce, and what a build
+# that ignored the store could not show. The reading is therefore of a press travelling through an
+# edited map rather than of a store holding one, and it is taken at the boundary doc 34's F12 names
+# rather than from a screenshot: the console half of the vendored overlay is compiled out under
+# TARGET_OS_SIMULATOR, so a controller has no on-screen state to photograph.
+if [ -z "$MAPPING_FAIL" ]; then
+    printf "S.f13.mapping-applied\tPASS\t%s scripted launch(es) in the log, each printing the app-side map in the vendored shape with the five physical buttons one for one, each running all five mapped press steps and publishing, for every one of them, exactly the one GameCube bit that launch's own map binds that physical button to, with the engine's own pad carrying that bit in the same step; across %s distinct map(s), so the launches differ by the panel's own edit and Reset rather than by a constant; %s controller: frame record(s) unreadable and no record arriving before a map line\tapp-readbacks.txt\n" "$(mapping_field 1)" "$(mapping_field 6)" "$(mapping_field 7)" >> "$ROWS"
+else
+    printf "S.f13.mapping-applied\tFAIL\t%s\tapp-readbacks.txt\n" "$MAPPING_FAIL" >> "$ROWS"
 fi
 
 # -- Screenshots -------------------------------------------------------------

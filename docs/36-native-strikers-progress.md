@@ -3,12 +3,14 @@
 ## Current state
 
 Doc 34's F06 rows are now CLOSED on both form factors, F04's rows closed before them, and the
-operator's third restatement has closed its last open item. The current build is `app
-e5d4d1a2fa3c` against engine series `43798814aa72` (unmoved -- this session's diff is the
-adapter's geometry read-back, the test bundle, the runner, two awk reductions and this document, with
-no port or engine source touched). iPad `uitest-pad-f06-pad-r4` is 22/22 rows PASS and phone
-`uitest-phone-f06-phone-r4` is 25/25 rows PASS, both against that one app binary and one test
-bundle (`c46be239bc6d`), run sequentially with exactly one Simulator booted at a time.
+operator's third restatement has closed its last open item. The interface-and-flow finalization
+that follows is now in the tree: the iPad's default overlay placement is measured by the app rather
+than inherited from a portrait-shaped guess, the product is named `BallPad` everywhere a player can
+read it, and BallPad's own first-run importer replaces the port's host-path refusal on screen. The
+current build is `app ac021c4b9ea6` against engine series `f4a699e4bbe3` (18 patches); both final
+suites are green on that one binary and one test bundle (`3c44b2f7e8bd`) -- iPad
+`uitest-pad-pad-final-r2` is 28/28 rows PASS and phone `uitest-phone-phone-final-r1` is 28/28 rows
+PASS, run sequentially with exactly one Simulator booted at a time. See the checkpoint below.
 
 The iPad half passed this time because the *harness* was repaired, not the app: the failure the
 previous runs showed was a frame-space error, and the arithmetic, the negative control and the run
@@ -268,8 +270,8 @@ evidenced (N3, above); the device platform and N4 onward are still open.
 | N1 Native desktop baseline | PASS | Build+tests PASS (`build/native/macos-release/strikers`, 12/12 checks, 265 gtests, proof `unit-macos-20260914T093026Z`); desktop runtime presents ~63 Hz on M2 with Dawn/Metal; real gameplay capture PASS in `n1-nav-v12` (whole front end to a match, clock 0 -> 75.69 s, score 0-0 -> 0-1, `valid=1`). Desktop only: no Simulator or device gameplay is implied |
 | N2 Mobile builds and dependencies | PASS | SDL3 + FFmpeg + zstd staged for Simulator and now for device, Dawn extracted once from the pinned ref and built from source for each platform, notices gate passing and scoped with an `add_custom_target`. The bundles are fully static and correctly located: hypotheses 5-8 are fixed, so no host zstd and no shared libpng enter the link, `build.sh` exits 0 on the bundle CMake actually produces, and the Simulator lock releases at run end. Simulator bundles are IOSSIMULATOR Mach-O; the device bundle is now built and asserts platform IOS, minos 17.0, sdk 26.5, arm64, unsigned, no `@rpath` and no Homebrew or `/usr/local` link. The smoke gate PASSES all five rows (`smoke-phone-smoke-phone-retry1`: probe presented 90/90 frames on Metal). Device runtime behaviour is not tested -- no hardware is present |
 | N3 Complete native Simulator match | PASS | Real native-engine match on the iPhone 17e Simulator: `BallpadStrikers.app` runs the whole front end to live play, the match scores on its own, and the engine's goal presentation, scorer credit, automatic replay and return to play follow. Proof `build/proofs/native-strikers/n3-sim-replay-phone-n3-sim-replay-r1/` has `S.run` and `S.provenance` both PASS, driver verdict PASS over 31 steps; see checkpoint N3 |
-| N4 Ballpad interface integration | IN_PROGRESS | N4-A PASS and N4-B PASS: SunPad's interface vendored byte-for-byte (9 files, hashes unchanged) and compiled into the app; a port-side host-UI seam plus the `BallpadHostUI.mm` adapter place SunPad's GameCube controls and three-dot menu over a real game frame, and a real tap on the overlay's A button advanced the game's memory-card screen. Proofs `n4b-hostui-seam-phone-n4b-hostui-seam-r2` (S.run + S.provenance PASS) and `n3-sim-replay-phone-n3-regress-after-n4b` (no regression in the record/replay path). N4-C's host/lifecycle surface PASSES on both form factors through real touches -- phone `n4d-phone-uitest-r2` and pad `n4d-pad-uitest-r3`, all five `S.uitest.*` rows PASS on a freshly installed `app 5b22cec45b79` (superseded by `app 30f2d3eb13ca`, the bounded-capture build, and now by `app 7e526c45f9b6`, which adds the disc seam and the GL fix) -- and the N4-D match half is PASS on **both** form factors (`n3-sim-replay-pad-n4d-ipad-match-r1`, `n3-sim-replay-phone-n4d-phone-match-r2`, both on the current build). The capture-path question the iPad run raised is closed as a readback artifact rather than a fade or a presented flash (`n4d-kickoff-fade-r1`, `n4d-dense-r2`, `n4d-video-r1`; hypotheses 16 and 19). Doc 33's N4 gate's Files-import half is now CLOSED on both form factors: the port side was solved by `c28a6d7`'s deferred refusal plus `PortHostUIRunGameDataImport`, Ballpad's own store and importer (`BallpadGameData.mm`) answers both hooks, and doc 34's F01 and F02 both PASS on phone (`f01f02-phone-r4`) and iPad (`f01f02-pad-r1`), 10/10 rows each with `problems: []` and real touches only. F06's rotated relayout and safe-area rows now PASS on both form factors (`uitest-phone-phone-f06b` and `uitest-pad-pad-f06d`, 26/26 rows each with `problems: []` on `app 8644a0ed466b`), and R1 row 5's six touch settings are now closed as readings taken off the drawn overlay rather than off the store (`uitest-pad-pad-f07`, 26/26 rows with `problems: []` on `app 91c735b4fca3`, asserted clause by clause against the overlay's own nineteen-number summary), so N4 is open only on F04's per-control game-consumption row on a live match, F04's own front-end sweep having PASSED. Three of the four delegate actions now route into Ballpad's own store (re-import/change, folder import and removal, commit `ace661b`); only controller mapping is still log-only, which is R1 row 7 |
-| N5 Audio, saves and lifecycle | IN_PROGRESS | F01 and F02 PASS on phone and iPad (`f01f02-phone-r4`, `f01f02-pad-r1`, 10/10 rows each): a fresh install presents Ballpad's own importer, a valid image picked through the Files picker stages byte-identically, and a truncated/wrong-game image is refused while the previous data keeps working. The store is `<container>/Documents/BallpadGameData/`. Audio's existence half is measured and its onset half is not: every 2026-09-15 run opens the device (`device 1`, `studios 1`, `underruns 0` on `frq 32000`) and the `r2-audio` scenario reaches a live mixer (`voices 2`, `bus 5589`), while F09's onset offset stays unmeasured, and the audio-recording row now reads its own WAV back and reports silence when the take is silent (see R2) |
+| N4 Ballpad interface integration | IN_PROGRESS | N4-A PASS and N4-B PASS: SunPad's interface vendored byte-for-byte (12 files, hashes unchanged; see R1 item 1) and compiled into the app; a port-side host-UI seam plus the `BallpadHostUI.mm` adapter place SunPad's GameCube controls and three-dot menu over a real game frame, and a real tap on the overlay's A button advanced the game's memory-card screen. Proofs `n4b-hostui-seam-phone-n4b-hostui-seam-r2` (S.run + S.provenance PASS) and `n3-sim-replay-phone-n3-regress-after-n4b` (no regression in the record/replay path). N4-C's host/lifecycle surface PASSES on both form factors through real touches -- phone `n4d-phone-uitest-r2` and pad `n4d-pad-uitest-r3`, all five `S.uitest.*` rows PASS on a freshly installed `app 5b22cec45b79` (superseded by `app 30f2d3eb13ca`, the bounded-capture build, and now by `app 7e526c45f9b6`, which adds the disc seam and the GL fix) -- and the N4-D match half is PASS on **both** form factors (`n3-sim-replay-pad-n4d-ipad-match-r1`, `n3-sim-replay-phone-n4d-phone-match-r2`, both on the current build). The capture-path question the iPad run raised is closed as a readback artifact rather than a fade or a presented flash (`n4d-kickoff-fade-r1`, `n4d-dense-r2`, `n4d-video-r1`; hypotheses 16 and 19). Doc 33's N4 gate's Files-import half is now CLOSED on both form factors: the port side was solved by `c28a6d7`'s deferred refusal plus `PortHostUIRunGameDataImport`, Ballpad's own store and importer (`BallpadGameData.mm`) answers both hooks, and doc 34's F01 and F02 both PASS on phone (`f01f02-phone-r4`) and iPad (`f01f02-pad-r1`), 10/10 rows each with `problems: []` and real touches only. F06's rotated relayout and safe-area rows now PASS on both form factors (`uitest-phone-phone-f06b` and `uitest-pad-pad-f06d`, 26/26 rows each with `problems: []` on `app 8644a0ed466b`), and R1 row 5's six touch settings are now closed as readings taken off the drawn overlay rather than off the store (`uitest-pad-pad-f07`, 26/26 rows with `problems: []` on `app 91c735b4fca3`, asserted clause by clause against the overlay's own nineteen-number summary), so N4 is open only on F04's per-control game-consumption row on a live match, F04's own front-end sweep having PASSED. Three of the four delegate actions now route into Ballpad's own store (re-import/change, folder import and removal, commit `ace661b`); only controller mapping was still log-only, which is R1 row 7 -- that gap is now closed: `BallpadPhysicalControllers.mm` writes a physical pad into the vendored mixer's slot 1 through the same `SunPadInputMixer` boundary the touch path uses, and `S.f13.mapping-applied` reads the app-side map applied back on the engine's own pad across two distinct maps. Interface and flow finalization also lands here: the iPad's default overlay placement is computed in `BallpadHostUI.mm` and measured by the app (L `{{34,92},{132,62}}` / R `{{1014,92},{132,62}}`, exact mirrors, same size and row, 34 pt mirrored inset, 14/14 controls inside the safe rect, 0 overlaps), the display name is `BallPad` (bundle id and executable deliberately unchanged, since the scripts and the suite address them), and BallPad's own importer copy replaces the port's host-path refusal on screen, which now goes to the log instead. Both final suites re-ran on `app ac021c4b9ea6` -- iPad `uitest-pad-pad-final-r2` and phone `uitest-phone-phone-final-r1`, 28/28 rows PASS each, `problems: []` |
+| N5 Audio, saves and lifecycle | IN_PROGRESS | F01 and F02 PASS on phone and iPad (`f01f02-phone-r4`, `f01f02-pad-r1`, 10/10 rows each): a fresh install presents Ballpad's own importer, a valid image picked through the Files picker stages byte-identically, and a truncated/wrong-game image is refused while the previous data keeps working. The store is `<container>/Documents/BallpadGameData/`. Audio's existence half is measured and its onset half is not: every 2026-09-15 run opens the device (`device 1`, `studios 1`, `underruns 0` on `frq 32000`) and the `r2-audio` scenario reaches a live mixer (`voices 2`, `bus 5589`), while F09's onset offset stays unmeasured, and the audio-recording row now reads its own WAV back and reports silence when the take is silent (see R2). Both final suites re-ran unchanged on `app ac021c4b9ea6` -- iPad `uitest-pad-pad-final-r2` and phone `uitest-phone-phone-final-r1`, 28/28 rows PASS each, `problems: []` -- so the importer and store halves of this phase are green on the current build; F09's onset offset stays the open item |
 | N6 Performance/render/endurance | NOT_RUN | |
 | N7 Clean reproduction and handoff | NOT_RUN | |
 | Physical device validation | NOT_RUN | Outside Simulator completion; hardware evidence required |
@@ -307,21 +309,25 @@ evidenced (N3, above); the device platform and N4 onward are still open.
   included -- is static. A configure of a brand-new build directory then emits no `.dylib`
   target at all, which is what keeps a host or build-tree path out of both bundles; hypothesis 6
   records the defect and the measured cost of the change.
-- Patch series: `patches/native-strikers/` — 15 patches, pinned-ref..fork-HEAD, series
-  SHA-256 `43798814aa72820c6fd542798a6e81eb91dc47d6feb74b8d638b252576df71e7`.
+- Patch series: `patches/native-strikers/` — 18 patches, pinned-ref..fork-HEAD, series
+  SHA-256 `f4a699e4bbe3f09d19d48cb33afb26f7ca2ac612ffbd28a6c797041236d05c03`.
   `export-patches.sh` proves the series reproduces fork tree
-  `99a65e0ef284b5dd8c35c1ee9ababe3c5e5d9bf5` at fork HEAD
-  `f769ddb41431e6cfedb67798f5db015326d653f2`, and `verify-clean.sh --scope patches` re-ran
+  `d716bdb2191ae9049ca30d68453489977cc22e0d` at fork HEAD
+  `fdcbfb33afa05f19056ea503be1b65dd84000750`, and `verify-clean.sh --scope patches` re-ran
   2026-09-15 against a clean fork worktree and exited 0 on that comparison. The series has now been
-  stale eight times — it was missing the Info.plist commit, then the `wcslen` fix, then the two
+  stale nine times — it was missing the Info.plist commit, then the `wcslen` fix, then the two
   log-only diagnostics, then the quit/scene-label commit, then the host-UI seam (which the first
   `n4b` bundle recorded as `0e902174`, 6 patches), then the bounded-capture commit, the GL guard
   and the disc seam (`ffeff97`, `c28a6d7`), then the transport-delay read (`1adf3bd`, patch 0013),
   then the field-rate limiter and the between-frames fps measurement (`0c3d433` and `f769ddb`,
-  patches 0014 and 0015) — and each time it was regenerated. Treat `pinned-ref..fork-HEAD` as the
+  patches 0014 and 0015), then the benchmark state stamp, the cold-segment frame trace and the
+  `[match]` wall clock (`a8c0859`, `f831368`, `fdcbfb3`, patches 0016-0018) — and each time it was
+  regenerated. Treat `pinned-ref..fork-HEAD` as the
   only source of truth and re-export before any claim that depends on it. Superseded digests:
-  `ff01d0f5...`, `e13f4db3...`, `51a1ec62...`, `0e902174...`, `561efa8c...`, `bc19ccd92c75...`;
-  superseded trees: `85429409...`, `f7dbf197...`, `15061aa2...`, `51b07cdf...`, `15d79868...`.
+  `ff01d0f5...`, `e13f4db3...`, `51a1ec62...`, `0e902174...`, `561efa8c...`, `bc19ccd92c75...`,
+  `43798814...`; superseded heads/trees: `85429409...`, `f7dbf197...`, `15061aa2...`,
+  `51b07cdf...`, `15d79868...`, and the immediately previous pair `f769ddb41431` /
+  `99a65e0ef284`.
 - Host SDL3, and what the macOS reference build actually links. `verify-clean.sh --scope stamps`
   passed on 2026-09-15 and now *reports* the one place the host build and the shipped build do not
   agree rather than hiding it. Aurora is configured with `-DAURORA_SDL3_PROVIDER=system` for the
@@ -1000,10 +1006,10 @@ What "exactly as they are" has already decided, and what is still owed:
 
 | # | Vendored surface | State | What is owed |
 |---|---|---|---|
-| 1 | Nine-file vendored set (`SunPadGameOverlay.{h,mm}`, `SunPadInputState.h`, `SunPadInputMixer.{h,mm}`, `SunPadSettings.{h,mm}`, `SunPadDiagnostics.{h,mm}`) | DONE at N4-A, hashes still match `mobile/interface/sunpad/README.md` | Re-verify the hash table at N7 on the final build |
+| 1 | Vendored set (`SunPadGameOverlay.{h,mm}`, `SunPadInputState.h`, `SunPadInputMixer.{h,mm}`, `SunPadSettings.{h,mm}`, `SunPadDiagnostics.{h,mm}`), grown to twelve files at N4-C with `SunPadControllerSlots.h` and `SunPadControllerMapping.{h,mm}` | DONE at N4-A for the original nine, and the twelve-file set re-verified against the hash table on 2026-09-15: every hash in `mobile/interface/sunpad/README.md` still matches the bytes on disk, and none of the vendored files was edited to make behaviour change | Re-verify the hash table at N7 on the final build. The five `.mm` files are the ones compiled in (`mobile/CMakeLists.txt`), all five under ARC |
 | 2 | GameCube control set: main stick, C-stick, D-pad, A/B/X/Y/Z, Start, L, R | DONE at N4-B (published through `SunPadInputMixer` -> `PADSetVirtualStatus`) | Prove game consumption per control at a state boundary where each mapping is observable, and stick + action **simultaneously** (F04) |
 | 3 | Three-dot button, 9-row menu, vendored order, vendored handlers | DONE at N4-C, both form factors, real touches. The order is asserted row-by-row by first sighting in `S.uitest.menu-order`, and every submenu now publishes exactly its own labelled leaves in `S.r1.menu-leaves` -- an exact comparison, so an unlabelled or placeholder row fails rather than vanishing | None. The three row titles/destinations N5 owed (items 9, 11, 12) are rewritten by vendored title in `-buildMenu`, and every row that was not named is passed through untouched |
-| 4 | Menu title | DONE at N4-C (`BallpadGameOverlay -buildMenu` re-wraps the vendored menu's children under the bundle's display name) | None. The stylisation the operator asked for has one source: the menu header, the About surface, the importer's alerts and the bundle's own `CFBundleDisplayName` all read `BallpadAppDisplayName()`, and the port bundle carries **"BallPad Strikers"**. The legacy SwiftUI tree under `app/Ballpad/` still spells the name `Ballpad`; it is protected owner work, is not shipped by this port, and was deliberately not edited |
+| 4 | Menu title | DONE at N4-C (`BallpadGameOverlay -buildMenu` re-wraps the vendored menu's children under the bundle's display name), and the name itself was settled on 2026-09-15 | None. The stylisation the operator asked for has one source: the menu header, the About surface, the importer's alerts and the bundle's own `CFBundleDisplayName` all read `BallpadAppDisplayName()`. That name was **"BallPad Strikers"** until the operator restated that the app is just "BallPad": `mobile/CMakeLists.txt` now passes `BallPad` to `ballpad_ios_bundle` and the `BallpadLog.mm` fallback matches it, so the built `Info.plist` reads `CFBundleDisplayName = BallPad` and `CFBundleName = BallPad`. The bundle id `com.ballpad.strikers` and the executable name `BallpadStrikers` were deliberately left alone, because the scripts, the acceptance bundle and the Simulator launch path all address the app by those two. The legacy SwiftUI tree under `app/Ballpad/` still spells the name `Ballpad`; it is protected owner work, is not shipped by this port, and was deliberately not edited |
 | 5 | Touch-control settings surface: render resolution, opacity, control size, hide-when-controller, modern C-stick, move/resize, reset | DONE, and closed as a reading taken from the overlay the port is handed rather than from the store that persists it. The three leaves that reach the runtime are proven to: the resolution and aspect leaf taps are read back from the port as `WxH @scale aspect A window\|pinned logical N blend B` in `S.r1.display-readback`, and the FPS row turns the port's own counters on and off in `S.r1.fps-row`. None. Each of the six now has the value the overlay actually published for the port. The adapter prints every settled drawn tree with its own header (`opacity A size S drawn D hidden H`) and a per-control suffix (`kK`), and `scripts/native/overlay-summary.awk` counts them into nineteen numbers that `S.r1.settings-readback` asserts clause by clause, each clause failing a vacuous pass rather than passing while measuring nothing: opacity must be tracked *below* unit on at least one line (the editor paints 1.0, which is why unit alpha is counted separately), at least two distinct sizes must each hold one constant width-per-size with a spread under 1.0, a solo `k` line must exist whose drawn width is that control's own width-per-size times the line's size times its `k`, a moved pair must be settled at one size and one control count with exactly one centre displaced, and a reset must restore every centre and every `k`. What the run shows is item 5's whole claim: the settings the panel offers are the settings the drawn control carries. `hide-values`/`hidden-lines`/`visible-lines` are reported but not asserted -- the Simulator compiles the controller half of `-applyControllerVisibility` out, so F12 stays `NOT_RUN` and no hardware claim is made |
 | 6 | `gameOverlayRequestsGameDataChange` / `…FolderImport` / `…Removal` | DONE: all three route to Ballpad's own store (`BallpadGameData.mm`) since commit `ace661b`; the fourth delegate action is row 7 | None outstanding for routing. The pre-`main()` `DVDInit()` ordering is solved on the port side (`c28a6d7`), and F01/F02 exercise all three paths on both form factors (fresh import, re-import/refusal, removal's consequence) |
 | 7 | `gameOverlayRequestsControllerMapping` | DONE as a decision, not as a stub: the row opens Ballpad's own read-only panel (`BallpadControllerMapping.{h,mm}`, proven by `S.f13.mapping-panel`), which reports the port's live button table including a re-read that has to survive a refresh | Nothing outstanding. The decision was made deliberately against evidence rather than by default: `~/GitHub/kartpad` at `a3747a4` has **no** iOS remapping UI at all -- `apple/ios/KartPadRuntimeOverlayHost.mm` answers the same row with an alert naming the connected-controller count, and only its Android port has real remapping (`KartPadControllerMapping.kt`). A read-only panel is therefore at parity with the interface this one is measured against, and it is honest about a map the native port owns |
@@ -2977,4 +2983,71 @@ What this result does and does not prove: proves the tracked patch series plus t
 Next concrete action: commit, then run `verify-clean.sh --scope all` as the N7 evidence run, and
   return to the operator's standing items -- R2/F09's animation-relative audio onset offset and F12's
   `GCController` bridge into `SunPadInputMixer` slot 1.
+```
+
+### Interface and flow finalization, and both final suites on one binary (added 2026-09-15)
+
+The operator's closing instruction was to finish the port's interface and flow, not to leave it at
+"the gates pass": make the controls work, make the menu good, stop calling the product
+`BallPad Strikers`, make the button placement match the interface it borrows from, and push. This
+checkpoint is the record for that work and for the two suites that re-ran on top of it.
+
+```text
+Phase / gate: N4 (interface integration) and N5 (saves/lifecycle), plus the operator's own
+  acceptance criteria for the port's interface and flow; N6, N7, physical device and public
+  distribution stay untouched
+Date / build identity / patch digest: 2026-09-15; engine pin 22649cb12c11, fork fdcbfb33afa0, tree
+  d716bdb2191a clean; patch series f4a699e4bbe3 (18 patches, up from 15 -- patches 0016-0018 are the
+  benchmark state stamp, the cold-segment frame trace and the [match] wall clock, all engine-side
+  instrumentation the port's own suites read); disc da80883ba456; app binary ac021c4b9ea6; test
+  bundle 3c44b2f7e8bd
+Source invariant and observed failure: four things the operator named directly. (1) The first-run
+  surface was the port's own refusal, which printed an absolute host path and desktop-only
+  instructions -- BallPad's boundary, leaking the port's. (2) The product was called "BallPad
+  Strikers" on the home screen, in the menu header, in About and in the app's Files folder; the
+  product is BallPad. (3) The iPad laid the overlay out from a portrait-shaped assumption, so the
+  two shoulder controls were neither mirrored nor equal in size once the app was landscape. (4) A
+  physical pad had nothing in the app writing it into the vendored mixer's second slot, so the
+  engine only ever saw a finger.
+Hypothesis: each was a boundary left where the port put it rather than moved to where BallPad's own
+  conventions are -- the importer copy, the name, the pad default layout and the controller bridge
+  are four faces of the same gap.
+Change: `BallpadHostUI.mm` gains the iPad default placement (`ballpadApplyPadDefaultLayout` plus
+  `BallpadPlacePadControl`, called from `-layoutSubviews`); `BallpadGameData.mm`'s importer gains
+  `initWithHeading:message:detail:` with BallPad's own copy, its detail line naming the supported
+  revision, and the port's verbatim refusal moved off screen into the log; the display name becomes
+  BallPad in `mobile/CMakeLists.txt` and in the `BallpadLog.mm` fallback, with the bundle
+  identifier and executable name deliberately unchanged because the build scripts, the Simulator
+  runner and the acceptance suite address them; and `BallpadPhysicalControllers.mm` becomes the
+  writer into the mixer's slot 1. "Game Data Ready" and "Start the Game" are untouched -- the suite
+  asserts them.
+Command / exit status: iPad `run-uitests.sh --run-id pad-final-r2 --device B3799189-...
+  --form-factor pad --force` -> exit 0, 28/28 rows PASS; then the phone, sequentially, on the same
+  bundle and the same installed app: `--run-id phone-final-r1 --device 8619020B-... --form-factor
+  phone --force` -> exit 0, 28/28 rows PASS. The notices gate also re-ran in its final form
+  (`verify-notices.sh --platform simulator --final --require-bundle`) -> exit 0.
+Runtime scene / duration / device-or-Simulator: real app, real touches, no scripted stand-ins in
+  either row set. iPad: 21 tests in 801.8 s. Phone: 21 tests in 905.9 s. Exactly one Simulator was
+  booted at a time; the iPad was shut down before the phone was booted.
+Evidence bundle: build/proofs/native-strikers/uitest-pad-pad-final-r2/ and
+  build/proofs/native-strikers/uitest-phone-phone-final-r1/ -- rows.tsv, result.json, uitest.log, the
+  app's own runtime log and the store inventory. Both suites carry the identical 28-row name set:
+  S.run, S.provenance, the 9 S.uitest.* host/lifecycle rows, the 5 S.r1.* readback rows,
+  S.r2.audio-row, the four S.f13.* rows, S.f01.import-through-files, S.f02.refusal-keeps-previous,
+  S.f04.ui-touch-sweep, S.f04.engine-consumption, S.f06.rotated-relayout, S.f06.size-extremes,
+  S.f06.safe-area, S.f01f02.store-bytes and S.r1.settings-readback. S.provenance on both reads pin
+  22649cb12c11, fork fdcbfb33afa0 tree d716bdb2191a, series f4a699e4bbe3, disc da80883ba456, app
+  ac021c4b9ea6. The iPad run's S.f06.safe-area reads 38 layout: readings; the flake that appeared
+  once in pad-final-r1 did not recur here or on the phone.
+Result: PASS on both form factors, 28/28 rows each, zero failures, on one app binary and one test
+  bundle.
+What this result does and does not prove: proves the four named surfaces are now BallPad's own --
+  the importer a player sees, the product's name, the iPad's control geometry and the physical-pad
+  path -- and that nothing the suite already covered regressed while they changed. Does not prove
+  R2/F09's animation-relative audio onset offset (still unmeasured), does not make the three-dot-menu
+  parity audit, and is Simulator evidence only: it is not physical-device acceptance, and the
+  physical-pad rows are driven by the app's own fault injector rather than by hardware.
+Next concrete action: commit this state on codex/native-strikers-ios, push the branch, and merge to
+  main. Physical-device acceptance and public-distribution clearance remain the operator's calls and
+  are not claimed here.
 ```

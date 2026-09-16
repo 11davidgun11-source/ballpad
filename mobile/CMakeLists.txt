@@ -192,6 +192,7 @@ endif()
 add_library(ballpad_interface STATIC
   interface/sunpad/SunPadGameOverlay.mm
   interface/sunpad/SunPadInputMixer.mm
+  interface/sunpad/SunPadControllerMapping.mm
   interface/sunpad/SunPadSettings.mm
   interface/sunpad/SunPadDiagnostics.mm)
 set_target_properties(ballpad_interface PROPERTIES
@@ -222,6 +223,7 @@ add_library(ballpad_hostui STATIC
   interface/BallpadGameData.mm
   interface/BallpadLog.mm
   interface/BallpadCredits.mm
+  interface/BallpadPhysicalControllers.mm
   interface/BallpadControllerMapping.mm)
 set_target_properties(ballpad_hostui PROPERTIES
   CXX_STANDARD 17
@@ -325,7 +327,14 @@ endfunction()
 
 # The bundle identifier is the one the existing Ballpad target already uses, so the ported app
 # keeps the project identity.
-ballpad_ios_bundle(strikers "${BALLPAD_APP_NAME}" "com.ballpad.strikers" "BallPad Strikers")
+# The display name is the product's name and nothing more: the operator's product is BallPad, and
+# "BallPad Strikers" was a port-era label that showed up on the home screen, in the menu header, in
+# the About surface and in this app's folder in Files. It is spelled the way the interface already
+# spells it -- every string the player reads in the port (`Import from BallPad Folder`, `BallPad's
+# map`, `BallPad's frame rate limit`) uses this one form, so the name on the home screen does too.
+# The bundle and executable names stay as they are -- they are what the build scripts, the Simulator
+# runner and the acceptance suite address.
+ballpad_ios_bundle(strikers "${BALLPAD_APP_NAME}" "com.ballpad.strikers" "BallPad")
 ballpad_bundle_notices(strikers)
 
 # ── The dependency probe ──────────────────────────────────────────────────────

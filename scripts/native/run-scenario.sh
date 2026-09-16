@@ -257,6 +257,74 @@ if [ "$SCENARIO_NAME" = "f04-live-match" ]; then
     EXPECT="${EXPECT},S.f04.live-match"
 fi
 
+# F12's claim is not a line either, and for a different reason than F04's. What doc 34's F12 asks
+# for -- the merge, the connect and the disconnect at the bridge boundary, without duplicate
+# sampling -- is a relationship between three states the port prints on one line (what the bridge
+# published into the mixer's controller half, what the host's poll offered, and what the engine's own
+# pad holds) together with the connect and disconnect events around them. The reduction is
+# f12-pad-summary.awk, the same shape as the other two, and it prints numbers so each clause below
+# can be stated rather than swallowed into a verdict.
+#
+# What the injected pad is: the framework's own GCVirtualController, so the connect notification, the
+# valueChangedHandler delivery and the disconnect are the shipping bridge's own path and only the
+# hand holding the pad is scripted (tests/native/scenarios/f12-pad.scn). What the run is not: a
+# touch, and not a physical-controller usability result, which stays the hardware row doc 34 names.
+if [ "$SCENARIO_NAME" = "f12-pad" ]; then
+    # The sentinel is every field unreadable, so a bundle with no log at all fails the clauses below
+    # rather than passing them vacuously.
+    F12_SUMMARY="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -1"
+    [ -f "${PROOF_DIR}/app.log" ] \
+        && F12_SUMMARY="$(awk -f "${BALLPAD_ROOT}/scripts/native/f12-pad-summary.awk" \
+            "${PROOF_DIR}/app.log")"
+    f12_field() { printf '%s' "$F12_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
+    F12_FAIL=""
+    F12_SEEN="(lines/map/connect/assigned/displaced/merge/mono/cadence/offered/read/stick/cstick/triggers/release/disconnect/rest/bounded/unread: ${F12_SUMMARY})"
+    # Nothing in the log may be unreadable: a malformed record counting as a pass is the failure mode
+    # every one of these reductions is written to refuse.
+    [ "$(f12_field 18)" -eq 0 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }a controller: line carries a field this script could not read, so the bridge's record could not be judged $F12_SEEN"
+    [ "$(f12_field 1)" -gt 0 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the bridge never published a recorded state, so no press reached the mixer $F12_SEEN"
+    [ "$(f12_field 2)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the app-side map the panel reads was not printed exactly once at the vendored default, so the physical buttons this row binds are not known $F12_SEEN"
+    [ "$(f12_field 3)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the scripted controller did not connect exactly once $F12_SEEN"
+    [ "$(f12_field 4)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the script's own virtual pad was not the controller the bridge assigned the slot the game reads, so a scripted press would land where nothing reads it $F12_SEEN"
+    [ "$(f12_field 5)" -ge 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }no other controller was named as left unassigned, so the slot the script holds is not known to be the one the game reads $F12_SEEN"
+    [ "$(f12_field 6)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the host's offer did not equal what the bridge published, so something other than the bridge contributed to the merge -- the duplicate sampling this row exists to rule out $F12_SEEN"
+    [ "$(f12_field 7)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the recorded frames did not strictly increase, so a frame was sampled more than once $F12_SEEN"
+    [ "$(f12_field 8)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }two consecutive steps' first changed offers were not one step apart, so the injector did not advance exactly once per port frame $F12_SEEN"
+    [ "$(f12_field 9)" -eq 11 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }only $(f12_field 9) of the eleven press steps offered their own bit, so the sweep did not carry every control the injector has $F12_SEEN"
+    [ "$(f12_field 10)" -eq 11 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }only $(f12_field 10) of those eleven bits were held by the engine's own pad, so a press stopped before the game's own boundary $F12_SEEN"
+    [ "$(f12_field 11)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the main stick was not offered at full and read back nonzero on the step that moved it $F12_SEEN"
+    [ "$(f12_field 12)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the C-stick was not offered at full and read back nonzero on the step that moved it $F12_SEEN"
+    [ "$(f12_field 13)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }neither analog line was offered at full and read back on the engine's own trigger $F12_SEEN"
+    [ "$(f12_field 14)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the release step left the engine's own pad holding something, so a press outlived the sample that made it $F12_SEEN"
+    [ "$(f12_field 15)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the scripted controller did not disconnect exactly once or its pad was not named as removed, so the disconnect path was not exercised $F12_SEEN"
+    [ "$(f12_field 16)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the last recorded state still held something, so a pad that went away left state behind $F12_SEEN"
+    [ "$(f12_field 17)" -eq 1 ] \
+        || F12_FAIL="${F12_FAIL:+$F12_FAIL; }the engine's own pad held a face, shoulder or Start bit the previous offer did not carry, so the game saw a press nothing made $F12_SEEN"
+    if [ -z "$F12_FAIL" ]; then
+        printf 'S.f12.bridge\tPASS\t%s controller: records over the injector\047s 14 frame-counted steps: the app-side map printed at the vendored default (threshold 30), the script\047s own virtual pad took the slot the game reads with every other controller named as left unassigned, every offer equal to what the bridge published (one contributor, no duplicate sampling), the frames strictly increasing and one step apart (one advance per port frame), all 11 press bits offered and read back off the engine\047s own pad, the main stick and C-stick offered at full and answered nonzero, both analog lines offered at full and answered on the engine\047s own triggers, the release clearing the engine\047s pad and the disconnect leaving it at rest; injected through the framework\047s own GCVirtualController rather than a physical pad, and not a UI touch %s\t%s/app.log\n' "$(f12_field 1)" "$F12_SEEN" "$(basename "$PROOF_DIR")" >> "$ROWS"
+    else
+        printf 'S.f12.bridge\tFAIL\t%s\t%s/app.log\n' "$F12_FAIL" "$(basename "$PROOF_DIR")" >> "$ROWS"
+    fi
+    EXPECT="${EXPECT},S.f12.bridge"
+fi
+
 # R2's audio half cannot be decided by a step either, and for a sharper reason than F04's: its claim
 # is a relationship between two clocks rather than the presence of a line. The transport tick is
 # 5 ms of audio, the loop frame is 1/60 s of game time, and sounds that arrive away from the models

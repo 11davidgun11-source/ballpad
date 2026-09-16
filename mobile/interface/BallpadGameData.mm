@@ -470,10 +470,13 @@ static void BallpadStagePickedURL(NSURL* url, void (^report)(NSURL*, NSString*))
 @interface BallpadGameDataImportViewController : UIViewController
 @property(nonatomic, copy) NSString* heading;
 @property(nonatomic, copy) NSString* message;
+@property(nonatomic, copy) NSString* detail;
 @property(nonatomic, copy) void (^onChooseFiles)(void);
 @property(nonatomic, copy) void (^onChooseFolder)(void);
 @property(nonatomic, copy) void (^onCancel)(void);
-- (instancetype)initWithHeading:(NSString*)heading message:(NSString*)message;
+- (instancetype)initWithHeading:(NSString*)heading
+                        message:(NSString*)message
+                         detail:(NSString*)detail;
 - (void)setRefusal:(NSString*)refusal busy:(BOOL)busy;
 @end
 
@@ -483,18 +486,24 @@ static void BallpadStagePickedURL(NSURL* url, void (^report)(NSURL*, NSString*))
 @implementation BallpadGameDataImportViewController
 {
     UILabel* _refusalLabel;
+    UILabel* _detailLabel;
+    UIStackView* _busyRow;
+    UIActivityIndicatorView* _busySpinner;
     UIButton* _chooseButton;
     UIButton* _folderButton;
     UIButton* _cancelButton;
 }
 
-- (instancetype)initWithHeading:(NSString*)heading message:(NSString*)message
+- (instancetype)initWithHeading:(NSString*)heading
+                        message:(NSString*)message
+                         detail:(NSString*)detail
 {
     self = [super initWithNibName:nil bundle:nil];
     if (self == nil)
         return nil;
     _heading = [heading copy];
     _message = [message copy];
+    _detail = [detail copy];
     return self;
 }
 
@@ -541,28 +550,50 @@ static UIButton* BallpadPlainButton(NSString* title, NSString* identifier, id ta
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.view.accessibilityIdentifier = @"BallpadGameDataImport";
 
-    UILabel* title = BallpadTextLabel(self.heading, [UIFont boldSystemFontOfSize:24.0],
+    UILabel* title = BallpadTextLabel(self.heading, [UIFont boldSystemFontOfSize:28.0],
                                       UIColor.labelColor, @"BallpadGameDataImportTitle");
     title.textAlignment = NSTextAlignmentCenter;
 
-    UITextView* body = [UITextView new];
-    body.accessibilityIdentifier = @"BallpadGameDataImportBody";
-    body.text = self.message;
-    body.editable = NO;
-    body.selectable = YES;
-    body.scrollEnabled = NO;
-    body.backgroundColor = UIColor.clearColor;
-    body.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    // BallPad's own words, centred: what this screen is for and the one thing the player has to do.
+    // A label rather than a text view, because this copy is chosen here -- nothing in it is a path to
+    // select or a link, and a text view drew the port's developer-facing explanation as a wall of
+    // selectable blue-ish prose that read like a crash log.
+    UILabel* body = BallpadTextLabel(self.message,
+                                     [UIFont preferredFontForTextStyle:UIFontTextStyleBody],
+                                     UIColor.secondaryLabelColor, @"BallpadGameDataImportBody");
+    body.textAlignment = NSTextAlignmentCenter;
     body.adjustsFontForContentSizeCategory = YES;
-    body.textContainerInset = UIEdgeInsetsZero;
-    body.textContainer.lineFragmentPadding = 0;
 
-    // The port's explanation is the screen's reason to exist, so it is a label of its own in a
-    // colour that means "this is the explanation" rather than one more paragraph of the body.
+    // The port's own explanation, in full and quiet. It names the locations the disc search tried,
+    // which is the only thing on this screen that answers "but I know I stored it there", and it is
+    // written for a desktop developer, so it is set like a footnote under the copy rather than
+    // standing in front of it.
+    _detailLabel = BallpadTextLabel(self.detail, [UIFont systemFontOfSize:13.0],
+                                    UIColor.tertiaryLabelColor, @"BallpadGameDataImportDetail");
+    _detailLabel.textAlignment = NSTextAlignmentNatural;
+    _detailLabel.hidden = self.detail.length == 0;
+
+    // A refusal is a different thing: it is the reason the button the player just pressed did
+    // nothing, so it is loud and it sits with the buttons.
     _refusalLabel = BallpadTextLabel(nil, [UIFont boldSystemFontOfSize:15.0],
                                      UIColor.systemOrangeColor,
                                      @"BallpadGameDataImportRefusal");
     _refusalLabel.hidden = YES;
+
+    // Validation reads a disc image, which is a second or two of a screen with every button greyed
+    // out and nothing saying why. This is that reason, in the row the refusal uses when it has one.
+    _busySpinner = [[UIActivityIndicatorView alloc]
+        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    _busySpinner.color = UIColor.secondaryLabelColor;
+    _busyRow = [[UIStackView alloc] initWithArrangedSubviews:@[
+        _busySpinner,
+        BallpadTextLabel(@"Checking the disc image...", [UIFont systemFontOfSize:15.0],
+                         UIColor.secondaryLabelColor, @"BallpadGameDataImportBusy"),
+    ]];
+    _busyRow.axis = UILayoutConstraintAxisHorizontal;
+    _busyRow.spacing = 8.0;
+    _busyRow.alignment = UIStackViewAlignmentCenter;
+    _busyRow.hidden = YES;
 
     _chooseButton = BallpadFilledButton(@"Choose ISO or GCM", @"BallpadGameDataImportChoose", self,
                                         @selector(chooseFilesTapped));
@@ -572,21 +603,20 @@ static UIButton* BallpadPlainButton(NSString* title, NSString* identifier, id ta
     _cancelButton = BallpadPlainButton(@"Not now", @"BallpadGameDataImportCancel", self,
                                        @selector(cancelTapped));
 
-    // The port's explanation is long -- it names every location the disc was looked for -- so the
-    // text scrolls. The actions do not. A first-run screen whose only button is below the fold
-    // looks like an app with no way forward, and that is what the phone showed when the text and
-    // the buttons shared one scrolling stack: the explanation alone is taller than the landscape
-    // safe area. Pinning the actions is what makes them visible without a scroll on both form
-    // factors.
-    UIStackView* text = [[UIStackView alloc] initWithArrangedSubviews:@[ title, body ]];
+    // The text scrolls -- the copy above and the port's explanation under it -- and the actions do
+    // not. A first-run screen whose only button is below the fold looks like an app with no way
+    // forward, and that is what the phone showed when the text and the buttons shared one scrolling
+    // stack: the explanation alone is taller than the landscape safe area. Pinning the actions is
+    // what makes them visible without a scroll on both form factors.
+    UIStackView* text = [[UIStackView alloc] initWithArrangedSubviews:@[ title, body, _detailLabel ]];
     text.axis = UILayoutConstraintAxisVertical;
     text.spacing = 16.0;
     text.translatesAutoresizingMaskIntoConstraints = NO;
 
-    // The refusal sits with the buttons rather than at the end of the scrolling text, because a
-    // refusal is the reason the button the player just pressed did not work.
+    // The refusal and the busy row sit with the buttons rather than at the end of the scrolling
+    // text, because both are answers to the button the player just pressed.
     UIStackView* actions = [[UIStackView alloc] initWithArrangedSubviews:@[
-        _refusalLabel, _chooseButton, _folderButton, _cancelButton
+        _refusalLabel, _busyRow, _chooseButton, _folderButton, _cancelButton
     ]];
     actions.axis = UILayoutConstraintAxisVertical;
     actions.spacing = 12.0;
@@ -631,7 +661,12 @@ static UIButton* BallpadPlainButton(NSString* title, NSString* identifier, id ta
 - (void)setRefusal:(NSString*)refusal busy:(BOOL)busy
 {
     _refusalLabel.text = refusal;
-    _refusalLabel.hidden = refusal.length == 0;
+    _refusalLabel.hidden = busy || refusal.length == 0;
+    _busyRow.hidden = !busy;
+    if (busy)
+        [_busySpinner startAnimating];
+    else
+        [_busySpinner stopAnimating];
     _chooseButton.enabled = !busy;
     _folderButton.enabled = !busy;
     _cancelButton.enabled = !busy;
@@ -990,16 +1025,42 @@ extern "C" int PortHostUIRunGameDataImport(const char* title, const char* messag
             return 0;
         }
 
-        NSString* heading = title != NULL && title[0] != 0
+        NSString* portTitle = title != NULL && title[0] != 0
             ? BallpadStringFromC(title)
-            : [NSString stringWithFormat:@"%@: game data not found",
-                                         BallpadAppDisplayName()];
-        NSString* body = message != NULL && message[0] != 0
+            : [NSString stringWithFormat:@"%@: game data not found", BallpadAppDisplayName()];
+        NSString* portMessage = message != NULL && message[0] != 0
             ? BallpadStringFromC(message)
             : @"The game data was not found, and the disc has not been resolved yet.";
 
+        // What the port says about a disc it could not find is written for a developer at a desktop:
+        // it names every container path it tried -- on a Simulator, an absolute
+        // /Users/.../CoreSimulator/Devices/<UDID>/... path -- and then tells the reader to set the
+        // STRIKERS_DATA variable or the `data` key in strikers.ini. None of that is a thing a player
+        // holding an iPad can do, and printing it under BallPad's own copy made the screen read like
+        // a crash log with a button on it. So the screen says only what BallPad knows and what the
+        // player can act on, and the port's own words go to the log instead, flattened to one line
+        // so a multi-line message cannot be mistaken for a log record by anything reading the file.
+        SunPadLog(@"game data: the port's own not-found text, kept for diagnosis and off the screen "
+                   "-- %@ | %@",
+                  [portTitle stringByReplacingOccurrencesOfString:@"\n" withString:@" | "],
+                  [portMessage stringByReplacingOccurrencesOfString:@"\n" withString:@" | "]);
+
+        NSString* heading = @"Add your game";
+        NSString* body = [NSString stringWithFormat:
+            @"%@ plays Super Mario Strikers from your own disc.\n\n"
+            @"Choose the .iso or .gcm disc image you have, or put the extracted disc's files "
+            @"folder in %@'s folder in Files and import it. Nothing is bundled with this app, "
+            @"and nothing is uploaded anywhere.",
+            BallpadAppDisplayName(), BallpadAppDisplayName()];
+        // The quiet line under the copy is the one fact a first-run screen can add that the player
+        // does not already know: which disc BallPad will accept. It is BallPad's own sentence, so it
+        // carries no host path and no instruction the platform cannot follow.
+        NSString* detail = @"Supported: Super Mario Strikers USA, revision 0 (G4QE01).";
+
         BallpadGameDataImportViewController* screen =
-            [[BallpadGameDataImportViewController alloc] initWithHeading:heading message:body];
+            [[BallpadGameDataImportViewController alloc] initWithHeading:heading
+                                                                 message:body
+                                                                  detail:detail];
 
         UIWindow* window = [[UIWindow alloc] initWithWindowScene:scene];
         window.windowLevel = UIWindowLevelAlert;

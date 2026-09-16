@@ -135,6 +135,19 @@ class Driver(object):
 
     # ---------------------------------------------------------------- scenario
 
+    def expand(self, value):
+        """Resolve the two paths a scenario cannot spell for itself.
+
+        The driver chooses the proof directory at run time, so a scenario that has to hand the
+        engine a *file* -- the per-frame CSV an endurance run records, say -- cannot write the
+        path down.  Only these two names are substituted, and an unknown ${...} is left alone
+        rather than deleted, so a typo shows up as a literal in the log instead of as an empty
+        path the engine would happily write to /.
+        """
+
+        return (value.replace("${PROOF_DIR}", self.args.proof_dir)
+                     .replace("${APP}", self.args.app))
+
     def load_scenario(self, path):
         with open(path, "r") as handle:
             raw = handle.readlines()
@@ -153,10 +166,10 @@ class Driver(object):
                 if "=" not in argument:
                     raise Failure("line {}: env needs KEY=VALUE".format(index + 1))
                 key, value = argument.split("=", 1)
-                self.env[key.strip()] = value
+                self.env[key.strip()] = self.expand(value.strip())
                 continue
             known = ("require-scene", "require-frame", "wait-log", "press", "stick",
-                     "cmd", "host", "shot", "dump", "expect", "quit")
+                     "wait-frames", "cmd", "host", "shot", "dump", "expect", "quit")
             if verb not in known:
                 raise Failure("line {}: unknown directive {}".format(index + 1, verb))
             seen_step = True
@@ -407,10 +420,62 @@ class Driver(object):
             self.simctl("launch", self.args.device, self.args.bundle_id)
             self.wait_text("host ui: active;", self.args.step_timeout)
             step_text = "foregrounded (frame loop resumed)"
+        elif argument == "memory":
+            step_text = self.sample_memory()
         else:
             raise Failure("unknown host action: " + argument)
 
         print("[driver] host {}: {}".format(argument, step_text), flush=True)
+
+    def app_process(self):
+        """The application's own ps row, as (pid, cpu%, rss_kB, vsz_kB), or None.
+
+        A Simulator application is a host process, but not one at the path this run installed
+        *from*: the executable that is running lives inside the device's own container.  So the
+        identity is the device UDID plus the bundle's own name, which is also what keeps this
+        sampling the device this run owns rather than another Simulator's copy of the app.
+        """
+
+        name = os.path.basename(self.args.app)
+        if name.endswith(".app"):
+            name = name[:-4]
+        needle = "/{}.app/{}".format(name, name)
+
+        result = subprocess.run(["ps", "-Ao", "pid=,pcpu=,rss=,vsz=,args="],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for line in result.stdout.decode("utf-8", "replace").split("\n"):
+            fields = line.split(None, 4)
+            if len(fields) != 5:
+                continue
+            if needle in fields[4] and self.args.device in fields[4]:
+                return fields[0], fields[1], fields[2], fields[3]
+        return None
+
+    def sample_memory(self):
+        """Append one memory/CPU sample to the bundle's own CSV.
+
+        RSS is the resident set and VSZ the virtual reservation, and doc 34 asks for the two to
+        be told apart: a reservation nothing has touched is not the same finding as a footprint
+        that grew.  A sample that cannot find the process is written as a row with its numbers
+        left empty rather than skipped, because a series that quietly loses its misses is the
+        failure this row exists to catch.
+        """
+
+        path = os.path.join(self.args.proof_dir, "memory.csv")
+        if not os.path.exists(path):
+            with open(path, "w") as handle:
+                handle.write("wall_s,pid,cpu_pct,rss_kb,vsz_kb\n")
+
+        row = self.app_process()
+        wall = "{:.2f}".format(time.time() - self.start_monotonic)
+        with open(path, "a") as handle:
+            if row is None:
+                handle.write("{},,,,\n".format(wall))
+            else:
+                handle.write("{},{},{},{},{}\n".format(wall, row[0], row[1], row[2], row[3]))
+        if row is None:
+            return "no process found; the miss is recorded in memory.csv"
+        return "rss {} kB, vsz {} kB, cpu {}%".format(row[2], row[3], row[1])
 
     # ------------------------------------------------------------- dump parsing
 
@@ -489,6 +554,21 @@ class Driver(object):
             self.wait_for(lambda: self.latest_frame >= target,
                           self.args.scene_timeout,
                           "waiting for frame {}".format(target))
+            step["control_line"] = None
+            return
+
+        if verb == "wait-frames":
+            # Relative rather than absolute, and counted by the engine's own heartbeat rather
+            # than by the host clock.  An endurance sample has to be spaced by something, and a
+            # wall sleep would space it by *nothing the game did*: this way a sample lands a
+            # fixed number of produced frames later, which is the same unit the frame-rate gates
+            # are stated in, and a run whose loop has stopped stalls here and fails rather than
+            # sampling a frozen app for twenty minutes.
+            span = int(argument)
+            baseline = self.latest_frame
+            self.wait_for(lambda: self.latest_frame >= baseline + span,
+                          self.args.scene_timeout,
+                          "waiting for {} frames past {}".format(span, baseline))
             step["control_line"] = None
             return
 

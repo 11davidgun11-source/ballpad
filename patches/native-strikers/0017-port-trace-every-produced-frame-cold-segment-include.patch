@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chris Sotraidis <56282582+chrissotraidis@users.noreply.github.com>
+Date: Tue, 15 Sep 2026 18:03:49 -0500
+Subject: [PATCH] port: trace every produced frame, cold segment included
+
+The match record starts when cGame first says a match is live, and that deliberateness is the problem for the endurance row: boot, shader compilation, asset conversion and the loading screens are exactly the frames that are thrown away, so nothing in the port could say how long the cold segment took or how bad its worst frame was.
+
+STRIKERS_BENCH_TRACE names a file and every produced frame is streamed to it as it happens -- frame, the pre column, the latched eGameState, and the gap, busy, present and total times -- with the same build and label header the CSV carries. Streamed rather than buffered because it starts before anything has been measured, and because a run that dies during loading should still have left its evidence behind. The pre column is 1 precisely for the frames the match record will not keep, so the cold segment is a filter and not an offset a reader has to reconstruct.
+
+The report interval also flushes it, so a long run can be watched from outside the process while it runs.
+---
+ smstrikers-port/src/platform/benchmark.c | 65 ++++++++++++++++++++++++
+ 1 file changed, 65 insertions(+)
+
+diff --git a/smstrikers-port/src/platform/benchmark.c b/smstrikers-port/src/platform/benchmark.c
+index 760a2e4..82573f4 100644
+--- a/smstrikers-port/src/platform/benchmark.c
++++ b/smstrikers-port/src/platform/benchmark.c
+@@ -150,6 +150,62 @@ void PortBenchInit(void)
+ #define PORT_BUILD_TYPE "unknown"
+ #endif
+ 
++// A trace of every produced frame of the process, not only the ones the match record keeps. The
++// match record answers the frame-rate question; this answers the questions that are about the run:
++// the cold segment -- boot, shaders, assets, the loading screens -- is discarded by
++// PortBenchMatchActive on purpose, so nothing else in the port can say how long it took or how bad
++// its worst frame was, and doc 34 asks for both. Streamed a line at a time rather than buffered in
++// the arrays above, because it starts before anything has been measured and because a run that
++// dies during loading should still have left its evidence behind.
++//
++// It lives below the label block because its header carries the same labels the CSV carries, and a
++// label is a run's identity: a trace whose header said "unknown" while the frames.csv beside it
++// named the build would be worse than no trace. PORT_BUILD_TYPE has the same reason.
++static FILE* s_trace;
++static int s_traceTried;
++static unsigned long s_traceFrame;
++
++// The interval between two presented frames, in microseconds, clamped: past four thousand seconds
++// it is not a frame and the number is only there to say so.
++static unsigned int span_us(unsigned long long ns)
++{
++    unsigned long long us = ns / 1000ull;
++    return (us > 0xFFFFFFFFull) ? 0xFFFFFFFFu : (unsigned int)us;
++}
++
++static void trace_frame(unsigned int gapUs, unsigned int busyUs, unsigned int presentUs,
++                        unsigned int frameUs)
++{
++    const char* path;
++    size_t i;
++
++    if (s_trace == NULL)
++    {
++        if (s_traceTried)
++            return;
++        s_traceTried = 1;
++        path = getenv("STRIKERS_BENCH_TRACE");
++        if (path == NULL || *path == '\0')
++            return;
++        s_trace = fopen(path, "w");
++        if (s_trace == NULL)
++        {
++            fprintf(stderr, "[bench] could not write %s\n", path);
++            return;
++        }
++        fprintf(s_trace, "# build=%s", PORT_BUILD_TYPE);
++        for (i = 0; i < s_labelCount; i++)
++            fprintf(s_trace, " %s=%s", s_labelKey[i], s_labelVal[i]);
++        fprintf(s_trace, "\nframe,pre,phase,gap_us,busy_us,present_us,frame_us\n");
++    }
++
++    // The pre column is 1 for a frame the match record will not keep, so the cold segment is a
++    // filter rather than an offset a reader has to reconstruct.
++    fprintf(s_trace, "%lu,%d,%d,%u,%u,%u,%u\n",
++            s_traceFrame++, s_matchActive ? 0 : 1, s_phase,
++            gapUs, busyUs, presentUs, frameUs);
++}
++
+ int PortBenchEnabled(void) { return s_enabled; }
+ int PortBenchWantsDemo(void) { return s_enabled && s_wantsDemo; }
+ double PortBenchRunSeconds(void) { return s_runSeconds; }
+@@ -312,6 +368,10 @@ void PortBenchFrameEnd(void)
+     if (!s_enabled)
+         return;
+ 
++    // The whole-process trace, taken before the s_matchActive branch below: the frames the match
++    // record throws away are exactly the cold ones this file exists to describe.
++    trace_frame(span_us(liveSpan), s_lastBusyUs, s_lastPresentUs, s_lastFrameUs);
++
+     // Count, but do not record, anything before the match: see PortBenchMatchActive.
+     if (!s_matchActive)
+     {
+@@ -401,6 +461,11 @@ void PortBenchReport(void)
+     if (!s_enabled)
+         return;
+ 
++    // The trace is streamed, so a report interval is also what makes it readable from outside the
++    // process: a long run being watched while it runs needs its lines on disk, not in a buffer.
++    if (s_trace != NULL)
++        fflush(s_trace);
++
+     // Saying so is the point: a run that never reached a match has measured the loading screen, and
+     // reporting its numbers as if they were a match is how a benchmark starts reporting the loading
+     // screen.

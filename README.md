@@ -1,202 +1,204 @@
-# Ballpad
-
-> **Next implementation:** the owner selected the native
-> [new-coke/strikers](https://github.com/new-coke/strikers) port as the new engine
-> foundation. Use the [Bot 7 goal loop](docs/BOT7_NATIVE_STRIKERS_LOOP.md) and
-> [N0–N7 runbook](docs/33-native-strikers-implementation.md). This migration is
-> planned, not yet implemented; the build/status below describes the existing
-> static-recompilation implementation. Older Bot 6 execution pointers below
-> are historical for this migration.
+# BallPad
 
 <p align="center">
-  <strong>Super Mario Strikers on iPhone and iPad through static recompilation and Metal.</strong><br>
-  Full GameCube touch controls, native controller support, local game import, and no bundled game data.
+  <strong>Super Mario Strikers on iPhone and iPad, running on a native engine.</strong><br>
+  GameCube touch controls, physical controller support, and a local importer for game data you supply.
 </p>
 
 <p align="center">
-  <img alt="Configured iOS target" src="https://img.shields.io/badge/configured%20iOS%20%2F%20iPadOS%20target-17%2B-0A84FF?logo=apple">
-  <img alt="Metal renderer" src="https://img.shields.io/badge/renderer-Metal-5E5CE6">
-  <img alt="Ahead-of-time static recompilation" src="https://img.shields.io/badge/PowerPC-static%20recompilation-FF9F0A">
+  <img alt="iOS and iPadOS 17 or later" src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-17%2B-0A84FF?logo=apple">
+  <img alt="Renderer: Metal" src="https://img.shields.io/badge/renderer-Metal-5E5CE6">
+  <img alt="Engine: new-coke/strikers v1.1.1" src="https://img.shields.io/badge/engine-new--coke%2Fstrikers%20v1.1.1-30D158">
   <img alt="Game data not included" src="https://img.shields.io/badge/game%20data-not%20included-FF453A">
 </p>
 
-Ballpad is a native Apple app around a DolRecomp-generated Super Mario
-Strikers module and the GXRuntime/Aurora compatibility runtime. The original
-GameCube PowerPC code runs as ahead-of-time recompiled host code—there is no
-runtime PowerPC JIT—while Metal presents the game on iOS and iPadOS.
+BallPad is a native iPhone and iPad app built around the
+[new-coke/strikers](https://github.com/new-coke/strikers) desktop port of Super Mario
+Strikers. That port sits on the community
+[decompilation](https://github.com/yannicksuter/smstrikers-decomp) by Yannick Suter and
+contributors, and on [Aurora](https://github.com/encounter/aurora) for platform and
+graphics work. The game's original PowerPC code runs as natively compiled code — there is
+no emulator and no runtime JIT — and Metal presents it full-screen.
 
-The app imports a user-provided supported disc image through Files, keeps game
-data and saves inside its sandbox, and provides a landscape GameCube control
-surface. This repository contains Ballpad's first-party app, host bridge,
-patches, tests, and reproducible development commands. It does **not** contain
-Super Mario Strikers, a GameCube image, extracted Nintendo assets, user saves,
-or a generated game module.
+BallPad ships no game data. You import your own disc image once through the iOS Files
+picker, and BallPad keeps that image, and your memory card, inside its own sandbox.
 
-## Current status
+This repository holds BallPad's own work: the iOS application shell, the touch interface
+adapter, the build and test tooling, and the engine patch series. It does not contain
+Super Mario Strikers, a disc image, extracted Nintendo assets, save files, or recompiled
+game code.
 
-| Area | Current result |
-|---|---|
-| Native app | Universal arm64 iPhone/iPad development target; iPhone 17e and iPad A16 Simulator paths exercised |
-| Rendering | The decomp-aligned GXCore path is now the product default: fresh phone/iPad replay EFBs pass the mustard-background regression, while live Aurora remains an explicit diagnostic opt-out (`DOL_GX_CORE=0`). |
-| Game setup | Local Files import validates a raw `G4QE01` revision 0 image before staged activation |
-| Touch | Move stick, C-stick, D-pad, A/B/X/Y/Z, L/R, Start, editable positions, per-control sizing, global size/opacity |
-| Controllers | Thread-safe touch + GameController mixing; touch controls can hide automatically on connection |
-| Menu | Persistent Sunpad-style **•••** menu for display, controls, game reimport, memory-card transfer, FPS, and diagnostics |
-| Performance | Dedicated guest thread, adaptive work budget, unchanged-frame skipping, draw-plan cache, and memcpy frame staging |
-| Saves | Sandboxed Slot A card with native Files import and share-sheet export |
-| Audio | Enabled by default; fresh boot playback exercised on iPad A16 Simulator (physical-device audibility/lifecycle still unproven) |
-| QuickBoot | Disabled by default: its CPU/RAM restore does not yet restore all live Aurora GX gameplay state. `BALLPAD_ENABLE_QUICKBOOT=1` is diagnostic-only until moving-match parity passes. |
-| Decomp integration | The exact game DOL matches the complete function-level source target. The approved plan is to make that source map a verified build contract, remove named raw-address coupling, and replace block-count autostart with scene-driven automation; execution awaits owner approval of C0–C6. |
-| Distribution | Source/development build only; no audited IPA or physical-device compatibility claim yet |
+## Status
 
-Ballpad is an in-progress development build, not a finished commercial-quality
-release. Moving-match rendering, physical-device performance, audio lifecycle,
-save stress, post-match transitions, and oldest-OS compatibility still need
-fresh validation before a public binary release.
-For the candid engineering status and the next exit-gated phase, see the
-[technical audit and plan](docs/24-technical-audit-2026-08-19.md). See the
-[Sunpad parity audit](docs/21-sunpad-parity-audit.md) and historical
-[acceptance ledger](docs/15-validation-log.md) for supporting evidence.
-The current implementation order is the reviewed
-[decomp integration decision](docs/28-decomp-integration-plan-2026-08-19.md),
-with one approval-gated copy/paste
-[agent loop](docs/BOT6_DECOMP_INTEGRATION_LOOP.md). The first tranche makes the
-decomp a verified build/symbol contract and uses source-named scene hooks to
-replace the brittle block-count test route. It does not authorize a native
-rewrite. The earlier
-[graphics repair runbook](docs/27-graphics-repair-runbook-2026-08-19.md)
-remains the verification reference used by the new loop.
+| | |
+| --- | --- |
+| Simulator | The touch-interface acceptance suite passes 28/28 rows on both the iPhone and the iPad Simulator, on one app binary |
+| Physical device | **Not validated.** The device build compiles and is correctly linked, but no hardware has run it |
+| Public distribution | **Not decided.** No binary is published, no IPA is audited, and open rights questions remain — see [release readiness](docs/native-strikers-release-readiness.md) |
+| Game data | Never bundled; supplied by you at first launch |
 
-## Get started
+This is a development build, not a finished release. Moving-match performance, audio
+lifecycle on hardware, save stress and oldest-OS support still need real-device
+validation. The candid engineering record, including what is proven and what is not, is
+[docs/36, the execution ledger](docs/36-native-strikers-progress.md).
 
-You need:
+## What works today
 
-- an Apple Silicon Mac with Xcode 26.x and its command-line tools;
-- CMake, Git, Python 3.10+, and ripgrep;
-- the locally prepared dependency trees described in [`ref/INDEX.md`](ref/INDEX.md); and
-- your own legally obtained Super Mario Strikers USA revision 0 image (`G4QE01`).
+- **The whole game, start to finish**, in the Simulator: the front end, a live match that
+  scores and presents its own replay, and the memory-card screens.
+- **GameCube controls on the touchscreen**: movement stick, C-stick, D-pad, A/B/X/Y/Z,
+  L/R shoulders and Start, each movable and individually resizable, with global size and
+  opacity.
+- **Physical controllers** through GameController, merged with touch input so both work at
+  once, with an option to hide the on-screen controls while a controller is connected.
+- **A three-dot menu** over the game for display options (render scale, aspect ratio, FPS),
+  control settings, game data and memory-card actions, and the diagnostic log.
+- **Saves** on a sandboxed Slot A memory card, with Files import and share-sheet export.
 
-Place the image outside Git, then generate the ignored recompiled inputs:
+## Requirements
+
+- An Apple Silicon Mac with Xcode 26.x and its command-line tools
+- CMake, Git, Python 3.10+, and ripgrep
+- Your own lawfully obtained Super Mario Strikers USA revision 0 image (`G4QE01`)
+
+## Build and run
+
+One-time setup: verify the toolchain, clone the pinned engine into the ignored working
+fork, apply BallPad's patch series, and stage the pinned dependencies.
 
 ```sh
-STRIKERS_ISO=/path/to/G4QE01.iso ./scripts/generate_strikers.sh
+scripts/native/bootstrap.sh --platform simulator
 ```
 
-Configure and build the arm64 Simulator runtime:
+Build the Simulator app:
 
 ```sh
-cmake -S ref/StrikersRecomp -B work/strikers/build-ios-sim \
-  -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_SYSROOT=iphonesimulator \
-  -DCMAKE_OSX_ARCHITECTURES=arm64 \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DSTRIKERSRECOMP_GENERATED_DIR="$PWD/work/strikers/generated" \
-  -DSTRIKERSRECOMP_GXRUNTIME_DIR="$PWD/ref/GXRuntime" \
-  -DBALLPAD_HOST_DIR="$PWD/host" \
-  -DBALLPAD_BUILD_STATIC_HOST=ON
-cmake --build work/strikers/build-ios-sim --target BallpadHost gxruntime_aurora -j8
+scripts/native/build.sh --platform simulator
 ```
 
-The Aurora dependency archives are merged into the ignored
-`libBallpadEngine.a` using the reviewed list in
-`work/strikers/build-ios-sim/merged/libs2.list`:
+Install and launch it on a booted Simulator:
 
 ```sh
-libtool -static \
-  -o work/strikers/build-ios-sim/merged/libBallpadEngine.a \
-  $(head -n 119 work/strikers/build-ios-sim/merged/libs2.list)
+xcrun simctl install booted build/native/simulator-release/port/BallpadStrikers.app
+xcrun simctl launch booted com.ballpad.strikers
 ```
 
-Build the app for one configured Simulator:
-
-```sh
-source build/env.sh
-xcodebuild -project app/Ballpad.xcodeproj -scheme Ballpad \
-  -configuration Debug -destination "id=$BALLPAD_PHONE_UDID" \
-  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
-```
-
-Ballpad's local `ref/`, `work/`, `.local-assets/`, generated code, build
-products, game images, and saves are ignored and must never be committed.
+Build the device app the same way (`--platform device`). That bundle is left unsigned,
+so signing it for your own hardware is yours to arrange.
 
 ## First launch
 
-Ballpad never downloads or bundles game data.
+BallPad never downloads or bundles game data.
 
-1. Launch Ballpad and choose **Import Game**.
-2. Select your raw Super Mario Strikers USA `G4QE01` revision 0 ISO/GCM.
-3. Leave Ballpad open while the image is copied and `main.dol` is extracted.
-4. Start playing when the native game view appears.
+1. Launch BallPad. With no game data present it opens **Add your game**.
+2. Choose **Choose ISO or GCM** and pick your raw `G4QE01` revision 0 image — or put that
+   image into BallPad's own folder in the Files app and choose **Import from BallPad
+   Folder**.
+3. Leave BallPad open while the image is copied in and checked.
+4. Choose **Start the Game** once it reports the data is ready.
 
-The importer rejects the wrong game code, disc/revision, magic, or raw image
-size. A reimport from **••• → Game Data & Saves** is staged before replacing
-the active files; restart Ballpad after a successful reimport.
+The wrong game code, the wrong disc revision, a bad header or an unexpected size is
+refused, and whatever game data is already in place keeps working. The image and the
+memory card live in `Documents/BallpadGameData/` inside the app sandbox; use
+**Game Data** from the menu to replace the image later.
 
-## Touch controls and menu
+For scripted runs, the scenario driver can hand the engine an image directly rather than
+importing one: `SIMCTL_CHILD_STRIKERS_DATA=/path/to/G4QE01.iso`.
 
-The default layout follows Sunpad's proven compact-phone and large-iPad
-geometry:
+## Controls
+
+The overlay is SunPad's, so a BallPad layout is the layout SunPad already shipped.
 
 - **Left:** movement stick, D-pad, and L.
-- **Right:** C-stick, A/B/X/Y cluster, Z, R, and Start.
-- **Shoulders:** one touch produces the GameCube analog value and digital
-  click immediately—no swipe or edge hit is required.
-- **Customize:** **Touch Control Settings → Move and resize controls** saves
-  normalized positions and individual sizes for the current device class.
-- **Controller handoff:** touch and GameController input are merged safely;
-  the overlay can hide automatically while a physical controller is active.
-- **Menu:** **•••** opens render scale, aspect ratio, FPS, controls, game data,
-  memory-card, and diagnostic-log actions without leaving gameplay.
-
-Touch and controller buttons are ORed with rising-edge latching, the strongest
-stick axis wins, and the greatest trigger pressure wins. That keeps fast taps
-and mixed-input sessions stable even though UI and guest input run on separate
-threads.
-
-## Diagnostics
-
-Choose **••• → Share Diagnostic Log…**. Ballpad confirms what is included,
-then creates a plain-text snapshot containing app/OS/device, display,
-controller, settings, FPS, and guest status. It does not include the game
-image, extracted game data, or memory-card contents.
+- **Right:** C-stick, A/B/X/Y, Z, R, and Start.
+- **Shoulders:** one touch produces the GameCube analog value and the digital click
+  together, so no swipe or edge hit is needed.
+- **Customize:** **Touch Control Settings** in the menu moves and resizes individual
+  controls and sets the global size and opacity. Positions are stored per device class, so
+  the phone and the pad keep their own layouts.
+- **Handoff:** touch and controller input are merged with rising-edge latching, the
+  strongest stick axis wins, and the greatest trigger pressure wins, which keeps fast taps
+  and mixed-input sessions stable across the input and render threads.
 
 ## Supported game data
 
-| Game ID | Region | Revision | Raw size | Status |
-|---|---|---|---:|---|
-| `G4QE01` | USA | 0 | 1,459,978,240 bytes | Initial supported target |
+| Game ID | Region | Revision | Raw size |
+| --- | --- | ---: | ---: |
+| `G4QE01` | USA | 0 | 1,459,978,240 bytes |
 
-Raw ISO/GCM images are recognized. Compressed images are not supported.
+Raw ISO and GCM images are recognized. Compressed images are not supported.
 
-## Project map
+## Project layout
 
 | Path | Purpose |
-|---|---|
-| [`app/Ballpad/`](app/Ballpad/) | SwiftUI app shell, game view, controls, menu, import, and controller adapter |
-| [`host/`](host/) | Threaded guest bridge, input mixer, frame handoff, saves, and diagnostics |
-| [`scripts/generate_strikers.sh`](scripts/generate_strikers.sh) | Generate ignored `G4QE01` recompilation inputs from a local image |
-| [`scripts/check_ref_patches.sh`](scripts/check_ref_patches.sh) | Check local runtime changes against the tracked patch snapshots |
-| [`app/BallpadUITests/`](app/BallpadUITests/) | Import, menu, touch, and match-driving UI acceptance tests |
-| [`docs/21-sunpad-parity-audit.md`](docs/21-sunpad-parity-audit.md) | Current comparative audit, work completed, and remaining release gates |
-| [`docs/23-goal-loop-2026-08-18.md`](docs/23-goal-loop-2026-08-18.md) | Evidence-based agent loop, current baseline, and acceptance gates for the remaining stability/parity work |
-| [`docs/24-technical-audit-2026-08-19.md`](docs/24-technical-audit-2026-08-19.md) | Current technical audit, decision log, and next-phase plan |
-| [`docs/25-next-agent-graphics-investigation-brief.md`](docs/25-next-agent-graphics-investigation-brief.md) | Technical handoff brief for the next investigation agent |
-| [`docs/26-quickboot-graphics-investigation-2026-08-19.md`](docs/26-quickboot-graphics-investigation-2026-08-19.md) | QuickBoot feasibility, state inventory, ranked causes, and validation design |
-| [`docs/27-graphics-repair-runbook-2026-08-19.md`](docs/27-graphics-repair-runbook-2026-08-19.md) | Ordered repair packages, gates, commands, and stop conditions |
-| [`docs/28-decomp-integration-plan-2026-08-19.md`](docs/28-decomp-integration-plan-2026-08-19.md) | Primary-agent decision: verified decomp contract, source-aware runtime, and scene-driven autostart |
-| [`docs/BOT6_DECOMP_INTEGRATION_LOOP.md`](docs/BOT6_DECOMP_INTEGRATION_LOOP.md) | Exact copy/paste implementation loop for C0–C6; this is the only next-agent prompt |
-| [`docs/29-decomp-runtime-crosswalk.md`](docs/29-decomp-runtime-crosswalk.md) | Data-free crosswalk from pinned decomp functions and state ownership to current Ballpad runtime boundaries |
-| [`docs/BOT5_GRAPHICS_REPAIR_LOOP.md`](docs/BOT5_GRAPHICS_REPAIR_LOOP.md) | Superseded graphics-only loop retained for its detailed historical contract |
-| [`docs/15-validation-log.md`](docs/15-validation-log.md) | Historical phone/iPad gate evidence |
-| [`docs/09-open-questions.md`](docs/09-open-questions.md) | Runtime investigations and known renderer constraints |
-| `ref/` | Ignored local research/dependency worktrees, including the Sunpad reference |
+| --- | --- |
+| [`mobile/`](mobile/) | The iOS app: engine bridge, interface adapter, importer, and credit screens |
+| [`mobile/interface/sunpad/`](mobile/interface/sunpad/) | SunPad's iOS overlay, vendored byte-for-byte; its README records provenance, hashes and license |
+| [`patches/native-strikers/`](patches/native-strikers/) | BallPad's engine changes, exported as a reapplicable patch series |
+| [`scripts/native/`](scripts/native/) | Bootstrap, build, test, scenario, notice and clean-reproduction tooling |
+| [`tests/native/`](tests/native/) | Driven scenarios and the XCUITest acceptance bundle |
+| [`notices/`](notices/), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) | Third-party license material, also shipped inside the app |
+| [`docs/33`](docs/33-native-strikers-implementation.md)-[`36`](docs/36-native-strikers-progress.md) | Runbook, acceptance specification, attribution rules, and the execution ledger |
+| `app/`, `host/` | The superseded static-recompilation implementation, kept for history |
 
-## Legal
+## Tests and evidence
 
-Ballpad is an unofficial community project and is not affiliated with or
-endorsed by Nintendo. Super Mario Strikers, Nintendo, and GameCube names are
-used only to identify compatibility. No disc image, extracted Nintendo asset,
-or user save is included in this repository. Each upstream dependency retains
-its own license and copyright; complete licensing and redistribution review is
-required before publishing a binary artifact.
+Every run writes a proof bundle under `build/proofs/native-strikers/<run-id>/`, and a row
+that did not run fails the run rather than going missing.
+
+| Command | What it answers |
+| --- | --- |
+| `scripts/native/test.sh --suite unit` | The engine and the port's own tests on macOS |
+| `scripts/native/test.sh --suite smoke --device <UDID>` | The app presents real frames on Simulator Metal |
+| `scripts/native/test.sh --suite acceptance --device <UDID>` | The functional matrix on a Simulator |
+| `scripts/native/run-uitests.sh --run-id <id> --device <UDID> [--form-factor pad]` | The touch-interface suite, by real touches on the app's own surface |
+| `scripts/native/run-scenario.sh --scenario <name> --run-id <id> --device <UDID>` | One driven scenario, with its provenance recorded |
+| `scripts/native/verify-notices.sh --final --require-bundle` | The notices in the built bundle match the inventory |
+| `scripts/native/verify-clean.sh --scope all` | The tracked patch series reproduces the engine from the pin, with nothing borrowed from the ignored working trees |
+| `scripts/native/export-patches.sh` | Exports working-fork changes into the tracked patch series |
+
+`build/`, `work/`, `ref/` and `.local-assets/` are ignored and must never be committed:
+they hold build products, the working engine fork, and your disc image.
+
+## Attribution and legal
+
+BallPad's native iOS/iPadOS engine is based on
+[new-coke/strikers](https://github.com/new-coke/strikers), a native desktop port of Super
+Mario Strikers. The native port builds on the community decompilation by
+[Yannick Suter and contributors](https://github.com/yannicksuter/smstrikers-decomp), and
+uses [Aurora](https://github.com/encounter/aurora) and its contributors' work for platform
+and graphics support. BallPad adds the iOS/iPadOS application integration, touch
+interface, and mobile build/test work. See the bundled third-party notices for dependency
+licenses and provenance.
+
+This is an unofficial project, unaffiliated with and not endorsed by Nintendo or Next
+Level Games. Supply your own lawfully obtained game data. The project grants no rights to
+redistribute game assets or disc images. Attribution does not grant rights to
+reconstructed game code or other third-party material.
+
+Two qualifications matter before anything here is distributed as a binary:
+
+- **The touch interface is GPL-3.0.** `mobile/interface/sunpad/` is a byte-for-byte copy of
+  the operator's own sibling project, SunPad, and is not relicensed by being copied here.
+  It is not yet entered in the notice inventory, which is one of the open items in the
+  [release-readiness note](docs/native-strikers-release-readiness.md).
+- **The engine's reconstructed game code** carries no upstream grant of redistribution
+  rights. Partial attribution is recorded honestly rather than resolved:
+  [`ATTRIBUTION.md`](ATTRIBUTION.md) lists every component with its actual license status
+  and pins each upstream revision, and
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) is the same inventory the app shows in
+  **About & Credits**.
+
+No disc image, extracted Nintendo asset, or user save is included in this repository, and
+none is ever bundled into the app.
+
+## Documentation
+
+| Document | What it is |
+| --- | --- |
+| [`docs/33-native-strikers-implementation.md`](docs/33-native-strikers-implementation.md) | The runbook: scope, phases, and the pinned upstream revision |
+| [`docs/34-native-strikers-acceptance.md`](docs/34-native-strikers-acceptance.md) | The acceptance specification every evidence row is judged against |
+| [`docs/35-native-strikers-attribution.md`](docs/35-native-strikers-attribution.md) | The attribution and provenance rules this repository follows |
+| [`docs/36-native-strikers-progress.md`](docs/36-native-strikers-progress.md) | The execution ledger: current state, hypotheses, and checkpoints |
+| [`docs/native-strikers-release-readiness.md`](docs/native-strikers-release-readiness.md) | What is complete, what is unresolved, and what is deliberately out of scope |
+| [`docs/21-sunpad-parity-audit.md`](docs/21-sunpad-parity-audit.md) | The SunPad comparison the interface work is measured against |

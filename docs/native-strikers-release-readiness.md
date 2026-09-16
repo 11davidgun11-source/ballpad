@@ -43,9 +43,28 @@ It is a local engineering record, not legal advice and not a distribution approv
    configuration that links RmlUi, zlib-ng or the vendored SQLite would have to revisit it.
 4. **MusyX and ODE.** Their preserved notices do not establish that their licensors hold all
    rights in reconstructed or game-specific modifications.
-5. **Public source publication.** This task does not publish, push or distribute anything.
-   Keeping game assets out of the bundle does not make every reconstructed source file
-   cleared for redistribution; that is a separate decision with separate review.
+5. **Public source publication.** Keeping game assets out of the bundle does not make every
+   reconstructed source file cleared for redistribution; that is a separate decision with
+   separate review. What changed on 2026-09-15 is only the bookkeeping around it: the
+   operator explicitly authorized committing this work and pushing it to the project's own
+   `main` branch. A push to the owner's own repository is not a release, not a binary, and
+   not clearance for either.
+6. **The vendored SunPad interface is GPL-3.0 and is missing from the notice inventory.**
+   `mobile/interface/sunpad/` is a byte-for-byte copy of the operator's own sibling project,
+   SunPad, and five of those files (`SunPadGameOverlay.mm`, `SunPadInputMixer.mm`,
+   `SunPadControllerMapping.mm`, `SunPadSettings.mm`, `SunPadDiagnostics.mm`) are compiled
+   into the shipped app. `mobile/interface/sunpad/README.md` records the source revision,
+   the per-file hashes and the license, and doc 36 records the intent to enter the R1
+   material in the notice inventory at N5/N7 -- but it is not in there yet. The consequence
+   is concrete: the manifest and `THIRD_PARTY_NOTICES.md` describe ten components and this
+   one is absent rather than recorded, so `verify-notices.sh --final` passes over an
+   inventory that does not mention a GPL-3.0 component the binary links. Closing it is
+   mechanical -- a manifest entry, the verbatim text under `notices/sunpad/`, a row in the
+   notices table, then `verify-notices.sh --final --require-bundle` -- but it changes the
+   resources inside the built bundle and therefore moves the app digest the current
+   acceptance evidence names, and it raises the copyleft question any binary distribution
+   would have to answer. It is left to the owner as a decision rather than closed quietly
+   here.
 
 ## Physical-device and hardware status
 
@@ -56,10 +75,10 @@ distribution candidates.
 
 ## Scope of this development build
 
-This is a non-public, Simulator-verified development build prepared for local use with a
-lawfully obtained copy of the game data. It is not a public release, and no public push,
-fork publication, binary distribution, TestFlight or App Store submission is authorized or
-attempted by this work.
+This is a Simulator-verified development build prepared for local use with a lawfully
+obtained copy of the game data. It is not a public release: no binary distribution,
+TestFlight or App Store submission is authorized or attempted by this work, and the
+repository being pushed to the owner's own `main` branch does not make it one.
 
 Label for the delivered result: **"Simulator-verified development build; hardware validation
 pending."**

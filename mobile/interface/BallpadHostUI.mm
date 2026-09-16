@@ -63,6 +63,7 @@ float PortCameraAspectBlend(void);
 #import "BallpadCredits.h"
 #import "BallpadGameData.h"
 #import "BallpadLog.h"
+#import "BallpadPhysicalControllers.h"
 
 // SunPad's button mask and the port's are the same twelve bits today. This is a translation rather
 // than a cast on purpose: the compiler checks these names, so if either project's layout moves the
@@ -1569,6 +1570,8 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
 //
 //   * the three-dot button gets one explicit appearance, so dismissing a primary-action menu cannot
 //     synthesize a rectangular highlight over it and a rebuilt surface cannot leave it with none;
+//   * the iPad defaults, which draw seven of the eleven controls on top of each other, are replaced
+//     by the vendored file's own arithmetic set, for the reason -ballpadApplyPadDefaultLayout gives;
 //   * a control the vendored default pass drew outside the safe rect is put back inside it, for the
 //     reason -ballpadApplySafeAreaContainment gives;
 //   * the right shoulder is made L's twin, for the reason its flags are documented above.
@@ -1585,6 +1588,7 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
         s_rightShoulderHeld = false;
     s_rightShoulderInert = editing;
 
+    [self ballpadApplyPadDefaultLayout];
     [self ballpadApplySafeAreaContainment];
     [self ballpadApplyShoulderRepair];
     [self ballpadScheduleShoulderRepair];
@@ -1688,6 +1692,152 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
                (double)self.safeAreaInsets.bottom);
 }
 
+
+// -- The iPad default pass ---------------------------------------------------
+//
+// SunPad's vendored layout carries three sets of defaults, one per surface class, and the iPad set
+// is the only one that lands on top of itself. It is a list of normalized centres captured for a
+// reference tablet, and on this game's surface seven of the eleven controls are drawn inside one
+// bottom-right square. Measured on the iPad A16 build before this repair existed: c, A, B, Y, Z,
+// Start and R all overlapped, R reached 58pt past the safe rect's right edge before
+// -ballpadApplySafeAreaContainment pulled it back, and Z and B -- 62pt and 76pt wide, centres 10pt
+// apart in x and 60pt apart in y -- were drawn as one button. A player cannot press a control they
+// cannot see, and the whole face cluster, the camera stick and Start were inside it.
+//
+// The third set is the vendored file's own arithmetic, and it is the set the *same app* already uses
+// on an iPad: the vendored pass takes it whenever the safe rect is narrower than 1000pt, which is
+// every iPad in portrait. Landscape alone displaces it with the tablet constants. This applies that
+// arithmetic to the landscape surface, so the iPad draws what it already draws turned the other way:
+// margins measured from the safe rect, the two shoulders on one row at its top with Start centred on
+// that row and Z inboard of R, the move stick and the D-pad group bottom left, and the camera stick
+// with the face cluster around it bottom right. Every size stays the one the vendored pass derived
+// (they all follow the control size setting), and every number used here is either a vendored tablet
+// constant -- the 34pt margin and the 92pt shoulder row -- or a read of the live control it is placed
+// against, which is what keeps the whole cluster in step with a control that grows.
+//
+// A control the player has placed by hand is left exactly where they put it: a SunPadControlOrigins
+// entry is the same store entry the vendored pass reads, and its presence means the editor has
+// already answered this question. The editor's own session is skipped for the reason the shoulder
+// repair skips it.
+static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint centre)
+{
+    if (control == nil || control.accessibilityIdentifier.length == 0)
+        return NO;
+    if (saved[control.accessibilityIdentifier] != nil)
+        return NO;
+    // The centre rather than the frame, which is what the vendored pass sets: a control mid-press
+    // carries a transform, and the frame of a transformed view is not where it is drawn.
+    const BOOL moved = fabs(control.center.x - centre.x) > 0.01 ||
+                       fabs(control.center.y - centre.y) > 0.01;
+    control.center = centre;
+    return moved;
+}
+
+- (void)ballpadApplyPadDefaultLayout
+{
+    if (self.traitCollection.userInterfaceIdiom != UIUserInterfaceIdiomPad)
+        return;
+    if (BallpadOverlayIsEditingLayout(self))
+        return;
+
+    CGRect safe = self.bounds;
+    if (@available(iOS 11.0, *))
+        safe = UIEdgeInsetsInsetRect(safe, self.safeAreaInsets);
+    // The vendored pass takes the tablet constants under this exact condition, so this replaces that
+    // set and reaches no other layout.
+    if (safe.size.width < 1000.0 || safe.size.height <= 0.0)
+        return;
+
+    const CGFloat margin = 34.0;
+    const CGFloat shoulderY = CGRectGetMinY(safe) + 92.0;
+    const CGFloat scale = [SunPadSettings sharedSettings].controlSizeScale;
+
+    NSMutableDictionary<NSString *, UIView *> *controls = [NSMutableDictionary dictionary];
+    for (UIView *control in BallpadTouchControlsInDrawOrder(self))
+        if (control.accessibilityIdentifier.length > 0)
+            controls[control.accessibilityIdentifier] = control;
+    NSDictionary *saved = [[NSUserDefaults standardUserDefaults]
+        dictionaryForKey:@"SunPadControlOrigins"];
+
+    UIView *move = controls[@"move"];
+    UIView *camera = controls[@"c"];
+    UIView *a = controls[@"A"];
+    UIView *b = controls[@"B"];
+    UIView *x = controls[@"X"];
+    UIView *y = controls[@"Y"];
+    UIView *l = controls[@"L"];
+    UIView *z = controls[@"Z"];
+    UIView *start = controls[@"Start"];
+    if (move == nil || camera == nil || a == nil || b == nil || x == nil || y == nil ||
+        l == nil || z == nil || start == nil)
+        return;
+
+    const CGSize m = move.bounds.size, cam = camera.bounds.size;
+    const CGSize as = a.bounds.size, bs = b.bounds.size;
+    const CGSize xs = x.bounds.size, ys = y.bounds.size;
+    const CGSize ls = l.bounds.size, zs = z.bounds.size, ss = start.bounds.size;
+
+    // The camera stick first, because the face cluster is placed against it, and the cluster in the
+    // order the vendored arithmetic places it: A above the camera stick, B left of A, X above A, Y
+    // above and left of A. The gaps are the arithmetic set's own, scaled the way that set scales them.
+    NSMutableArray<NSString *> *placed = [NSMutableArray array];
+    if (BallpadPlacePadControl(move, saved,
+                              CGPointMake(CGRectGetMinX(safe) + margin + m.width * 0.5,
+                                          CGRectGetMaxY(safe) - margin - m.height * 0.5)))
+        [placed addObject:@"move"];
+    if (BallpadPlacePadControl(camera, saved,
+                              CGPointMake(CGRectGetMaxX(safe) - margin - cam.width * 0.5,
+                                          CGRectGetMaxY(safe) - margin - cam.height * 0.5)))
+        [placed addObject:@"c"];
+
+    const CGPoint aCentre = CGPointMake(CGRectGetMaxX(safe) - margin - as.width * 0.5,
+        CGRectGetMaxY(safe) - margin - cam.height - 18.0 * scale - as.height * 0.5);
+    if (BallpadPlacePadControl(a, saved, aCentre))
+        [placed addObject:@"A"];
+    if (BallpadPlacePadControl(b, saved,
+            CGPointMake(aCentre.x - as.width * 0.5 - 12.0 * scale - bs.width * 0.5,
+                        aCentre.y + 8.0 + bs.height * 0.5)))
+        [placed addObject:@"B"];
+    if (BallpadPlacePadControl(x, saved,
+            CGPointMake(aCentre.x,
+                        aCentre.y - as.height * 0.5 - 10.0 * scale - xs.height * 0.5)))
+        [placed addObject:@"X"];
+    if (BallpadPlacePadControl(y, saved,
+            CGPointMake(aCentre.x - as.width * 0.5 - 8.0 * scale - ys.width * 0.5,
+                        aCentre.y - as.height * 0.5 + 8.0 - ys.height * 0.5)))
+        [placed addObject:@"Y"];
+
+    // One shoulder row at the top of the safe rect. R is deliberately not placed here: the repair
+    // below owns it and reads L's live frame, so the row has one author.
+    if (BallpadPlacePadControl(l, saved,
+            CGPointMake(CGRectGetMinX(safe) + margin + ls.width * 0.5,
+                        shoulderY + ls.height * 0.5)))
+        [placed addObject:@"L"];
+    if (BallpadPlacePadControl(z, saved,
+            CGPointMake(CGRectGetMaxX(safe) - margin - ls.width - 12.0 * scale - zs.width * 0.5,
+                        shoulderY + zs.height * 0.5)))
+        [placed addObject:@"Z"];
+    if (BallpadPlacePadControl(start, saved,
+            CGPointMake(CGRectGetMidX(safe), CGRectGetMinY(safe) + margin + ss.height * 0.5)))
+        [placed addObject:@"Start"];
+
+    if (placed.count == 0)
+        return;
+    NSString *line = [placed componentsJoinedByString:@", "];
+    static NSString *s_lastPlaced = nil;
+    if ([line isEqualToString:s_lastPlaced])
+        return;
+    s_lastPlaced = line;
+    // Deliberately not spelled "... layout: ...": the acceptance runner reads the app's own
+    // `layout:` family for S.f06.safe-area, and a line containing that token is parsed as one of
+    // those readings and reported as a field it could not read. `pad defaults:` is the same claim
+    // under a token nothing else in the log uses. Measured: the first draft of this line, spelled
+    // with `layout:`, turned 38 clean readings into 35 unreadable ones in uitest-pad-pad-final-r1.
+    BallpadLog(@"pad defaults: %lu control(s) the vendored iPad defaults had drawn on top of each "
+               @"other are on the vendored arithmetic set -- %@ | safe %.0fx%.0f",
+               (unsigned long)placed.count, line,
+               (double)safe.size.width, (double)safe.size.height);
+}
 
 // R as L's twin. The vendored width is 2*small + 24*scale wider than L's, which is the spray track's
 // own geometry, and its border is re-derived on every layout pass; both are undone here from L's live
@@ -2081,6 +2231,12 @@ static void BallpadReattachOverlay(NSString *reason);
 {
     (void)notification;
     [self.overlay refreshControllerVisibility];
+    // And the input bridge, for the same reason and one more: a pad paired while the app was in the
+    // background has a connect notification that arrived while the app was not running a frame loop,
+    // and a pad unplugged in that window has a disconnect the observer may have missed. The
+    // reconcile is what makes the mixer's controller half agree with what is actually in the
+    // session rather than with what was there when the app last drew.
+    [[BallpadPhysicalControllers sharedControllers] reconcileControllers];
     // The touch controls' own settings are re-read here for the same reason the controller
     // enumeration is: a foreground resume is the point at which what the user changed elsewhere --
     // in the Files-visible store, or in another scene -- can differ from what this overlay holds.
@@ -2300,6 +2456,103 @@ static void BallpadLogConsumptionIfChanged(void)
                scene, PortOverlaySceneName());
 }
 
+// The physical controller bridge's read-back, and it is a separate function from the consumption
+// sampler above on purpose: that one answers what the engine's pad holds for the game, and this one
+// answers what the bridge put in front of it. One line carries the whole chain a press travels --
+// what the bridge published into the mixer's controller half, the offer the adapter's poll made out
+// of that mixer this frame, and the engine's own pad as VBlankPadUpdate last assembled it. Those are
+// three different claims in the order they are made, and a row holding only the offer could not tell
+// a press this app made from a press the game took.
+//
+// Written when any of the three moves rather than once a frame, for the reason the sampler above
+// gives, and gated by STRIKERS_LOG_CONTROLLER, which is the port's own STRIKERS_LOG_* convention.
+// The engine's half lags the offer by one pad-assembly pass -- the ordering consume-summary.awk
+// documents at length -- so a scripted step's press is expected to appear on a later line than the
+// step that made it rather than on the same one.
+static void BallpadLogControllerIfChanged(void)
+{
+    static const int s_enabled = (getenv("STRIKERS_LOG_CONTROLLER") != NULL) ? 1 : 0;
+    if (!s_enabled)
+        return;
+
+    SunPadInputState published = {};
+    const BOOL havePublished =
+        [[BallpadPhysicalControllers sharedControllers] readPlayer:0 state:&published];
+
+    PortPadEngineState engine;
+    const BOOL haveEngine = PortPadEngineRead(0, &engine) ? YES : NO;
+
+    static SunPadInputState s_ctrlLastPublished = {};
+    static PortHostPad s_ctrlLastOffer = {};
+    static PortPadEngineState s_ctrlLastEngine = {};
+    static BOOL s_ctrlHavePublished = NO;
+    static BOOL s_ctrlHaveOffer = NO;
+    static BOOL s_ctrlHaveEngine = NO;
+
+    const BOOL changed =
+        havePublished != s_ctrlHavePublished
+        || (havePublished && memcmp(&published, &s_ctrlLastPublished, sizeof(published)) != 0)
+        || s_haveOffer != s_ctrlHaveOffer
+        || (s_haveOffer && memcmp(&s_offerThis, &s_ctrlLastOffer, sizeof(s_offerThis)) != 0)
+        || haveEngine != s_ctrlHaveEngine
+        || (haveEngine && memcmp(&engine, &s_ctrlLastEngine, sizeof(engine)) != 0);
+    if (!changed)
+        return;
+
+    s_ctrlLastPublished = published;
+    s_ctrlHavePublished = havePublished;
+    if (s_haveOffer)
+        s_ctrlLastOffer = s_offerThis;
+    s_ctrlHaveOffer = s_haveOffer;
+    s_ctrlLastEngine = engine;
+    s_ctrlHaveEngine = haveEngine;
+
+    BallpadScriptedController *scripted = [BallpadScriptedController sharedScriptedController];
+    BallpadLog(@"controller: frame %lu connected %d pub 0x%04x stick %d,%d cstick %d,%d trig %d,%d"
+                " offer 0x%04x stick %d,%d cstick %d,%d trig %d,%d"
+                " engine err %d buttons 0x%04x stick %d,%d sub %d,%d trig %d,%d"
+                " script %@ step %s",
+               PortInputFrame(), havePublished ? 1 : 0, (unsigned)published.buttons,
+               published.stickX, published.stickY, published.cStickX, published.cStickY,
+               published.triggerL, published.triggerR,
+               s_haveOffer ? s_offerThis.buttons : 0u,
+               s_haveOffer ? s_offerThis.stickX : 0, s_haveOffer ? s_offerThis.stickY : 0,
+               s_haveOffer ? s_offerThis.substickX : 0, s_haveOffer ? s_offerThis.substickY : 0,
+               s_haveOffer ? s_offerThis.triggerLeft : 0,
+               s_haveOffer ? s_offerThis.triggerRight : 0,
+               haveEngine ? engine.err : 0, haveEngine ? engine.buttons : 0u,
+               haveEngine ? engine.stickX : 0, haveEngine ? engine.stickY : 0,
+               haveEngine ? engine.substickX : 0, haveEngine ? engine.substickY : 0,
+               haveEngine ? engine.triggerLeft : 0, haveEngine ? engine.triggerRight : 0,
+               [scripted scriptName] != nil ? [scripted scriptName] : @"none",
+               [scripted currentStepName]);
+}
+
+// The scripted controller's clock, and it is one port frame: the script advances in the frames the
+// engine runs in rather than on a timer, so a step lasts the same number of frames in a fast run and
+// a slow one and the recorded evidence says what the pad was doing on the frames the game saw.
+//
+// Started from here rather than from PortHostUIStart for one reason and it is not a preference: a
+// virtual controller connected inside the port's start hook lands in the session before
+// GameController has finished its own first enumeration, and the bridge would then be reconciling
+// against a list that is still being built. By the first frame the app is past launch, and the first
+// frame is early enough -- the pad has to be connected before the port's pad-assembly pass for the
+// first press to be read on a frame, not after it.
+static void BallpadAdvanceScriptedController(void)
+{
+    static bool s_started = false;
+    BallpadScriptedController *scripted = [BallpadScriptedController sharedScriptedController];
+    if (!s_started)
+    {
+        s_started = true;
+        // No STRIKERS_FAKE_PAD, which is every launch a player makes: this returns NO and the whole
+        // scripted path stays out of the run.
+        if (![scripted startIfEnabled])
+            return;
+    }
+    [scripted advanceFrame];
+}
+
 // The coordinate space the interface is actually laid out in, in the app's own words.
 //
 // Every row that addresses a control by a point inside its element frame is trusting one
@@ -2367,6 +2620,15 @@ extern "C" void PortHostUIStart(void *sdlWindow)
     {
         if (s_overlay != nil)
             return;   // once per process; a second call is a port bug, not a second window
+
+        // The controller bridge, and it is started before the window check for the same reason the
+        // frame hook keeps its read-backs above the overlay's: this is the app's input boundary
+        // rather than a piece of the interface. Two things follow from where it sits. A pad that
+        // was already connected when the app started is in the mixer before the port's first poll,
+        // because the bridge enumerates the session's controllers on start rather than waiting for
+        // a notification that a connection already made will never post. And a run with no window
+        // still has a working pad, which is the honest state of the input path.
+        [[BallpadPhysicalControllers sharedControllers] start];
 
         // Kept for the resume path: the pointer is how a rebuilt surface's window is found again
         // after the overlay's own window reference has gone nil.
@@ -2494,6 +2756,10 @@ extern "C" void PortHostUIFrame(void)
         // a frame the game ran.
         ++s_framesPolled;
 
+        // And the scripted controller's own step, when STRIKERS_FAKE_PAD named one: a frame here is
+        // a frame the engine ran, which is the clock the script's steps are counted in.
+        BallpadAdvanceScriptedController();
+
         // Before the overlay check, because this is a bridge between the store and the port rather
         // than a piece of the interface: it has to run for the whole run, including the frames
         // before the overlay exists and the frames after a lifecycle rebuild has not put one back
@@ -2515,6 +2781,12 @@ extern "C" void PortHostUIFrame(void)
         // for the same reason they do -- the reading is of the engine, and it is the frames with no
         // overlay (a lifecycle rebuild) where an offer with no reader would otherwise be invisible.
         BallpadLogConsumptionIfChanged();
+
+        // And the same frame from the other side: the bridge's own published slot, the offer it
+        // became, and the engine's pad. Gated by STRIKERS_LOG_CONTROLLER, and next to the sampler
+        // above because the two are read together -- one says what the host offered, the other says
+        // what the game took.
+        BallpadLogControllerIfChanged();
 
         if (s_overlay == nil)
             return;
@@ -2548,6 +2820,14 @@ extern "C" void PortHostUIStop(void)
 {
     @autoreleasepool
     {
+        // Before the overlay goes, and in the reverse order of PortHostUIStart: the scripted
+        // controller lets go of its virtual pad, then the bridge releases every slot and clears the
+        // mixer's controller half. A pad held as the app went away must not be held by the next
+        // session, and a virtual controller left connected would survive the stop and be reconciled
+        // by a bridge that no longer exists.
+        [[BallpadScriptedController sharedScriptedController] stop];
+        [[BallpadPhysicalControllers sharedControllers] stop];
+
         if (s_bridge != nil)
             [NSNotificationCenter.defaultCenter removeObserver:s_bridge];
 
