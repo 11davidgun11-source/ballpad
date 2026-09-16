@@ -40,15 +40,17 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// The order the panel actually ships, which is the vendored -buildMenu order with only the
     /// changes doc 36's R1 list sanctions: the experimental performance row does not ship at all
     /// (R1 row 12), so it is absent rather than present-and-inert, and the slot it held carries
-    /// Ballpad's audio recording row instead (R2); the frame-rate row keeps its place and gets
-    /// Ballpad's own title (R1 row 11); and About & Credits closes the panel as a Ballpad addition
-    /// (R1 row 15). Every other row is the vendored row, untouched, in place.
+    /// Ballpad's Experimental submenu instead; that submenu is where the port's two instruments
+    /// live -- the frame-rate limiter that kept the vendored row's place under Ballpad's own title
+    /// (R1 row 11) and the audio recording row that took the retired row's slot (R2) -- so the
+    /// vendored 60 FPS row's own slot is spent rather than duplicated; and About & Credits closes
+    /// the panel as a Ballpad addition (R1 row 15). Every other row is the vendored row, untouched,
+    /// in place.
     private static let vendoredMenuRows = [
         "Render Resolution",
         "Aspect Ratio",
         "Show FPS Counter",
-        "Record Audio (Experimental)",
-        "Experimental 60 FPS (BallPad's frame rate limit)",
+        "Experimental",
         "Controller Button Mapping…",
         "Touch Control Settings…",
         "Game Data & Saves",
@@ -73,6 +75,7 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     private static let vendoredEditorControls = [
         "Drag controls • tap one to resize",
         "Selected control size",
+        "Hide selected control",
         "Finish moving touch controls",
     ]
 
@@ -645,17 +648,78 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
                      "raising the layout editor hides the settings panel")
         attach("layout-editor")
 
+        // Hiding a control, which is the other half of "hide and rearrange": the vendored editor
+        // moves a control with its pan and resizes it with its slider, and has no answer at all for
+        // taking one out of the picture -- its one visibility switch is global and belongs to the
+        // controller. So Ballpad adds one row to the editor's own bar, beside the size slider and
+        // Done, and it acts on whichever control the editor has selected.
+        //
+        // The selection is made the way a player makes it -- a tap on the control, which is what both
+        // of the vendored edit gestures route through -- and the row is read back through its own
+        // accessibility value, which is the state the tap acts on rather than the title it draws.
+        let hideRow = app.buttons["Hide selected control"]
+        XCTAssertTrue(hideRow.waitForExistence(timeout: 10), "the editor's hide row is up with the bar")
+        XCTAssertEqual(hideRow.value as? String, "none",
+                       "the hide row waits for a selection before it acts on one")
+
+        let hiddenControl = overlayATitle()
+        XCTAssertTrue(hiddenControl.waitForExistence(timeout: 10), "the overlay's A button")
+        hiddenControl.tap()
+        // Self-healing rather than assumed: this row ends with the control it hid shown again, so a
+        // state left behind by an interrupted earlier pass is cleared here instead of cascading into
+        // every row after this one, which needs the A button to press.
+        if (hideRow.value as? String) == "hidden" { hideRow.tap() }
+        XCTAssertEqual(hideRow.value as? String, "shown",
+                       "tapping a control in the editor selects it, which is what the hide row acts on")
+        XCTAssertNotNil(waitForOverlayElement("A size", timeout: 5),
+                        "the vendored editor names the control it has selected")
+
+        hideRow.tap()
+        XCTAssertEqual(hideRow.value as? String, "hidden",
+                       "pressing the row hides the control the editor has selected")
+        XCTAssertNotNil(waitForOverlayElement("A", timeout: 5),
+                        "a hidden control stays drawn while the editor is up, so it can be selected again")
+        attach("layout-editor-control-hidden")
+
         // Done ends editing without reopening the panel, so the panel is expected to stay
-        // down until the menu button raises it again.
+        // down until the menu button raises it again -- and the control the row just hid is expected
+        // to be gone from the surface, which is the half the drawn tree can decide and no stored
+        // value can.
         app.buttons["Finish moving touch controls"].tap()
         XCTAssertNil(waitForOverlayElement("Selected control size", timeout: 5),
                      "finishing the layout editor takes its bar away")
         XCTAssertNil(waitForOverlayElement("Render resolution", timeout: 3),
                      "the vendored Done button leaves the settings panel hidden")
+        XCTAssertNil(waitForOverlayElement("A", timeout: 5),
+                     "the control the row hid is gone from the overlay once editing ends")
         openMenu()
         openTouchSettings()
         XCTAssertNotNil(waitForOverlayElement("Render resolution", timeout: 15),
                         "the settings panel opens again once editing has ended")
+
+        // And back, through the state the control was left in rather than a fresh one: the hidden
+        // control is the one the editor must still be able to select, which is why a hidden control
+        // is drawn faint and stays hittable while the bar is up instead of disappearing with the
+        // picture. The row is left as this test found it, for the reason above.
+        let backSwitch = app.switches["Move touch controls"]
+        XCTAssertTrue(backSwitch.waitForExistence(timeout: 10), "the Move touch controls switch")
+        if (backSwitch.value as? String) != "1" { backSwitch.tap() }
+        if !app.buttons["Finish moving touch controls"].waitForExistence(timeout: 12) {
+            attachHierarchy("editor-reopen-after-first-tap")
+            if backSwitch.exists && backSwitch.isHittable { backSwitch.tap() }
+        }
+        XCTAssertTrue(app.buttons["Finish moving touch controls"].waitForExistence(timeout: 20),
+                      "the editor comes back up over the control it hid")
+        attachHierarchy("editor-reopened-over-a-hidden-control")
+        overlayATitle().tap()
+        XCTAssertEqual(hideRow.value as? String, "hidden",
+                       "the reopened editor reads the control as hidden, which is what its row acts on")
+        hideRow.tap()
+        XCTAssertEqual(hideRow.value as? String, "shown", "the row shows the control again")
+        app.buttons["Finish moving touch controls"].tap()
+        XCTAssertNotNil(waitForOverlayElement("A", timeout: 10),
+                        "the control the row showed again is drawn on the overlay")
+        attach("control-shown-again")
     }
 
     // MARK: - Settings persistence
@@ -755,6 +819,60 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         assertFrameClose(overlayATitle().frame, defaultFrame,
                          "the reset layout survived a relaunch")
         attach("a-button-after-reset")
+    }
+
+    // MARK: - The planted stick zone (KartPad's shape)
+
+    /// The analog stick stops being a target the size of its own face, which is the shape KartPad
+    /// uses: a thumb that comes down in the area around a stick picks the stick up, the stick moves
+    /// under the thumb, and the value is read from how far the thumb has travelled since it landed
+    /// rather than from where it landed. That is the accuracy half -- a thumb knows its own
+    /// displacement far better than it knows a circle it cannot see.
+    ///
+    /// What this row decides is the half a test process can honestly see, and it is the half that
+    /// would be a defect if the plant leaked. The touch is *taken* by the zone rather than falling
+    /// through to nothing, the stick is drawn back where the layout put it once the thumb lifts, and
+    /// the plant is transient: a fresh process still draws the stick at its default frame, so nothing
+    /// about a landing reached the layout store that the move-and-reset row reads.
+    ///
+    /// The other half is the app's own read-back, which is where a claim about a held touch belongs:
+    /// the run's `planted zone:` family is the geometry the zone was drawn at and `plant:` is what a
+    /// landing did with it, including the reading the plant started from. Neither is visible to a
+    /// test process -- a synthetic touch is held for the duration of one blocking call, so there is
+    /// no moment at which a query could read a stick mid-plant -- so the run script requires both
+    /// rather than this row pretending to.
+    func testTouchInTheRingAroundTheMainStickPlantsItAndLeavesNoLayout() throws {
+        launchAndWaitForOverlay()
+
+        let stick = app.otherElements["move"]
+        guard stick.waitForExistence(timeout: 30) else {
+            attachHierarchy("planted-zone-stick-missing")
+            XCTFail("the overlay's main stick is on screen to be planted")
+            return
+        }
+        let resting = stick.frame
+
+        // A real touch in the ring around the stick rather than on the stick: 15% of the face above
+        // its top edge, which is inside the ring -- whose margin is 30% of the face on every edge --
+        // and the same distance clear of the ring's own edge, so the landing cannot be on the wrong
+        // one of the two. A vector's y component is measured from the element's origin like its x,
+        // so 15% above the top edge is -0.15 and not -(1 + 0.15): the latter lands 65% of a face
+        // clear of the stick, which is outside the ring entirely and plants nothing. The drag that
+        // follows is the travel the value is read from, and both holds are long enough for the
+        // port's per-frame poll to see them rather than only the frames around a tap.
+        let plant = stick.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: -0.15))
+        plant.press(forDuration: 0.4, thenDragTo: plant.withOffset(CGVector(dx: 100, dy: 0)),
+                    withVelocity: .default, thenHoldForDuration: 1.5)
+        attach("planted-from-the-ring")
+
+        // The stick comes back when the thumb lifts. The vendored pass re-places every control from
+        // the stored normalized origin and the plant is not a stored origin, so the two agree.
+        assertFrameClose(stick.frame, resting, "the main stick back at its layout position")
+
+        app.terminate()
+        launchAndWaitForOverlay()
+        assertFrameClose(app.otherElements["move"].frame, resting,
+                         "the main stick after a relaunch")
     }
 
     // MARK: - Lifecycle
@@ -1298,7 +1416,7 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// has, its display rate, and whether vsync is pacing as well, all read by the row's handler
     /// immediately after it calls PortSetFrameLimit.
     private func tapFrameRateRow() -> String {
-        tapMenuRow("Experimental 60 FPS (BallPad's frame rate limit)")
+        chooseMenuRow("Uncapped Frame Rate", from: "Experimental")
         let alert = app.alerts["Frame Rate Limit"]
         XCTAssertTrue(alert.waitForExistence(timeout: 30), "the frame-rate row raises its alert")
         let message = alert.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " ")
@@ -2281,6 +2399,7 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
                                BallpadSunPadInterfaceTests.renderScaleSegments[2],
                                BallpadSunPadInterfaceTests.renderScaleSegments[3]]),
         ("Aspect Ratio", ["Original 4:3", "16:9 (Experimental)", "Fill Screen (Experimental)"]),
+        ("Experimental", ["Uncapped Frame Rate", "Record Audio (Experimental)"]),
         ("Game Data & Saves", ["Import or Reimport Game Data", "Import from BallPad Folder",
                                "Remove Stored Game Data"]),
     ]
@@ -2471,6 +2590,12 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     @discardableResult
     private func tapAudioRow(_ what: String) -> (title: String, message: String) {
         ensureMenuOpen()
+        // The row lives in the Experimental submenu, so each walk opens that submenu first. The
+        // walk is repeated on every tap rather than cached for the same reason the row lookup is:
+        // the handler calls -refreshMenuButton, which re-reads the mixer and re-composes the row's
+        // checkmark, so an element (or an open submenu) held across two taps would be describing a
+        // menu that no longer exists.
+        tapMenuRow("Experimental")
         guard let row = scrollMenuForElement("Record Audio (Experimental)", timeout: 20) else {
             attachHierarchy("audio-row-missing")
             XCTFail("the audio recording row is in the menu (" + what + ")")

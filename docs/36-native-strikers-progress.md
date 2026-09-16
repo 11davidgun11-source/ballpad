@@ -1021,7 +1021,7 @@ What "exactly as they are" has already decided, and what is still owed:
 | 13 | `SunPadDiagnostics` log directory (`<Library>/.../SunPad/runtime.log`, confirmed by source) | DONE: the log is written to `<container>/Documents/BallpadLogs/runtime.log` by `mobile/interface/BallpadLog.{h,mm}` -- in Documents rather than Library so a player can reach it through Files, which is also what the audio-recording row writes into | None. The read-back rows depend on this path, so `S.r1.settings-readback` fails if it moves |
 | 14 | `SunPadSettings` persistence keys (`SunPadRenderScale`, `SunPadControlSizeScales`, … in `standardUserDefaults`) | Untouched, N4 | They already live in Ballpad's own app domain, so there is no cross-app leak; renaming is a migration question for N5 rather than an N4 defect |
 | 15 | Offline About/Credits surface naming upstream contributors and bundled notices (F13) | DONE and exercised: `mobile/interface/BallpadCredits.{h,mm}` carries the surface, `S.f13.about-inventory` reads the contributor names and notice titles back off it, and `S.f13.notice-offline` opens a full notice with no network | None. Doc 35's text is the source, and the notices are bundled rather than fetched |
-| 16 | Physical-controller visibility merge | **Visibility only** -- corrected 2026-09-15. The rule that hides the touch controls while a controller is connected is wired and read back (`BallpadHostUI.mm` reads `GCController.controllers.count` for it), but no controller *input* reaches the port: `SunPadInputMixer` carries a controller slot for exactly this (`setInputState:fromTouch:NO`) and nothing in this app ever writes it -- every call site in the tree passes `fromTouch:YES` (the vendored overlay's touch path) or clears it. So the vendored mixer's merge is present and unexercised on its controller side | The bridge itself (a `GCController` handler feeding slot 1, plus connect/disconnect), then F12's merge/connect/disconnect boundary test. That standard is worth naming precisely, because the build this one is measured against sits in the same position: `~/GitHub/kartpad` at `a3747a4` compiles `KartPadPhysicalControllers.mm` and `SunPadControllerMapping.mm` into its **test** target only (`CMakeLists.txt` 416-418), and its `KartPad` iOS app target (`CMakeLists.txt` 249-256) lists neither -- so that build has no more controller input on iOS than this one, while a working slot bridge exists under `apple/mobile/` for this item to mirror. Until then doc 34's **F12 stays open/`NOT_RUN`** and no physical-controller claim is made |
+| 16 | Physical-controller visibility merge | **Visibility only** -- corrected 2026-09-15. The rule that hides the touch controls while a controller is connected is wired and read back (`BallpadHostUI.mm` reads `GCController.controllers.count` for it), but no controller *input* reaches the port: `SunPadInputMixer` carries a controller slot for exactly this (`setInputState:fromTouch:NO`) and nothing in this app ever writes it -- every call site in the tree passes `fromTouch:YES` (the vendored overlay's touch path) or clears it. So the vendored mixer's merge is present and unexercised on its controller side. **Superseded 2026-09-16:** the bridge this row asked for now ships -- `BallpadPhysicalControllers.mm`, compiled in at `mobile/CMakeLists.txt:226`, writes that slot at `BallpadPhysicalControllers.mm:339` (`setInputState:state fromTouch:NO`), so the vendored merge is exercised on its controller side rather than only declared; the handler feeding it is the framework's own `GCVirtualController`, driven by the app's scripted fault injector, which is what `S.f13.mapping-panel`, `S.f13.mapping-rebind` and `S.f13.mapping-applied` read back on both form factors | The bridge itself (a `GCController` handler feeding slot 1, plus connect/disconnect), then F12's merge/connect/disconnect boundary test. That standard is worth naming precisely, because the build this one is measured against sits in the same position: `~/GitHub/kartpad` at `a3747a4` compiles `KartPadPhysicalControllers.mm` and `SunPadControllerMapping.mm` into its **test** target only (`CMakeLists.txt` 416-418), and its `KartPad` iOS app target (`CMakeLists.txt` 249-256) lists neither -- so that build has no more controller input on iOS than this one, while a working slot bridge exists under `apple/mobile/` for this item to mirror. Doc 34's F12 splits the two halves itself -- the bridge-boundary half is now measured by the three rows above, and the half it scopes to "real controller usability" is a hardware row -- so F12's closure is the operator's gate call rather than this list's, and no physical-controller claim is made here |
 
 Two of these are the reason the list is written down rather than tracked mentally: item 12 is a row
 that must disappear rather than be wired, and item 5 is the difference between a surface that
@@ -3049,4 +3049,124 @@ What this result does and does not prove: proves the four named surfaces are now
 Next concrete action: commit this state on codex/native-strikers-ios, push the branch, and merge to
   main. Physical-device acceptance and public-distribution clearance remain the operator's calls and
   are not claimed here.
+```
+
+### The interface audit: the FPS card, the instruments submenu, the planted stick, and 29 rows (added 2026-09-16)
+
+The operator's fourth restatement asked for the port's interface to be finished rather than held
+open for hardware: make the controls work, make the menu good, fix the FPS counter, check every row
+of the three-dot menu, give the analog stick KartPad's shape -- a thumb that comes down near a stick
+picks it up, and the stick appears under the thumb -- and let every control be hidden and
+rearranged. This checkpoint is the record for that work and for the two suites that re-ran on it.
+
+```text
+Phase / gate: N4 (interface integration) -- the operator's own acceptance criteria for the port's
+  interface and flow, restated a fourth time. N5's remaining items, N6, N7, physical-device
+  acceptance and public distribution are untouched by this work and are not claimed here.
+Date / build identity / patch digest: 2026-09-16; engine pin 22649cb12c11, fork fdcbfb33afa0, tree
+  d716bdb2191a clean; patch series f4a699e4bbe3 (18 patches); disc da80883ba456; app binary
+  04787dd58811; test bundle 96c14eea23b4
+Source invariant and observed failure: four surfaces the operator named. (1) The FPS counter was
+  drawn over the controls it is meant to be read beside, and F06's rotated-relayout row failed
+  because of it. (2) The three-dot menu carried the port's two instruments -- the frame-rate limiter
+  and an audio recorder -- as peers of Render Resolution and Aspect Ratio, where a player reads them
+  as display options; the vendored "Experimental 60 FPS (Restart Required)" row names an emulator
+  boot mode this port does not have, so its slot was both wrong and spent. (3) The analog stick was
+  an absolute target the size of its own face: the touch was read as an offset from the stick's
+  centre, so a thumb that came down 6 pt off that centre read as a small kick and a thumb that came
+  down on the rim read as full deflection -- from the same intent, because the intent is "somewhere
+  on the stick" and the circle is not what the player is aiming at. (4) The vendored editor could
+  move a control and resize it and had no answer at all for taking one out of the picture; its one
+  visibility switch is global and belongs to the controller.
+Change: four edits, each the smallest coherent one for its surface.
+  (1) The card. The label was sized with `-sizeToFit` against the widest reading, so a card whose
+  display read-back wraps was as wide as its widest text: the app's own placement line measured it at
+  `391x66` on the 844 pt phone surface, 46 per cent of the picture. It is now a fixed
+  `kBallpadFPSWidth = 214.0` with its height taken from `-sizeThatFits:` at that width and
+  `numberOfLines` 0, so the read-back wraps instead of widening the card (`214x78`). The second
+  defect was that hidden rows counted as obstacles: `_settingsPanel` is hidden while it is closed and
+  its sliders and switches are not, so the card was dodging controls nobody could see and landing on
+  Start. New `BallpadViewIsDrawnAndTouchable` walks the whole superview chain for hidden, zero alpha
+  and non-interactive, which took the obstacle count from 26 to 15 -- the 14 drawn controls plus the
+  overlay's own menu button, which is a `UIControl` with no identifier and so is collected by type.
+  The placement is otherwise as it was: five anchors (the safe rect's two top corners, its top centre,
+  then its two bottom corners), scored by the area of the card each one covers, least wins, strictly
+  less with half a point of slack so a tie keeps the earlier anchor and does not turn on the
+  arithmetic of two products. Null and non-finite intersections are skipped rather than counted as
+  clear, because the one thing this placement may not do is cover a control. The card re-places only
+  when its signature moves -- surface size, the insets the surface publishes, and every obstacle's
+  frame at whole points, since the vendored pass can land a control a fraction of a point differently
+  on two consecutive passes and a signature that noticed would re-frame every frame -- and the
+  signature is read again *after* the frame is assigned, because assigning a frame invalidates the
+  overlay's layout: storing the state the placement was chosen from would re-place the card on the
+  very next frame. `BallpadFPSCounterPlacementNote` appends `anchor N obstacles M` to the layout
+  read-back, and each placement change logs the card's size, the safe rect, every anchor's covered
+  area and every obstacle's own rect.
+  (2) The menu. The two instrument rows moved into one Experimental submenu with the vendored
+  performance row's slot, and the vendored 60 FPS row's slot is skipped rather than filled -- a row
+  in two places would be two rows for one switch. The frame limiter is titled "Uncapped Frame Rate"
+  because "60 FPS" names the emulator boot mode this port does not have; the recorder keeps its
+  "Record Audio (Experimental)" title. Both leaves are switches whose meaning is a state no top-level
+  title could carry, and both alerts report what the port reports (the limiter's resulting Hz, the
+  recording's frame count and its own peak) rather than restating their titles.
+  (3) The planted stick zone. Each stick gains a transparent view above it and below every button,
+  drawn 30 per cent larger per edge, which takes the touch, moves the stick under the thumb and
+  publishes its value through the stick's own path -- `setValueX:y:` on the vendored class and the
+  overlay's own `stickChanged:x:y:`, which is what already feeds the mixer and the port's pad. So
+  the engine receives the same message from the same method it always did, from a stick that is
+  somewhere else on the screen, and the reading is the travel since the thumb landed rather than the
+  distance it landed from the centre. The zone is inert exactly while the layout editor is open,
+  because the editor's own drags begin on the stick.
+  (4) Hiding a control. The editor's bar gains one row, "Hide selected control", acting on the
+  selected control; a hidden control stays drawn faint and hittable while the bar is up so the editor
+  can select it again, and is gone from the surface once editing ends.
+Command / exit status: `scripts/native/build.sh --platform simulator --no-bootstrap` -> app binary
+  04787dd58811 (built after the source's last write). `scripts/native/run-uitests.sh --run-id
+  phone-final-r3 --device 8619020B-306A-4CA2-B0B3-16C6A3F22472 --form-factor phone --no-build` ->
+  exit 0, 29/29 rows PASS. `... --run-id pad-final-r3 --device
+  B3799189-DA65-49EA-AAEF-8E2FAEE70D7A --form-factor pad --no-build` -> exit 0, 29/29 rows PASS,
+  run after the phone with the phone Simulator shut down, one booted at a time.
+  `scripts/native/test.sh --suite unit` -> exit 0, every row PASS. `scripts/native/verify-notices.sh
+  --platform simulator --final --require-bundle` -> exit 0, `notices: all checks passed`.
+Runtime scene / duration / device-or-Simulator: both runs are Simulator runs on one app binary and
+  one test bundle. Phone: `S.f06.rotated-relayout` 38.4 s and the whole suite under 15 minutes;
+  iPad: `S.f06.rotated-relayout` 191.8 s, `S.f02.refusal-keeps-previous` 521.3 s, and the suite
+  about 45 minutes, which is the pad's own cost rather than a wait that timed out.
+Evidence bundle: build/proofs/native-strikers/uitest-phone-phone-final-r3/ and
+  build/proofs/native-strikers/uitest-pad-pad-final-r3/ -- rows.tsv, result.json, uitest.log, the
+  app's own runtime log and the store inventory, plus
+  build/proofs/native-strikers/unit-macos-20260916T075113Z/. Both suites carry the identical 29-row
+  name set: the 28 rows recorded in the previous checkpoint plus `S.uitest.planted-zone`
+  (`testTouchInTheRingAroundTheMainStickPlantsItAndLeavesNoLayout`). `S.provenance` on both reads
+  pin 22649cb12c11, fork fdcbfb33afa0 tree d716bdb2191a, series f4a699e4bbe3, disc da80883ba456, app
+  04787dd58811. The counter's own read-back is the evidence for (1): the phone reads `fps 1 origin
+  315.0,12.0 inside 1 anchor 2 obstacles 15` with the card at `214x78` and the pad reads `fps 1
+  origin 12.0,12.0 inside 1 anchor 0 obstacles 15` -- the same card and the same obstacle set
+  choosing opposite corners, because the pad's default leaves the top left empty and puts Start in
+  the middle of its top edge, which is the whole reason the anchor is chosen rather than fixed. The
+  same family read `391x66` and `26` obstacles before the fix, in the pilot runs still in
+  build/proofs/native-strikers/, so the two defects and their repairs are both on the record.
+Result: PASS on both form factors, 29/29 rows each, zero failures, on one app binary and one test
+  bundle. The F06 row that failed before this work -- `turnToTheOtherLandscapeSide...` -- now
+  passes on both.
+What this result does and does not prove: proves the four named surfaces are now the port's own --
+  a counter that does not take a control away from the player, a menu whose top level is the
+  player's page with the port's instruments one honest row down, a stick a thumb picks up rather
+  than a target it has to find, and a control that can be taken out of the picture and put back --
+  and that nothing the suite already covered regressed while they changed. It also retires the two
+  pilot defects that made the planted-zone row unreadable at first: the Swift test's touch vector
+  measured its 15 per cent offset from the element's origin rather than from its top edge
+  (`-0.15`, not `-(1 + 0.15)`, the latter landing 65 per cent of a face clear of the ring and
+  planting nothing), and the summary program demanded the zone's radius at the precision the app
+  holds it at rather than the whole points its line prints, which failed two of eight segments for a
+  zone publishing exactly what it should -- the C stick's smaller side is 81 points on the wide
+  phone, so its half-side is not a whole number. The program is shared at
+  `scripts/native/planted-zone-summary.awk` rather than inline in the runner, as the consumption
+  reading already is. Does not prove R2/F09's animation-relative audio onset offset (still
+  unmeasured), and is Simulator evidence only: it is not physical-device acceptance, the
+  planted-zone row's touch is a synthesised one, and the controller rows are driven by the app's own
+  fault injector rather than by a pad in a hand.
+Next concrete action: commit this state on main, push it, and take the README to a public-release
+  reading. Physical-device acceptance and public-distribution clearance remain the operator's calls,
+  explicitly deferred, and are not claimed here.
 ```

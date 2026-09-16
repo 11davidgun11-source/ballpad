@@ -14,6 +14,7 @@
 // lock taken is SunPadInputMixer's own, and it takes that itself.
 
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 #import <GameController/GameController.h>
 
@@ -477,6 +478,13 @@ static void BallpadLogOverlayTouchIfSettled(SunPadGameOverlay *overlay)
 // Settled rather than immediate, for the reason the overlay read-back is: a rotation animates, and
 // the frames sampled during the animation are the ones on their way somewhere. Thirty-five
 // hundredths of a second after the tree stops moving is the layout that stayed.
+// The counter's own placement, as a field of the reading below. Forward-declared because the counter
+// is defined further down the translation unit and this reading is defined here; the note itself is
+// written by the placement, so it says which anchor the card was last put on and how many drawn
+// things that placement was scored against -- the two numbers that tell a reader whether a card
+// sitting over a control is a placement that chose badly or a placement that saw nothing to avoid.
+static NSString *BallpadFPSCounterPlacementNote(UIView *overlay);
+
 static NSString *BallpadLayoutReadBack(SunPadGameOverlay *overlay)
 {
     const UIEdgeInsets insets = overlay.safeAreaInsets;
@@ -520,9 +528,10 @@ static NSString *BallpadLayoutReadBack(SunPadGameOverlay *overlay)
     if (counter != nil && counter.superview != nil)
     {
         const CGRect drawn = [counter convertRect:counter.bounds toView:overlay];
-        counterField = [NSString stringWithFormat:@"fps 1 origin %.1f,%.1f inside %d",
+        counterField = [NSString stringWithFormat:@"fps 1 origin %.1f,%.1f inside %d %@",
                         (double)drawn.origin.x, (double)drawn.origin.y,
-                        CGRectContainsRect(safe, drawn) ? 1 : 0];
+                        CGRectContainsRect(safe, drawn) ? 1 : 0,
+                        BallpadFPSCounterPlacementNote(overlay)];
     }
 
     NSString *offenders = outside.count > 0
@@ -949,6 +958,444 @@ static void BallpadLogShoulderOutlineIfChanged(UIView *overlay)
 }
 
 
+// ── The planted stick zone ("your thumb becomes the analog stick") ────────────
+//
+// SunPad's stick is absolute and its own face is the whole of the place a thumb may land: the touch
+// is read as an offset from the stick's centre, so where it lands on that circle *is* the value. That
+// is right for a thumb already resting there and wrong for the first frame of every touch, when the
+// hand is coming down on a picture it is looking at rather than on a control it can see. On this
+// surface a thumb that lands 6pt off the centre reads as a small kick and a thumb that lands on the
+// rim reads as full deflection -- from the same intent, because the intent is "somewhere on the
+// stick" and the circle is not what the player is aiming at.
+//
+// The fix is the shape KartPad uses: the stick gets an area larger than its own face, and the touch
+// *is* the stick. A thumb that lands anywhere in that area moves the stick under itself and starts
+// it centred, so the value is read from how far the thumb has travelled since it landed rather than
+// from where it happened to land. That is the accuracy the picture needs -- a thumb knows its own
+// displacement far better than it knows a circle it cannot see -- and it costs nothing on the ports
+// side, because the value still leaves through the stick's own valueChanged block: the mixer, the
+// port's pad and the engine see exactly what they saw before, from a stick that happens to be
+// somewhere else on the screen.
+//
+// The zone is a plain view that sits directly above the stick it serves and below every button, so
+// it owns the touches that begin on or near that stick and none that begin on a button -- the
+// vendored face cluster keeps its own taps and the editor keeps its own gestures. The vendored class
+// is reached by two selectors and only two, -reset and -setValueX:y:, both of which it declares; no
+// vendored byte changes and no control is re-created.
+static const CGFloat kBallpadPlantedZoneMarginRatio = 0.30;
+static const void *BallpadPlantedZonesKey = &BallpadPlantedZonesKey;
+
+// The vendored value path, declared and then called through, and the one part of the stick's
+// interface this file cannot reach by name. The stick's setter moves its thumb; the value the engine
+// reads is published from the stick's own valueChanged block, which the overlay turns into
+// -stickChanged:x:y: and which is what feeds the mixer and the port's pad. So the zone publishes
+// through the overlay exactly as the stick would have, and what the mixer and the engine receive is
+// the same message from the same method they have always received -- from a stick that is somewhere
+// else on the screen rather than under the thumb.
+@interface SunPadGameOverlay (BallpadStickHooks)
+- (void)stickChanged:(UIView *)stick x:(float)x y:(float)y;
+@end
+
+// The other selector of the vendored stick's private interface that this file drives it through. It
+// is sent by name rather than declared, because declaring it would mean declaring the class, and the
+// class is a detail of the vendored file: the two identifiers "move" and "c" are what the overlay
+// and the UI suite both address the sticks by, and the zone is found from the stick rather than the
+// other way round.
+static void BallpadStickPublishValue(UIView *stick, float x, float y)
+{
+    SEL selector = NSSelectorFromString(@"setValueX:y:");
+    if (stick == nil || ![stick respondsToSelector:selector])
+        return;
+    ((void (*)(id, SEL, float, float))objc_msgSend)(stick, selector, x, y);
+}
+
+static void BallpadStickReset(UIView *stick)
+{
+    SEL selector = NSSelectorFromString(@"reset");
+    if (stick == nil || ![stick respondsToSelector:selector])
+        return;
+    ((void (*)(id, SEL))objc_msgSend)(stick, selector);
+}
+
+@interface BallpadPlantedZoneView : UIView
+@property(nonatomic, weak) UIView *stick;
+// The overlay the value leaves through. Weak like the stick, and for the same reason: the overlay
+// owns the zone -- it is a subview of it -- so the zone must not be what keeps either alive.
+@property(nonatomic, weak) SunPadGameOverlay *host;
+@property(nonatomic) CGFloat stickRadius;
+- (void)ballpadEndTouch;
+@end
+
+@implementation BallpadPlantedZoneView
+{
+    // Where the thumb landed and where the stick sits when nothing is holding it, both in the
+    // overlay's coordinates. Captured together in -ballpadPlantAt:, and together they are what makes
+    // the reading relative: the value is the displacement from the plant, not from the stick's own
+    // centre, so a thumb that lands anywhere reads the same for the same travel.
+    CGPoint _plantPoint;
+    CGPoint _restCentre;
+    BOOL _owning;
+    BOOL _planted;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    if ((self = [super initWithFrame:frame]))
+    {
+        self.backgroundColor = UIColor.clearColor;
+        self.multipleTouchEnabled = NO;
+        // An input surface and never a thing to read: it draws nothing, and a VoiceOver user has the
+        // stick itself, which is the control this view moves. Hiding it from the tree is also what
+        // keeps the stick under it hittable for the UI suite, whose hit test resolves to the topmost
+        // element *in the tree* at that point.
+        self.accessibilityElementsHidden = YES;
+    }
+    return self;
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+    (void)event;
+    if (_owning || self.stick == nil)
+        return;
+    _owning = YES;
+    [self ballpadPlantAt:[touches.anyObject locationInView:self.superview]];
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+    (void)event;
+    if (!_owning || self.stick == nil)
+        return;
+    if (!_planted)
+    {
+        [self ballpadPlantAt:[touches.anyObject locationInView:self.superview]];
+        return;
+    }
+    [self ballpadDriveTo:[touches.anyObject locationInView:self.superview]];
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+    (void)touches;
+    (void)event;
+    [self ballpadEndTouch];
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+    (void)touches;
+    (void)event;
+    [self ballpadEndTouch];
+}
+
+// The plant: the stick moves to the thumb and the value starts at the middle. The clamp is the
+// vendored editor's own -- half the control against half the space it has -- so a zone that came out
+// narrower than the stick centres the stick in it rather than inverting a range against itself.
+- (void)ballpadPlantAt:(CGPoint)point
+{
+    UIView *overlay = self.superview;
+    UIView *stick = self.stick;
+    if (overlay == nil || stick == nil || stick.superview == nil)
+        return;
+
+    const CGRect zone = [self convertRect:self.bounds toView:overlay];
+    const CGRect rest = [stick convertRect:stick.bounds toView:overlay];
+    const CGFloat halfWidth = MIN(CGRectGetWidth(rest) * 0.5, CGRectGetWidth(zone) * 0.5);
+    const CGFloat halfHeight = MIN(CGRectGetHeight(rest) * 0.5, CGRectGetHeight(zone) * 0.5);
+    _plantPoint = CGPointMake(MIN(MAX(point.x, CGRectGetMinX(zone) + halfWidth),
+                                  CGRectGetMaxX(zone) - halfWidth),
+                              MIN(MAX(point.y, CGRectGetMinY(zone) + halfHeight),
+                                  CGRectGetMaxY(zone) - halfHeight));
+    _restCentre = CGPointMake(CGRectGetMidX(rest), CGRectGetMidY(rest));
+    _planted = YES;
+
+    stick.center = [overlay convertPoint:_plantPoint toView:stick.superview];
+    // Down and centred: the plant is the origin the value is read from, so the value it starts from
+    // is the middle of the pad however far from the stick's own centre the thumb came down.
+    [self ballpadPublishX:0.0f y:0.0f];
+
+    // The plant is the whole of the ask, so it is a line of its own rather than a clause on another
+    // read-back: where the thumb landed, how far that is from the stick's own centre, whether the
+    // zone's edge had to pull the plant in toward the middle, and what the reading started from.
+    // The last is the accuracy half -- a thumb that comes down off-centre starts the axis at the
+    // middle rather than at the deflection a distance from the stick's own centre would have given
+    // it, which is the difference between this and the stick it replaced. The size is published
+    // beside the offsets so a reader can put the offset in the units it matters in, the stick's own
+    // side rather than points.
+    const CGFloat side = MIN(CGRectGetWidth(rest), CGRectGetHeight(rest));
+    BallpadLog(@"plant: %@ side %.0f landed %.1f,%.1f offset %.1f,%.1f planted %.1f,%.1f "
+               @"clamped %d reading 0.00,0.00 -- planted under the thumb and read from there",
+               self.stick.accessibilityIdentifier ?: @"?", (double)side,
+               (double)point.x, (double)point.y,
+               (double)(point.x - CGRectGetMidX(rest)), (double)(point.y - CGRectGetMidY(rest)),
+               (double)_plantPoint.x, (double)_plantPoint.y,
+               CGPointEqualToPoint(point, _plantPoint) ? 0 : 1);
+}
+
+// The value, out the way the stick's own value goes. Both halves are owed because the zone has taken
+// over the touch that would have produced them: the overlay's method is what reaches the mixer and
+// the port, and the setter is what reaches the drawing, so the thumb on screen travels with the
+// number the engine reads.
+- (void)ballpadPublishX:(float)x y:(float)y
+{
+    UIView *stick = self.stick;
+    if (stick == nil)
+        return;
+    BallpadStickPublishValue(stick, x, y);
+    [self.host stickChanged:stick x:x y:y];
+}
+
+- (void)ballpadDriveTo:(CGPoint)point
+{
+    UIView *stick = self.stick;
+    if (stick == nil)
+        return;
+    // The vendored radius, so the travel between the middle and full deflection is the stick's own
+    // and only the origin has moved. Positive Y is up, hence the negation, exactly as in the
+    // vendored handler -- the only difference between the two is which point the offset is taken
+    // from.
+    const CGFloat radius = MAX(1.0, self.stickRadius);
+    CGFloat dx = (point.x - _plantPoint.x) / radius;
+    CGFloat dy = (point.y - _plantPoint.y) / radius;
+    const CGFloat length = hypot(dx, dy);
+    if (length > 1.0)
+    {
+        dx /= length;
+        dy /= length;
+    }
+    [self ballpadPublishX:(float)dx y:(float)-dy];
+}
+
+// Letting go puts the stick back where the layout put it. The put-back is a no-op when a layout pass
+// has already restored it -- which is what happens if the surface turned or a setting changed
+// mid-hold -- so it is one assignment that can never fight the vendored pass for the position.
+- (void)ballpadEndTouch
+{
+    if (!_owning)
+        return;
+    _owning = NO;
+    UIView *stick = self.stick;
+    if (stick != nil)
+    {
+        BallpadStickReset(stick);
+        if (_planted && self.superview != nil && stick.superview != nil)
+            stick.center = [self.superview convertPoint:_restCentre toView:stick.superview];
+    }
+    _planted = NO;
+}
+
+@end
+
+// A vendored control by the identifier it publishes, for the callers that need the control *and* the
+// identifier the store names it by. Recursive for the same reason BallpadControlLabelled is: this
+// tree is a dozen controls deep at most, and the walk is once per layout pass rather than per frame.
+static UIView *BallpadControlWithIdentifier(UIView *root, NSString *identifier)
+{
+    if (identifier.length > 0 && [root.accessibilityIdentifier isEqualToString:identifier])
+        return root;
+    for (UIView *subview in root.subviews)
+    {
+        UIView *found = BallpadControlWithIdentifier(subview, identifier);
+        if (found != nil)
+            return found;
+    }
+    return nil;
+}
+
+// One zone per stick, made on demand and kept on the overlay. Inserted directly above its stick,
+// which is where it must be and stays: everything the overlay draws over the sticks is added after
+// them, so a zone placed here is under the whole face cluster and over its own stick alone.
+static BallpadPlantedZoneView *BallpadPlantedZoneForStick(SunPadGameOverlay *overlay, UIView *stick)
+{
+    NSString *identifier = stick.accessibilityIdentifier;
+    if (identifier.length == 0)
+        return nil;
+
+    NSMutableDictionary<NSString *, BallpadPlantedZoneView *> *zones =
+        objc_getAssociatedObject(overlay, BallpadPlantedZonesKey);
+    if (zones == nil)
+    {
+        zones = [NSMutableDictionary dictionary];
+        objc_setAssociatedObject(overlay, BallpadPlantedZonesKey, zones,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    BallpadPlantedZoneView *zone = zones[identifier];
+    if (zone == nil)
+    {
+        zone = [[BallpadPlantedZoneView alloc] initWithFrame:stick.frame];
+        zone.stick = stick;
+        zone.host = overlay;
+        zones[identifier] = zone;
+        [overlay insertSubview:zone aboveSubview:stick];
+    }
+    return zone;
+}
+
+// The zone as drawn, beside the stick it serves and the numbers a reader needs to check that it is
+// larger than the stick and that it is not swallowing a control: the four distances a thumb may land
+// from the stick's own centre (left, up, right, down) before the zone's edge clamps the plant, and
+// every drawn control whose frame shares the zone's. A shared frame is not by itself a defect -- a
+// button drawn over the zone is above it and keeps its own taps -- which is why this is reported
+// rather than judged, and why the sentence says which way the precedence runs.
+static void BallpadLogPlantedZonesIfChanged(SunPadGameOverlay *overlay)
+{
+    NSMutableArray<NSString *> *segments = [NSMutableArray array];
+    NSMutableArray<NSString *> *covered = [NSMutableArray array];
+    NSMutableDictionary<NSString *, BallpadPlantedZoneView *> *zones =
+        objc_getAssociatedObject(overlay, BallpadPlantedZonesKey);
+
+    for (NSString *identifier in @[ @"move", @"c" ])
+    {
+        UIView *stick = BallpadControlWithIdentifier(overlay, identifier);
+        BallpadPlantedZoneView *zone = zones[identifier];
+        if (stick == nil || zone == nil)
+        {
+            [segments addObject:[NSString stringWithFormat:@"%@ no zone", identifier]];
+            continue;
+        }
+
+        const CGRect rest = [stick convertRect:stick.bounds toView:overlay];
+        const CGRect drawn = [zone convertRect:zone.bounds toView:overlay];
+        const CGFloat halfWidth = MIN(CGRectGetWidth(rest) * 0.5, CGRectGetWidth(drawn) * 0.5);
+        const CGFloat halfHeight = MIN(CGRectGetHeight(rest) * 0.5, CGRectGetHeight(drawn) * 0.5);
+        const CGFloat side = MIN(CGRectGetWidth(rest), CGRectGetHeight(rest));
+        [segments addObject:[NSString stringWithFormat:
+            @"%@ zone %.0fx%.0f @%.0f,%.0f stick %.0fx%.0f @%.0f,%.0f radius %.0f margin %.0f "
+            @"plant l%.0f u%.0f r%.0f d%.0f inert %d",
+            identifier, (double)CGRectGetWidth(drawn), (double)CGRectGetHeight(drawn),
+            (double)CGRectGetMinX(drawn), (double)CGRectGetMinY(drawn),
+            (double)CGRectGetWidth(rest), (double)CGRectGetHeight(rest),
+            (double)CGRectGetMinX(rest), (double)CGRectGetMinY(rest),
+            (double)zone.stickRadius, (double)(side * kBallpadPlantedZoneMarginRatio),
+            (double)(CGRectGetMidX(rest) - (CGRectGetMinX(drawn) + halfWidth)),
+            (double)(CGRectGetMidY(rest) - (CGRectGetMinY(drawn) + halfHeight)),
+            (double)((CGRectGetMaxX(drawn) - halfWidth) - CGRectGetMidX(rest)),
+            (double)((CGRectGetMaxY(drawn) - halfHeight) - CGRectGetMidY(rest)),
+            zone.userInteractionEnabled ? 0 : 1]];
+
+        for (UIView *other in BallpadTouchControlsInDrawOrder(overlay))
+        {
+            if (other == stick || other.hidden || other.alpha == 0.0)
+                continue;
+            const CGRect frame = [other convertRect:other.bounds toView:overlay];
+            if (CGRectIntersectsRect(frame, drawn))
+                [covered addObject:[NSString stringWithFormat:@"%@ is under %@",
+                                    identifier, other.accessibilityIdentifier ?: @"?"]];
+        }
+    }
+
+    NSString *line = [NSString stringWithFormat:@"%@ | %@",
+                      [segments componentsJoinedByString:@" | "],
+                      covered.count > 0 ? [covered componentsJoinedByString:@"; "]
+                                        : @"no drawn control shares a stick's zone"];
+    static NSString *s_seen = nil;
+    if ([line isEqualToString:s_seen])
+        return;
+    s_seen = line;
+    // Written on change for the reason the other read-backs are: the caller is -layoutSubviews, and
+    // this line's whole value is that it is the state a reader can line up with a turn, a resize or a
+    // hide rather than a copy of the same numbers every pass.
+    BallpadLog(@"planted zone: editing %d %@ -- a stick's zone is its own face plus that margin, a "
+               @"thumb that lands anywhere in it moves the stick under itself and reads from there, "
+               @"and the four plant distances are how far from the stick's own centre it may land "
+               @"before the zone's edge clamps the plant (left, up, right, down)",
+               BallpadOverlayIsEditingLayout(overlay) ? 1 : 0, line);
+}
+
+
+// ── Hiding a control ("easily hide and rearrange all buttons") ────────────────
+//
+// Rearranging is the vendored editor's own drag and resizing is its own slider, but the vendored file
+// has no answer for taking a control out of the picture. Its one visibility control is global -- every
+// control, when a physical controller is connected -- which is the wrong shape for the question a
+// player asks here: this device is held one way, this game wants six buttons, and the four that are
+// not being used are in the way of the thumb that is.
+//
+// So the editor's bar gains one toggle, beside the size slider and Done, that hides or shows the
+// control the player last selected. The set is Ballpad's own store entry because the feature is
+// Ballpad's own and the vendored file must not learn about it; and the vendored reset clears it, so a
+// player who hides a control and then forgets which one has one place to look -- the settings panel's
+// own "Reset This Device Layout", which the UI suite already drives through its own confirmation
+// alert.
+//
+// The D-pad is one entry under the group's own name rather than four, because the vendored editor
+// already governs the four directional buttons as one control: their frames are the group's and the
+// editor enables no gesture on them individually. Hiding them one at a time would leave a cross with
+// a hole in it, which is not a thing a player can press either way.
+static NSString * const kBallpadHiddenControlsKey = @"BallpadHiddenTouchControls";
+static NSString * const kBallpadDPadGroupIdentifier = @"D-pad";
+// What a hidden control is drawn at while the editor is up. Faint rather than absent, because a
+// control the player cannot see is a control they cannot select, and selecting one is how it comes
+// back -- the toggle acts on the selection, so the selection has to be reachable.
+static const CGFloat kBallpadHiddenControlEditingAlpha = 0.30;
+static const CGFloat kBallpadHideButtonHeight = 40.0;
+static const CGFloat kBallpadHideButtonMinWidth = 82.0;
+
+static NSMutableSet<NSString *> *s_ballpadHiddenControls = nil;
+
+// The control the editor is working on, which is the one the toggle acts on. The vendored ivar is
+// private and is not readable from here, so this is the same fact kept again rather than borrowed --
+// weak, and set from the vendored selection, which both of the editor's gestures route through. It
+// is cleared whenever the editor is not up, so a selection can never outlive the bar it was made in.
+static __weak UIView *s_selectedControl = nil;
+
+static NSMutableSet<NSString *> *BallpadHiddenControls(void)
+{
+    if (s_ballpadHiddenControls == nil)
+    {
+        s_ballpadHiddenControls = [NSMutableSet set];
+        for (id entry in [[NSUserDefaults standardUserDefaults]
+                             arrayForKey:kBallpadHiddenControlsKey])
+            if ([entry isKindOfClass:NSString.class] && [entry length] > 0)
+                [s_ballpadHiddenControls addObject:entry];
+    }
+    return s_ballpadHiddenControls;
+}
+
+// Written on every change rather than at exit: this is a preference a player sets and then expects
+// to hold, and a control that came back on the next launch would be a control they hid twice.
+static void BallpadWriteHiddenControls(void)
+{
+    [[NSUserDefaults standardUserDefaults] setObject:BallpadHiddenControls().allObjects
+                                              forKey:kBallpadHiddenControlsKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// The store entry a control is hidden under, or nil for a control that has none to be hidden under.
+// The four directional buttons and their container are one entry, for the reason above; every other
+// control is hidden under the identifier it already publishes.
+static NSString *BallpadHiddenIdentifierForControl(UIView *control)
+{
+    NSString *identifier = control.accessibilityIdentifier;
+    if (identifier.length == 0)
+        return nil;
+    if ([identifier hasPrefix:@"D_"] || [identifier isEqualToString:@"ExperimentalDPad"])
+        return kBallpadDPadGroupIdentifier;
+    return identifier;
+}
+
+static NSArray<UIView *> *BallpadControlsForHiddenIdentifier(UIView *overlay, NSString *identifier)
+{
+    if ([identifier isEqualToString:kBallpadDPadGroupIdentifier])
+    {
+        NSMutableArray<UIView *> *group = [NSMutableArray array];
+        for (NSString *direction in @[ @"D_U", @"D_D", @"D_L", @"D_R" ])
+        {
+            UIView *button = BallpadControlWithIdentifier(overlay, direction);
+            if (button != nil)
+                [group addObject:button];
+        }
+        UIView *container = BallpadControlLabelled(overlay, kBallpadDPadGroupIdentifier);
+        if (container != nil)
+            [group addObject:container];
+        return group;
+    }
+    UIView *control = BallpadControlWithIdentifier(overlay, identifier);
+    return control != nil ? @[ control ] : @[];
+}
+
+
 // ── SunPad's menu, under a Ballpad header ─────────────────────────────────────
 // Declaring the vendored class's private methods is what makes the overrides below legal while the
 // vendored file keeps its bytes. -buildMenu, -refreshMenuButton, -confirmGameDataRemoval and
@@ -958,6 +1405,18 @@ static void BallpadLogShoulderOutlineIfChanged(UIView *overlay)
 - (void)refreshMenuButton;
 - (void)confirmGameDataRemoval;
 - (void)reportProblem;
+@end
+
+// The vendored editor's own ends, declared for the same reason and used the same way: the hide
+// toggle acts on the control the editor has selected, so the selection and the two ends of an edit
+// session are the three places this file has to hear about. Each of the three below calls through to
+// the vendored method and adds one thing after it -- a remembered selection, the layout pass the
+// exit does not run for itself, and the clearing of Ballpad's own layout store -- so the vendored
+// editor keeps deciding how an edit behaves and this file only learns when one happened.
+@interface SunPadGameOverlay (BallpadEditorHooks)
+- (void)selectControlForEditing:(UIView *)control;
+- (void)endLayoutEditing;
+- (void)resetLayout;
 @end
 
 @interface BallpadGameOverlay : SunPadGameOverlay
@@ -980,6 +1439,13 @@ static void BallpadLogShoulderOutlineIfChanged(UIView *overlay)
 // that exists -- and passing anything unmatched straight through. That is what keeps the untouched
 // rows (the FPS toggle, Touch Control Settings) exactly as the vendored file built them, which is
 // the difference between adapting a menu and rewriting one.
+//
+// One structural change is this file's own rather than a swap: the top level is the player's page,
+// and the two rows that are instruments rather than controls -- the port's frame-rate limiter and
+// its audio recorder -- answer a question a player asks rarely, if ever. They live in one
+// Experimental submenu together (see -ballpadExperimentalMenu), which is why the vendored 60 FPS
+// row's slot is skipped rather than filled. The vendored file could not have composed this: its own
+// rows are peers by construction, and the source tree it is vendored from is not ours to reorder.
 - (UIMenu *)buildMenu
 {
     UIMenu *vendored = [super buildMenu];
@@ -995,9 +1461,13 @@ static void BallpadLogShoulderOutlineIfChanged(UIView *overlay)
         else if ([title isEqualToString:@"Aspect Ratio"])
             [children addObject:[self ballpadAspectMenu]];
         else if ([title isEqualToString:@"Experimental Performance Mode (Restart Required)"])
-            [children addObject:[self ballpadAudioRecordingAction]];
+            [children addObject:[self ballpadExperimentalMenu]];
         else if ([title isEqualToString:@"Experimental 60 FPS (Restart Required)"])
-            [children addObject:[self ballpadFrameLimitAction]];
+            // Its slot is spent: the row lives in the Experimental submenu above, and a row that
+            // appeared in both places would be two rows for one switch. Skipping it here is what
+            // leaves the top level nine rows of things a player uses rather than eleven of them
+            // with the port's own instruments in among the game's.
+            continue;
         else if ([title isEqualToString:@"Game Data & Saves"])
             [children addObject:[self ballpadGameDataMenu]];
         else
@@ -1105,6 +1575,25 @@ static void BallpadLogShoulderOutlineIfChanged(UIView *overlay)
     return action;
 }
 
+#pragma mark - The Experimental submenu
+
+// The two rows that are the port's instruments rather than the game's controls, under one honest
+// header. Both are switches whose meaning is a state you cannot see from the top level -- one holds
+// the frame limiter open, the other is holding a take open -- which is the other reason they belong
+// behind a row rather than beside Render Resolution, where they would read as display options.
+//
+// The leaves are named for the state the checkmark means, not for the vendored row's subject:
+// "60 FPS" was the emulator's boot mode and this port has none, so a leaf called 60 FPS would name
+// a thing the action does not do. What it does is what the port's own accessor reports, and the
+// alert the row raises still states the resulting limit rather than restating the label.
+- (UIMenu *)ballpadExperimentalMenu
+{
+    return [UIMenu menuWithTitle:@"Experimental" children:@[
+        [self ballpadFrameLimitAction],
+        [self ballpadAudioRecordingAction],
+    ]];
+}
+
 #pragma mark - Frame rate limit (items 11 and 12)
 
 // Item 12 is why there is no performance row here: the vendored one toggled a 90% emulated CPU
@@ -1115,7 +1604,7 @@ static void BallpadLogShoulderOutlineIfChanged(UIView *overlay)
 {
     __weak BallpadGameOverlay *weakSelf = self;
     UIAction *action =
-        [UIAction actionWithTitle:@"Experimental 60 FPS (BallPad's frame rate limit)"
+        [UIAction actionWithTitle:@"Uncapped Frame Rate"
                             image:[UIImage systemImageNamed:@"speedometer"]
                        identifier:nil
                           handler:^(__kindof UIAction *selected) {
@@ -1564,9 +2053,9 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
 #pragma mark - Layout
 
 // SunPad lays its own controls out here, from its own bounds and insets, and that stays the only
-// thing that decides where a control goes. Two of its decisions are Ballpad's to make on this game's
-// behalf, and both are applied after the vendored pass so the vendored layout math keeps its
-// authority:
+// thing that decides where a control goes. Four of its decisions are Ballpad's to make on this
+// game's behalf, and all of them are applied after the vendored pass so the vendored layout math
+// keeps its authority:
 //
 //   * the three-dot button gets one explicit appearance, so dismissing a primary-action menu cannot
 //     synthesize a rectangular highlight over it and a rebuilt surface cannot leave it with none;
@@ -1574,7 +2063,12 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
 //     by the vendored file's own arithmetic set, for the reason -ballpadApplyPadDefaultLayout gives;
 //   * a control the vendored default pass drew outside the safe rect is put back inside it, for the
 //     reason -ballpadApplySafeAreaContainment gives;
-//   * the right shoulder is made L's twin, for the reason its flags are documented above.
+//   * the right shoulder is made L's twin, for the reason its flags are documented above;
+//   * each stick is given the planting zone its thumb lands in, for the reason the zone section
+//     above gives;
+//   * and a control the player hid in the editor stays hidden, for the reason the hide section
+//     above gives. The editor's own toggle is placed from what those two decided, so it is
+//     refreshed in the same pass.
 - (void)layoutSubviews
 {
     [super layoutSubviews];
@@ -1591,6 +2085,15 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
     [self ballpadApplyPadDefaultLayout];
     [self ballpadApplySafeAreaContainment];
     [self ballpadApplyShoulderRepair];
+
+    // Placed from the sticks the vendored pass just placed, applied over the appearance it just
+    // gave them, and -- last, because it reads both -- the editor's toggle, which is what a player
+    // hides and shows a control with while the editor is open.
+    [self ballpadApplyPlantedZones];
+    [self ballpadApplyHiddenControlVisibility];
+    [self ballpadConfigureEditorHideButton];
+    [self ballpadUpdateEditorHideButton];
+
     [self ballpadScheduleShoulderRepair];
 }
 
@@ -1963,6 +2466,196 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
     }
 }
 
+#pragma mark - The planted stick zone
+
+// Where a zone goes, from the stick the vendored pass has just placed. The zone is the stick's own
+// face grown by the margin on every side, in the overlay's own coordinates -- the area a thumb may
+// land in and still find the stick -- and the radius handed to it with the frame is the vendored
+// handler's own quantity on that same face, so what the zone publishes is measured at the travel the
+// stick always had and only the origin has moved.
+//
+// Two states turn a zone off, and both are here rather than in the zone: while the editor is up,
+// because the editor's own drags begin on the stick itself, and while the stick is hidden, because a
+// zone that outlived its stick would be a control the player cannot see that still answers a thumb.
+- (void)ballpadApplyPlantedZones
+{
+    const BOOL editing = BallpadOverlayIsEditingLayout(self);
+    NSSet<NSString *> *hidden = BallpadHiddenControls();
+    for (NSString *identifier in @[ @"move", @"c" ])
+    {
+        UIView *stick = BallpadControlWithIdentifier(self, identifier);
+        if (stick == nil || stick.superview == nil)
+            continue;
+        BallpadPlantedZoneView *zone = BallpadPlantedZoneForStick(self, stick);
+        if (zone == nil)
+            continue;
+
+        const CGRect face = [stick convertRect:stick.bounds toView:self];
+        const CGFloat side = MIN(CGRectGetWidth(face), CGRectGetHeight(face));
+        const CGFloat margin = side * kBallpadPlantedZoneMarginRatio;
+        zone.frame = CGRectInset(face, -margin, -margin);
+        zone.stickRadius = MAX(1.0, side * 0.5);
+        zone.hidden = editing;
+        zone.userInteractionEnabled = !editing && ![hidden containsObject:identifier];
+    }
+
+    // The reading is of the pass that just placed the zones, which is the whole of when it can have
+    // changed -- and it is written on change only, for the reason it gives.
+    BallpadLogPlantedZonesIfChanged(self);
+}
+
+#pragma mark - Hiding a control
+
+// Ballpad's own layer over the vendored appearance, applied after the vendored pass so it is the
+// last word on whether a control is drawn. Outside the editor a hidden control is gone from the
+// picture and from the touch path; inside it, the same control is drawn faint and stays hittable,
+// because the only way back is to select it and press the toggle, and a control the player cannot
+// see is a control they cannot select.
+- (void)ballpadApplyHiddenControlVisibility
+{
+    const BOOL editing = BallpadOverlayIsEditingLayout(self);
+    for (NSString *identifier in BallpadHiddenControls())
+    {
+        for (UIView *control in BallpadControlsForHiddenIdentifier(self, identifier))
+        {
+            control.hidden = !editing;
+            control.alpha = editing ? kBallpadHiddenControlEditingAlpha : 0.0;
+            control.userInteractionEnabled = editing;
+        }
+    }
+
+    // The control the editor is working on is drawn whole even when it is hidden: it is the subject
+    // of the question the toggle is about to ask, and "Show selected control" has to be something
+    // the player can see what it is about.
+    if (editing && s_selectedControl != nil)
+    {
+        s_selectedControl.hidden = NO;
+        s_selectedControl.alpha = 1.0;
+    }
+}
+
+// The editor's one Ballpad row. It is inserted into the vendored bar's own stack rather than hung
+// beside the bar, because the bar is sized by that stack's constraints and the row belongs to the
+// same sentence as the slider and the done button: pick a control, size it, hide it, finish.
+- (void)ballpadConfigureEditorHideButton
+{
+    UIView *done = BallpadControlLabelled(self, @"Finish moving touch controls");
+    UIStackView *stack = [done.superview isKindOfClass:UIStackView.class]
+        ? (UIStackView *)done.superview : nil;
+    if (stack == nil || BallpadControlLabelled(stack, @"Hide selected control") != nil)
+        return;
+
+    UIButton *hide = [UIButton buttonWithType:UIButtonTypeSystem];
+    // Pinned, because the title flips with the selected control's state and this label is the handle
+    // the player's VoiceOver and the UI suite both find the row by.
+    hide.accessibilityLabel = @"Hide selected control";
+    hide.titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    [hide setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    [hide setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.45] forState:UIControlStateDisabled];
+    hide.backgroundColor = [UIColor colorWithWhite:0.18 alpha:0.88];
+    hide.layer.cornerRadius = 10.0;
+    [hide addTarget:self action:@selector(ballpadToggleSelectedControlHidden:)
+   forControlEvents:UIControlEventTouchUpInside];
+    [stack insertArrangedSubview:hide
+                          atIndex:stack.arrangedSubviews.count > 0 ? stack.arrangedSubviews.count - 1 : 0];
+    [NSLayoutConstraint activateConstraints:@[
+        [hide.heightAnchor constraintEqualToConstant:kBallpadHideButtonHeight],
+        [hide.widthAnchor constraintGreaterThanOrEqualToConstant:kBallpadHideButtonMinWidth],
+    ]];
+
+    [self ballpadUpdateEditorHideButton];
+}
+
+// The row's own state, read from the selection and the store rather than remembered: the title is the
+// action the tap would perform, the value is the state it acts on, and both are refreshed from the
+// same two facts on every layout pass -- so a control selected while the editor is open moves the
+// row without anything having to tell it.
+- (void)ballpadUpdateEditorHideButton
+{
+    if (!BallpadOverlayIsEditingLayout(self))
+        s_selectedControl = nil;      // a selection cannot outlive the bar it was made in
+
+    UIView *found = BallpadControlLabelled(self, @"Hide selected control");
+    UIButton *button = [found isKindOfClass:UIButton.class] ? (UIButton *)found : nil;
+    if (button == nil)
+        return;
+
+    NSString *identifier = BallpadHiddenIdentifierForControl(s_selectedControl);
+    const BOOL hidden = identifier != nil && [BallpadHiddenControls() containsObject:identifier];
+    button.enabled = identifier != nil;
+    [button setTitle:identifier == nil ? @"Select a control first"
+                                      : (hidden ? @"Show selected control" : @"Hide selected control")
+            forState:UIControlStateNormal];
+    button.accessibilityValue = identifier == nil ? @"none" : (hidden ? @"hidden" : @"shown");
+}
+
+// One tap, one entry, and the drawing follows here rather than in the next layout pass: the player is
+// looking at the control when they press this, and a control that waited a pass to change would read
+// as a button that did nothing.
+- (void)ballpadToggleSelectedControlHidden:(UIButton *)button
+{
+    (void)button;
+    NSString *identifier = BallpadHiddenIdentifierForControl(s_selectedControl);
+    if (identifier == nil)
+        return;
+
+    NSMutableSet<NSString *> *hidden = BallpadHiddenControls();
+    const BOOL nowHidden = ![hidden containsObject:identifier];
+    if (nowHidden)
+        [hidden addObject:identifier];
+    else
+        [hidden removeObject:identifier];
+    BallpadWriteHiddenControls();
+    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
+
+    BallpadLog(@"hide: %@ is now %@; the hidden set is %@", identifier,
+               nowHidden ? @"hidden" : @"shown",
+               hidden.count == 0 ? @"empty"
+                                 : [[hidden.allObjects sortedArrayUsingSelector:@selector(compare:)]
+                                       componentsJoinedByString:@", "]);
+
+    [self ballpadApplyHiddenControlVisibility];
+    [self ballpadUpdateEditorHideButton];
+    [self setNeedsLayout];
+}
+
+#pragma mark - The vendored editor's own ends
+
+// Both of the editor's gestures route through the vendored selection -- a drag calls it as it begins,
+// a tap calls it as it ends -- so this one override is where the toggle learns which control it acts
+// on.
+- (void)selectControlForEditing:(UIView *)control
+{
+    [super selectControlForEditing:control];
+    if (!BallpadOverlayIsEditingLayout(self) || control.accessibilityIdentifier.length == 0)
+        return;
+    s_selectedControl = control;
+    [self ballpadApplyHiddenControlVisibility];
+    [self ballpadUpdateEditorHideButton];
+}
+
+// The vendored exit re-draws every control whole and asks for no layout pass of its own, so without
+// this the set the player just edited would come back the moment Done was pressed and stay until
+// something else happened to lay the overlay out.
+- (void)endLayoutEditing
+{
+    [super endLayoutEditing];
+    [self setNeedsLayout];
+}
+
+// Ballpad's own layout store, cleared by the one row a player would look for it under. The vendored
+// reset returns this device's layout to its defaults, and a control that stayed hidden would not be
+// a default -- which is also why the set is not cleared anywhere the vendored file calls
+// -applySettings, since a foreground resume goes through there.
+- (void)resetLayout
+{
+    [super resetLayout];
+    [BallpadHiddenControls() removeAllObjects];
+    BallpadWriteHiddenControls();
+    BallpadLog(@"hide: the layout was reset, so every hidden control is shown again");
+    [self setNeedsLayout];
+}
+
 @end
 
 // ── The FPS counter (item 5) ──────────────────────────────────────────────────
@@ -1974,21 +2667,87 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
 // whether the machine has headroom: paced by the display, a machine that keeps up reports the
 // refresh rate whatever it is doing.
 static const void *BallpadFPSCounterKey = &BallpadFPSCounterKey;
-// The overlay size the label was last positioned against. The label is positioned once per surface
-// shape rather than once per frame, and this is what remembers the shape.
-static const void *BallpadFPSCounterShapeKey = &BallpadFPSCounterShapeKey;
+// The state the label was last positioned against, in the shape BallpadFPSCounterPlacementSignature
+// writes it: the surface, the insets it publishes and every control the player can touch. The label
+// is positioned when that state moves rather than once per frame, and this is what remembers it.
+static const void *BallpadFPSCounterPlacedKey = &BallpadFPSCounterPlacedKey;
+// Which anchor the card was last put on, and how many drawn things that placement was scored
+// against. Published by BallpadFPSCounterPlacementNote as a field of the layout reading, because
+// "the card is over a control" is two different defects depending on these two numbers: a placement
+// that saw the control and chose to cover it, and a placement that saw nothing at all to avoid.
+static const void *BallpadFPSCounterAnchorKey = &BallpadFPSCounterAnchorKey;
+static const void *BallpadFPSCounterObstacleKey = &BallpadFPSCounterObstacleKey;
 
-// The widest reading this label can ever print, measured once. Assigning a frame invalidates the
-// overlay's layout, and the overlay's layout pass re-derives every vendored control's geometry --
-// including the trigger's own border, which the R repair above then has to undo. Re-framing the
-// label sixty times a second therefore re-laid out the whole overlay sixty times a second, which is
-// both the work the frame budget cannot spare and the reason a drag on the overlay never settled:
-// a pan recognizer whose view is re-laid out under it does not reach the state the layout editor
-// reads. Reserving the width up front is what makes the per-frame update a text assignment. The
-// placeholder is deliberately wider than any real reading so the reservation never has to grow.
-static NSString * const kBallpadFPSWidestReading =
-    @"99999x99999 @99.99x aspect 99.999 pinned logical 99999 blend 99.99"
-    @"   •   999 fps   99.9 ms busy   p95 99.9";
+// The widest reading this label can ever print, one line per line the label draws, measured once.
+// Assigning a frame invalidates the overlay's layout, and the overlay's layout pass re-derives every
+// vendored control's geometry -- including the trigger's own border, which the R repair above then
+// has to undo. Re-framing the label sixty times a second therefore re-laid out the whole overlay
+// sixty times a second, which is both the work the frame budget cannot spare and the reason a drag
+// on the overlay never settled: a pan recognizer whose view is re-laid out under it does not reach
+// the state the layout editor reads. Reserving the frame up front is what makes the per-frame update
+// an attributed-string assignment. The placeholder is the widest reading the card can print, so the
+// frame reserved from it is never too small for the reading that lands in it; what it is measured
+// against is the card's own width, because at that width the read-back's longest line wraps.
+static NSString * const kBallpadFPSWidestRate = @"999 fps";
+static NSString * const kBallpadFPSWidestTiming = @"99.9 ms busy · p95 99.9";
+static NSString * const kBallpadFPSWidestDetail =
+    @"99999x99999 @99.99x aspect 99.999 pinned logical 99999 blend 99.99";
+
+// The counter's three type sizes and its card. The rate is the reading a player is looking at and
+// carries the largest type; the timing is the second question a player asks about it ("is there
+// headroom?"); and the port's own render read-back is a diagnostic, so it is drawn smallest and
+// dimmest -- still on screen, because it is what the display rows are read back through, but no
+// longer the thing the card is *about*, which it was while the three ran together on one line.
+static const CGFloat kBallpadFPSRateSize = 20.0;
+static const CGFloat kBallpadFPSDetailSize = 9.0;
+static const CGFloat kBallpadFPSLineSpacing = 1.0;
+static const CGFloat kBallpadFPSPaddingWidth = 12.0;
+static const CGFloat kBallpadFPSPaddingHeight = 8.0;
+static const CGFloat kBallpadFPSCornerRadius = 10.0;
+// The card's width, in points, on both surfaces. Fixed rather than measured from the widest reading:
+// the port's render read-back is long enough that a card sized to it on one line comes out 391pt
+// wide -- nearly half the phone's 844pt in landscape -- and a card that wide cannot fit in a corner
+// clear of the controls, which is the defect it was drawn over Start for. At this width the two
+// readings a player watches (the rate and the frame time) each keep a line to themselves and the
+// render read-back wraps underneath at its smaller size, so the card stays one instrument of one
+// size on both surfaces and stays narrow enough to sit where nothing is being touched.
+static const CGFloat kBallpadFPSWidth = 214.0;
+// The gap the card keeps from the edge of the safe rect, on all four sides. One constant for both
+// axes: the card is an instrument sitting in a corner, and a card nearer one edge than the other
+// reads as misaligned rather than as deliberate.
+static const CGFloat kBallpadFPSMargin = 12.0;
+// What the card says, as the three lines it draws. One builder for the placeholder and for the live
+// reading, because a placeholder measured with different type than the reading is drawn with would
+// reserve the wrong frame -- which is the defect the reservation exists to prevent.
+static NSAttributedString *BallpadFPSReading(NSString *rate, NSString *timing, NSString *detail)
+{
+    NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
+    paragraph.lineSpacing = kBallpadFPSLineSpacing;
+    paragraph.alignment = NSTextAlignmentLeft;
+
+    const struct { NSString *line; CGFloat size; UIFontWeight weight; CGFloat alpha; } lines[] = {
+        { rate,   kBallpadFPSRateSize,   UIFontWeightBold,    1.00 },
+        { timing, 11.0,                  UIFontWeightMedium,  0.82 },
+        { detail, kBallpadFPSDetailSize, UIFontWeightRegular, 0.48 },
+    };
+
+    NSMutableAttributedString *text = [NSMutableAttributedString new];
+    for (const auto &line : lines)
+    {
+        if (line.line.length == 0)
+            continue;
+        if (text.length > 0)
+            [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"
+                                                                        attributes:@{ NSParagraphStyleAttributeName: paragraph }]];
+        [text appendAttributedString:[[NSAttributedString alloc] initWithString:line.line
+            attributes:@{
+                NSFontAttributeName: [UIFont monospacedSystemFontOfSize:line.size weight:line.weight],
+                NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:line.alpha],
+                NSParagraphStyleAttributeName: paragraph,
+            }]];
+    }
+    return text;
+}
 
 static UILabel *BallpadFPSCounterLabel(SunPadGameOverlay *overlay)
 {
@@ -1998,33 +2757,238 @@ static UILabel *BallpadFPSCounterLabel(SunPadGameOverlay *overlay)
 
     label = [UILabel new];
     label.userInteractionEnabled = NO;
-    label.font = [UIFont monospacedSystemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    // The card the three lines are drawn on. Rounded and outlined rather than a bare rectangle, so
+    // the counter reads as one instrument over the picture instead of as text that happened to land
+    // on the game.
     label.textColor = UIColor.whiteColor;
-    label.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
-    label.textAlignment = NSTextAlignmentCenter;
-    label.numberOfLines = 1;
+    label.backgroundColor = [UIColor colorWithWhite:0.03 alpha:0.62];
+    label.textAlignment = NSTextAlignmentLeft;
+    // Unbounded, because the lines the card draws are the wrapping of the reading at the card's own
+    // width rather than a count this file can fix: the diagnostics under the rate wrap.
+    label.numberOfLines = 0;
+    label.layer.cornerRadius = kBallpadFPSCornerRadius;
+    label.layer.masksToBounds = YES;
+    label.layer.borderWidth = 1.0;
+    label.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.16].CGColor;
     label.accessibilityIdentifier = @"BallpadFPSCounter";
     objc_setAssociatedObject(overlay, BallpadFPSCounterKey, label,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return label;
 }
 
+// Whether a view is on screen and can be touched, which is what makes it a thing the card may not be
+// drawn over. The whole chain rather than the view alone: the settings panel and the layout editor
+// are hidden while they are closed and their rows are not, so asking the row whether it is hidden
+// counts a slider inside a hidden panel as drawn -- and a card that gives up a corner to a control
+// nobody can see has avoided nothing while putting itself somewhere worse. Alpha is the same fact by
+// another route, and the interaction flag is the one that matters for the player rather than for the
+// eye: a row that cannot be touched is not a control this card can take away from anybody.
+static BOOL BallpadViewIsDrawnAndTouchable(UIView *view, UIView *overlay)
+{
+    for (UIView *walk = view; walk != nil; walk = walk.superview)
+    {
+        if (walk.hidden || walk.alpha == 0.0 || !walk.userInteractionEnabled)
+            return NO;
+        if (walk == overlay)
+            break;
+    }
+    return YES;
+}
+
+// What the card must not be drawn over: everything the player touches. The two analog sticks are
+// plain views rather than controls, so the named walk the layout reading uses is what names them;
+// the overlay's own menu button is a control that is not in that list -- it has no identifier of its
+// own -- so controls are collected by type as well. The card itself is a label rather than a control
+// and carries an identifier, so neither half of this collects it.
+static NSArray<UIView *> *BallpadFPSCounterObstacleViews(SunPadGameOverlay *overlay)
+{
+    NSMutableArray<UIView *> *touched = [NSMutableArray arrayWithArray:
+                                         BallpadTouchControlsInDrawOrder(overlay)];
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:overlay];
+    while (pending.count > 0)
+    {
+        UIView *view = pending.lastObject;
+        [pending removeLastObject];
+        if ([view isKindOfClass:UIControl.class] && view.accessibilityIdentifier.length == 0)
+            [touched addObject:view];
+        [pending addObjectsFromArray:view.subviews];
+    }
+
+    NSMutableArray<UIView *> *drawn = [NSMutableArray array];
+    for (UIView *view in touched)
+        if (BallpadViewIsDrawnAndTouchable(view, overlay))
+            [drawn addObject:view];
+    return drawn;
+}
+
+// The same set as rectangles in the overlay's own space, which is what the scoring below and the
+// placement signature are both written against.
+static NSArray<NSValue *> *BallpadFPSCounterObstacles(SunPadGameOverlay *overlay)
+{
+    NSMutableArray<NSValue *> *rects = [NSMutableArray array];
+    for (UIView *view in BallpadFPSCounterObstacleViews(overlay))
+        [rects addObject:[NSValue valueWithCGRect:[view convertRect:view.bounds toView:overlay]]];
+    return rects;
+}
+
+// Where the card is allowed to sit: the safe rect's two top corners, its top centre, and then its
+// two bottom corners -- the order a tie between two equally clear places is broken in. The top
+// before the bottom because the bottom is where the thumbs rest, and the top centre after the
+// corners because a card over the middle of the picture is the placement a player notices.
+static const NSUInteger kBallpadFPSCounterAnchors = 5;
+
+static CGPoint BallpadFPSCounterAnchorOrigin(NSUInteger anchor, CGRect safe, CGSize card)
+{
+    // Clamped to the safe rect's own edge rather than allowed past it: a card too wide for the safe
+    // rect cannot be inside it at any anchor, and pushing it off the surface would be a second defect
+    // on top of the first. The anchor then reads as the card sitting against the edge it overflowed.
+    const CGFloat left = safe.origin.x + kBallpadFPSMargin;
+    const CGFloat right = MAX(left, CGRectGetMaxX(safe) - kBallpadFPSMargin - card.width);
+    const CGFloat top = safe.origin.y + kBallpadFPSMargin;
+    const CGFloat bottom = MAX(top, CGRectGetMaxY(safe) - kBallpadFPSMargin - card.height);
+    switch (anchor)
+    {
+        case 1:  return CGPointMake(right, top);
+        case 2:  return CGPointMake(MAX(left, CGRectGetMidX(safe) - card.width / 2.0), top);
+        case 3:  return CGPointMake(left, bottom);
+        case 4:  return CGPointMake(right, bottom);
+        default: return CGPointMake(left, top);
+    }
+}
+
+// The state a placement is derived from, as one string: the surface, the insets it publishes, and
+// every obstacle's frame. The insets as well as the bounds, because a turn to the other landscape
+// side leaves the surface the same size and moves the safe rect under it; the obstacles, because a
+// control the player has dragged is an obstacle somewhere else, and a counter left on top of where
+// that control used to be is the same defect as having placed it there. Whole points, because the
+// vendored pass can land a control a fraction of a point differently on two consecutive passes, and
+// a signature that noticed that would re-frame the card every frame -- the re-layout that reserving
+// the frame is there to avoid.
+static NSString *BallpadFPSCounterPlacementSignature(SunPadGameOverlay *overlay)
+{
+    const UIEdgeInsets insets = overlay.safeAreaInsets;
+    NSMutableString *signature = [NSMutableString stringWithFormat:@"%.0fx%.0f safe %.0f,%.0f,%.0f,%.0f",
+                                  (double)CGRectGetWidth(overlay.bounds),
+                                  (double)CGRectGetHeight(overlay.bounds),
+                                  (double)insets.left, (double)insets.top,
+                                  (double)insets.right, (double)insets.bottom];
+    for (NSValue *obstacle in BallpadFPSCounterObstacles(overlay))
+    {
+        const CGRect rect = obstacle.CGRectValue;
+        [signature appendFormat:@" %.0f,%.0f %.0fx%.0f", (double)rect.origin.x,
+                              (double)rect.origin.y, (double)CGRectGetWidth(rect),
+                              (double)CGRectGetHeight(rect)];
+    }
+    return signature;
+}
+
 // The label's own geometry: sized against the widest reading rather than the current one, so the
-// frame this sets is the frame it keeps, and placed inside the surface's safe area. Called when the
-// label appears and when the surface changes shape, which is the whole of its layout.
+// frame this sets is the frame it keeps, and placed inside the surface's safe area at the anchor
+// that hides the least of what the player is touching. Chosen rather than fixed in a corner because
+// the vendored layout puts a control in the top left on the phone -- Start, with L under it -- while
+// the pad's default leaves that corner empty and puts Start in the middle of the top edge: no one
+// anchor is clear on every shape, and a counter drawn over a control has taken that control away
+// from the player, which is the one thing the card is not allowed to do. Called when the label
+// appears and when the signature above moves, which is the whole of its layout.
 static void BallpadPositionFPSCounterLabel(SunPadGameOverlay *overlay, UILabel *label)
 {
-    NSString *shown = label.text;
-    label.text = kBallpadFPSWidestReading;
-    [label sizeToFit];
-    label.text = shown;
+    NSAttributedString *shown = label.attributedText;
+    label.attributedText = BallpadFPSReading(kBallpadFPSWidestRate, kBallpadFPSWidestTiming,
+                                             kBallpadFPSWidestDetail);
+    // Measured at the width the card is drawn at rather than fitted to one line per reading: what the
+    // placeholder is here to answer is how tall the widest reading wraps, and the width is the
+    // constant above so the frame this sets is the frame the card keeps.
+    const CGSize needed = [label sizeThatFits:
+        CGSizeMake(kBallpadFPSWidth - kBallpadFPSPaddingWidth * 2.0, CGFLOAT_MAX)];
+    label.attributedText = shown;
 
-    CGRect frame = label.frame;
-    frame.size.width += 16.0;
+    CGRect frame = CGRectMake(0.0, 0.0, kBallpadFPSWidth,
+                              ceil(needed.height) + kBallpadFPSPaddingHeight * 2.0);
     frame.size.height = MAX(frame.size.height, 22.0);
-    UIEdgeInsets insets = overlay.safeAreaInsets;
-    frame.origin = CGPointMake(insets.left + 10.0, insets.top + 10.0);
+
+    const CGRect safe = UIEdgeInsetsInsetRect(overlay.bounds, overlay.safeAreaInsets);
+    NSArray<NSValue *> *obstacles = BallpadFPSCounterObstacles(overlay);
+    NSUInteger chosen = 0;
+    CGFloat least = CGFLOAT_MAX;
+    NSMutableString *scored = [NSMutableString string];
+    for (NSUInteger anchor = 0; anchor < kBallpadFPSCounterAnchors; anchor++)
+    {
+        const CGRect place = (CGRect){ BallpadFPSCounterAnchorOrigin(anchor, safe, frame.size),
+                                       frame.size };
+        CGFloat hidden = 0.0;
+        for (NSValue *obstacle in obstacles)
+        {
+            const CGRect overlap = CGRectIntersection(place, obstacle.CGRectValue);
+            // Both non-null and finite: the conversion above runs against a tree the vendored pass
+            // is in the middle of laying out, and a frame that has not been given a value yet is a
+            // NaN rather than a rectangle. A NaN carried into the sum makes every comparison below
+            // false, which would leave the loop's initial anchor as the answer -- a card placed at
+            // the top left whatever it was drawn over. An unreadable rect is skipped rather than
+            // counted as clear, because the one thing this placement may not do is cover a control.
+            if (CGRectIsNull(overlap))
+                continue;
+            const CGFloat width = (double)CGRectGetWidth(overlap);
+            const CGFloat height = (double)CGRectGetHeight(overlap);
+            if (!isfinite(width) || !isfinite(height))
+                continue;
+            hidden += width * height;
+        }
+        [scored appendFormat:@" %lu:%.0f", (unsigned long)anchor, (double)hidden];
+        // Strictly less, so a tie keeps the earlier anchor, and by half a point, so two anchors that
+        // hide the same thing are not separated by the arithmetic of two products.
+        if (isfinite(hidden) && hidden < least - 0.5)
+        {
+            least = hidden;
+            chosen = anchor;
+        }
+    }
+    frame.origin = BallpadFPSCounterAnchorOrigin(chosen, safe, frame.size);
     label.frame = frame;
+    objc_setAssociatedObject(overlay, BallpadFPSCounterAnchorKey, @(chosen),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(overlay, BallpadFPSCounterObstacleKey, @(obstacles.count),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // One line per placement the card actually moves to, and deduped on the two facts that decide
+    // it rather than on the areas: a control being dragged re-places the card on every frame of the
+    // touch, and the line worth having is the placement, not the sixty samples of it.
+    static NSUInteger s_lastAnchor = NSUIntegerMax;
+    static NSUInteger s_lastObstacles = NSUIntegerMax;
+    if (chosen != s_lastAnchor || obstacles.count != s_lastObstacles)
+    {
+        s_lastAnchor = chosen;
+        s_lastObstacles = obstacles.count;
+        NSMutableString *where = [NSMutableString string];
+        for (UIView *view in BallpadFPSCounterObstacleViews(overlay))
+        {
+            const CGRect rect = [view convertRect:view.bounds toView:overlay];
+            [where appendFormat:@" | %@ %.0f,%.0f %.0fx%.0f",
+             view.accessibilityIdentifier.length > 0 ? view.accessibilityIdentifier
+                                                     : NSStringFromClass(view.class),
+             (double)rect.origin.x, (double)rect.origin.y,
+             (double)CGRectGetWidth(rect), (double)CGRectGetHeight(rect)];
+        }
+        BallpadLog(@"fps counter: card %.0fx%.0f in safe %.0f,%.0f %.0fx%.0f, %lu of %lu drawn "
+                   @"things are obstacles, placed %lu of %lu, covered area by anchor%@%@ -- the "
+                   @"smallest wins, so the card sits where it hides the least of what is touched",
+                   (double)frame.size.width, (double)frame.size.height,
+                   (double)safe.origin.x, (double)safe.origin.y,
+                   (double)safe.size.width, (double)safe.size.height,
+                   (unsigned long)obstacles.count,
+                   (unsigned long)BallpadTouchControlsInDrawOrder(overlay).count,
+                   (unsigned long)chosen, (unsigned long)kBallpadFPSCounterAnchors, scored, where);
+    }
+}
+
+// The placement as the layout reading publishes it, or a dash when no card has been placed -- which
+// is the reading of a run whose FPS row is off.
+static NSString *BallpadFPSCounterPlacementNote(UIView *overlay)
+{
+    NSNumber *anchor = objc_getAssociatedObject(overlay, BallpadFPSCounterAnchorKey);
+    if (anchor == nil)
+        return @"anchor - obstacles -";
+    NSNumber *obstacles = objc_getAssociatedObject(overlay, BallpadFPSCounterObstacleKey);
+    return [NSString stringWithFormat:@"anchor %@ obstacles %@", anchor, obstacles ?: @(-1)];
 }
 
 static void BallpadRefreshFPSCounter(SunPadGameOverlay *overlay)
@@ -2040,7 +3004,7 @@ static void BallpadRefreshFPSCounter(SunPadGameOverlay *overlay)
             [label removeFromSuperview];
             objc_setAssociatedObject(overlay, BallpadFPSCounterKey, nil,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(overlay, BallpadFPSCounterShapeKey, nil,
+            objc_setAssociatedObject(overlay, BallpadFPSCounterPlacedKey, nil,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         return;
@@ -2059,21 +3023,25 @@ static void BallpadRefreshFPSCounter(SunPadGameOverlay *overlay)
     PortBenchGetLive(&live);
     // The rolling window is what moves; the run counters stay put until a match is live, so a title
     // screen reads as a rate rather than as a stalled zero.
-    NSString *frames = live.frames > 0
-        ? [NSString stringWithFormat:@"%.0f fps   %.1f ms busy   p95 %.1f",
-                                     live.fps, live.busyMs, live.busyP95Ms]
-        : [NSString stringWithFormat:@"%.0f fps   %.1f ms busy", live.fps, live.busyMs];
-    label.text = [NSString stringWithFormat:@"%@   •   %@", BallpadDisplayReadBack(), frames];
+    NSString *rate = [NSString stringWithFormat:@"%.0f fps", live.fps];
+    NSString *timing = live.frames > 0
+        ? [NSString stringWithFormat:@"%.1f ms busy · p95 %.1f", live.busyMs, live.busyP95Ms]
+        : [NSString stringWithFormat:@"%.1f ms busy", live.busyMs];
+    label.attributedText = BallpadFPSReading(rate, timing, BallpadDisplayReadBack());
 
     // Per frame, and only this: the text. See BallpadPositionFPSCounterLabel for why the frame is
     // not part of the per-frame work.
-    const CGSize surface = overlay.bounds.size;
-    NSValue *placed = objc_getAssociatedObject(overlay, BallpadFPSCounterShapeKey);
-    if (placed == nil || !CGSizeEqualToSize(placed.CGSizeValue, surface))
+    NSString *placed = objc_getAssociatedObject(overlay, BallpadFPSCounterPlacedKey);
+    NSString *signature = BallpadFPSCounterPlacementSignature(overlay);
+    if (placed == nil || ![placed isEqualToString:signature])
     {
         BallpadPositionFPSCounterLabel(overlay, label);
-        objc_setAssociatedObject(overlay, BallpadFPSCounterShapeKey,
-                                 [NSValue valueWithCGSize:surface],
+        // Read again after the frame is set, rather than storing the state the placement was chosen
+        // from: assigning a frame invalidates the overlay's layout, so the state the card is now
+        // placed against is the one that follows that pass, and storing the state before it would
+        // re-place the card on the very next frame.
+        objc_setAssociatedObject(overlay, BallpadFPSCounterPlacedKey,
+                                 BallpadFPSCounterPlacementSignature(overlay),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 }

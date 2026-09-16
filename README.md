@@ -32,15 +32,16 @@ game code.
 
 | | |
 | --- | --- |
-| Simulator | The touch-interface acceptance suite passes 28/28 rows on both the iPhone and the iPad Simulator, on one app binary |
-| Physical device | **Not validated.** The device build compiles and is correctly linked, but no hardware has run it |
+| Simulator | The touch-interface acceptance suite passes 29/29 rows on both the iPhone and the iPad Simulator, on one app binary |
+| Physical device | **Deferred.** The device build compiles and links cleanly; running it on hardware is planned, not yet done |
 | Public distribution | **Not decided.** No binary is published, no IPA is audited, and open rights questions remain — see [release readiness](docs/native-strikers-release-readiness.md) |
 | Game data | Never bundled; supplied by you at first launch |
 
-This is a development build, not a finished release. Moving-match performance, audio
-lifecycle on hardware, save stress and oldest-OS support still need real-device
-validation. The candid engineering record, including what is proven and what is not, is
-[docs/36, the execution ledger](docs/36-native-strikers-progress.md).
+This is a development build, not a finished release. The Simulator suite is green end to
+end, and physical-device acceptance -- moving-match performance, audio lifecycle on
+hardware, save stress, and oldest-OS support -- is the remaining work, deliberately
+deferred rather than claimed. The candid engineering record, including what is proven and
+what is not, is [docs/36, the execution ledger](docs/36-native-strikers-progress.md).
 
 ## What works today
 
@@ -48,11 +49,18 @@ validation. The candid engineering record, including what is proven and what is 
   scores and presents its own replay, and the memory-card screens.
 - **GameCube controls on the touchscreen**: movement stick, C-stick, D-pad, A/B/X/Y/Z,
   L/R shoulders and Start, each movable and individually resizable, with global size and
-  opacity.
+  opacity. The movement stick works the way a handheld stick does -- you put your thumb
+  down anywhere in its zone and the stick appears under it -- so the aim follows the thumb
+  rather than the other way round.
+- **Rearranging the controls**: a layout mode where every control can be dragged to a new
+  place, resized on its own, hidden when you do not want it, and restored as one set.
 - **Physical controllers** through GameController, merged with touch input so both work at
   once, with an option to hide the on-screen controls while a controller is connected.
-- **A three-dot menu** over the game for display options (render scale, aspect ratio, FPS),
-  control settings, game data and memory-card actions, and the diagnostic log.
+- **A three-dot menu** over the game for display options (render scale, aspect ratio,
+  frame-rate limit), control settings, game data and memory-card actions, the diagnostic
+  log, and an Experimental submenu for the two instruments that are not display settings --
+  the frame limiter and the audio recorder. The live FPS counter is a compact card that
+  keeps itself clear of the controls it would otherwise cover.
 - **Saves** on a sandboxed Slot A memory card, with Files import and share-sheet export.
 
 ## Requirements

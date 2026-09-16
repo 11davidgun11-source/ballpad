@@ -170,6 +170,7 @@ TEST_ROW_SPECS=(
     "S.uitest.settings-panel=testTouchSettingsPanelExposesTheVendoredControls"
     "S.uitest.render-scale-persistence=testRenderScaleSelectionPersistsAcrossRelaunch"
     "S.uitest.layout-move-reset-persistence=testMovedControlPersistsAndResetRestoresTheDefault"
+    "S.uitest.planted-zone=testTouchInTheRingAroundTheMainStickPlantsItAndLeavesNoLayout"
     "S.uitest.lifecycle-surface=testBackgroundAndForegroundKeepTheOverlay"
     "S.r1.fps-row=testFrameStatisticsRowDrivesTheCountersItClaims"
     "S.r1.display-readback=testDisplayRowsReachTheRenderer"
@@ -495,6 +496,8 @@ AUDIO_LINES=0
 AUDIO_MIX_LINES=0
 OVERLAY_LINES=0
 CSTICK_LINES=0
+PLANTED_LINES=0
+PLANT_LINES=0
 OVERLAY_ALPHAS=0
 # R1 item 5's reading: what the drawn touch controls say about the six touch settings, taken off
 # the overlay rather than off the store. Defaulted to its all-zero shape so a run that never wrote
@@ -505,6 +508,13 @@ OVERLAY_ALPHAS=0
 OVERLAY_SUMMARY="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
 CSTICK_SUMMARY="0 0 0 0 0"
 OUTLINE_SUMMARY="0 0 0 0 0"
+# The two readings of the kartpad-style stick zone, defaulted to their all-zero shapes for the
+# reason the ones above are: a run that never wrote the line has to report a FAIL row rather than an
+# empty string. The first is the zone as drawn (lines/sticks/zone-bigger/plant-covered/radius-ok/
+# inert-ok/editing-lines/unreadable) and the second is what a thumb did with it
+# (lines/off-centre/zero-reading/clamped/unreadable).
+PLANTED_SUMMARY="0 0 0 0 0 0 0 0"
+PLANT_SUMMARY="0 0 0 0 0"
 # F04's two readings: the mirror relation between the two shoulders on every line outside the
 # editor, and what the engine's own pad held beside both offers the host made for that frame.
 # Each defaults to its all-zero shape so a run that never wrote the line reports a FAIL row rather
@@ -550,7 +560,21 @@ else
     # with it, and the switch holds a preference while the port's pad holds what it was handed.
     OVERLAY_LINES="$(grep -cE ' overlay: ' "$LOG_COPY" || true)"
     CSTICK_LINES="$(grep -cE ' c-stick: ' "$LOG_COPY" || true)"
+    PLANTED_LINES="$(grep -cE ' planted zone: ' "$LOG_COPY" || true)"
+    PLANT_LINES="$(grep -cE ' plant: ' "$LOG_COPY" || true)"
     LAYOUT_LINES="$(grep -cE ' layout: ' "$LOG_COPY" || true)"
+    # The zone's two families: the geometry the pass just placed (one line per change, both sticks on
+    # it) and the plant itself (one line per touch-down on a stick). Both are written by the app, and
+    # the second is the only place the *reading a plant starts from* is stated, which is the accuracy
+    # half of the ask and is invisible in every other family.
+    PLANTED_SUMMARY="$(awk -f "${BALLPAD_ROOT}/scripts/native/planted-zone-summary.awk" "$LOG_COPY")"
+    planted_field() { printf '%s' "$PLANTED_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
+    # Lines/off-centre/zero-reading/clamped/unreadable. "Off-centre" is a landing at least a tenth of
+    # the stick's own side from its resting centre, which is the case the zone exists for: a thumb
+    # that came down where the stick is not. "Zero-reading" is what the plant published, and it has to
+    # hold on every line rather than on one of them.
+    PLANT_SUMMARY="$(awk '/ plant: / { id = ""; side = ""; off = ""; reading = ""; clamped = ""; for (i = 1; i <= NF; i++) { if ($i == "plant:") id = $(i + 1); if ($i == "side") side = $(i + 1); if ($i == "offset") off = $(i + 1); if ($i == "reading") reading = $(i + 1); if ($i == "clamped") clamped = $(i + 1) } if (id == "" || side == "" || off == "" || reading == "" || clamped == "") { unread++; next } if (split(off, o, ",") != 2 || split(reading, r, ",") != 2) { unread++; next } total++; if ((o[1] < 0 ? -o[1] : o[1]) + (o[2] < 0 ? -o[2] : o[2]) >= 0.1 * (side + 0)) offCentre++; if ((r[1] + 0) == 0 && (r[2] + 0) == 0) zeroReading++; if ((clamped + 0) == 1) clampedLines++ } END { printf "%d %d %d %d %d\n", total + 0, offCentre + 0, zeroReading + 0, clampedLines + 0, unread + 0 }' "$LOG_COPY")"
+    plant_field() { printf '%s' "$PLANT_SUMMARY" | awk -v n="$1" '{ print $n + 0 }'; }
     # The C-stick lines judged as a relation rather than as a count: with the modern convention off
     # the port must have been handed the mixer's own value, and with it on the port's value must be
     # the mixer's negated. "off N agree, on M flipped, K unreadable" is the whole reading.
@@ -654,8 +678,8 @@ else
     {
         printf 'source: %s\n' "$RUNTIME_LOG"
         printf 'whole log: %s lines, copied to %s\n\n' "$(wc -l < "$LOG_COPY" | tr -d ' ')" "$LOG_COPY"
-        grep -E ' (display|settings|shoulder|shoulder outline|audio|overlay|consume|c-stick|layout): ' "$LOG_COPY" \
-            || printf 'no display, settings, shoulder, shoulder-outline, audio, overlay, consume, c-stick or layout line is in the log\n'
+        grep -E ' (display|settings|shoulder|shoulder outline|audio|overlay|consume|c-stick|planted zone|plant|layout): ' "$LOG_COPY" \
+            || printf 'no display, settings, shoulder, shoulder-outline, audio, overlay, consume, c-stick, planted-zone, plant or layout line is in the log\n'
         grep -E ' (controller: (mapping|script)|mapping panel): ' "$LOG_COPY" \
             || printf 'no controller mapping, scripted press or mapping-panel line is in the log\n'
     } >> "$READBACK_LINES"
@@ -666,6 +690,27 @@ else
     [ "$AUDIO_MIX_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the audio: lines name no mixer fields, so the audio read-back never saw the mixer run"
     [ "$OVERLAY_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no overlay: line, so the touch controls were never read back from the overlay the app drew"
     [ "$CSTICK_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no c-stick: line, so the camera stick's axis was never read back where the port was handed it"
+    [ "$PLANTED_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no planted zone: line, so no stick's touch zone was ever read back beside the stick it serves"
+    # The kartpad-style zone, judged in two halves. The first is the geometry the pass placed: both
+    # sticks named on every line, each zone strictly larger than its stick, a plant that may land a
+    # quarter of the side or more from the stick's own centre in every direction, the radius the
+    # zone measures at being the stick's own half-side, and the zone inert exactly while the editor
+    # is open. The second is what a thumb did with it: at least one landing off the stick's own
+    # centre, and every plant on every line having published a reading of zero -- which is the
+    # accuracy half of the ask, and the one thing a thumb landing on the stick's own edge would get
+    # wrong under the old distance-from-the-centre reading.
+    [ "$(planted_field 2)" -eq "$((PLANTED_LINES * 2))" ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the planted zone: lines name $(planted_field 2) stick(s) between them rather than two for each of the $(PLANTED_LINES) line(s), so the zone a stick carries was not read back on every line (lines/sticks/zone-bigger/plant-covered/radius-ok/inert-ok/editing-lines/unreadable: ${PLANTED_SUMMARY})"
+    [ "$(planted_field 3)" -eq "$(planted_field 2)" ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }only $(planted_field 3) of $(planted_field 2) zone(s) are drawn larger than the stick they serve, so a stick's touch area is not the area the thumb would find (lines/sticks/zone-bigger/plant-covered/radius-ok/inert-ok/editing-lines/unreadable: ${PLANTED_SUMMARY})"
+    [ "$(planted_field 4)" -eq "$(planted_field 2)" ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }only $(planted_field 4) of $(planted_field 2) zone(s) let a thumb land a quarter of the stick's side from its centre before the zone's edge clamps the plant, so the stick's origin has little or no room to move under the thumb (lines/sticks/zone-bigger/plant-covered/radius-ok/inert-ok/editing-lines/unreadable: ${PLANTED_SUMMARY})"
+    [ "$(planted_field 5)" -eq "$(planted_field 2)" ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }only $(planted_field 5) of $(planted_field 2) zone(s) publish at the stick's own half-side radius, so what the zone reports is read at a different travel from the stick's (lines/sticks/zone-bigger/plant-covered/radius-ok/inert-ok/editing-lines/unreadable: ${PLANTED_SUMMARY})"
+    [ "$(planted_field 6)" -eq "$(planted_field 2)" ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }only $(planted_field 6) of $(planted_field 2) zone(s) were inert exactly when the layout editor was open, so a zone took the gesture the editor's own drag begins with (lines/sticks/zone-bigger/plant-covered/radius-ok/inert-ok/editing-lines/unreadable: ${PLANTED_SUMMARY})"
+    [ "$(planted_field 7)" -ge 1 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }every planted zone: line was written outside the layout editor, so the reading that a zone stands down while the editor is open was never seen (lines/sticks/zone-bigger/plant-covered/radius-ok/inert-ok/editing-lines/unreadable: ${PLANTED_SUMMARY})"
+    [ "$(planted_field 8)" -eq 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }$(planted_field 8) planted zone: line(s) carried a stick segment this program could not read (lines/sticks/zone-bigger/plant-covered/radius-ok/inert-ok/editing-lines/unreadable: ${PLANTED_SUMMARY})"
+    [ "$PLANT_LINES" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the log holds no plant: line, so no stick was ever touched off its own centre and the reading a plant starts from was never read back"
+    [ "$(plant_field 1)" -gt 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the run's plant: lines name no stick that could be read, so no landing was judged (lines/off-centre/zero-reading/clamped/unreadable: ${PLANT_SUMMARY})"
+    [ "$(plant_field 2)" -ge 1 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }every plant: line is a thumb landing on the stick's own centre, so no plant off the stick was ever read back and the relative origin this work adds is unproven (lines/off-centre/zero-reading/clamped/unreadable: ${PLANT_SUMMARY})"
+    [ "$(plant_field 3)" -eq "$(plant_field 1)" ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }only $(plant_field 3) of $(plant_field 1) plant(s) started the reading at the middle, so a thumb that came down off-centre began at a deflection rather than at zero (lines/off-centre/zero-reading/clamped/unreadable: ${PLANT_SUMMARY})"
+    [ "$(plant_field 5)" -eq 0 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }$(plant_field 5) plant: line(s) could not be read (lines/off-centre/zero-reading/clamped/unreadable: ${PLANT_SUMMARY})"
     [ "$OVERLAY_ALPHAS" -ge 2 ] || READBACK_FAIL="${READBACK_FAIL:+$READBACK_FAIL; }the overlay: lines name ${OVERLAY_ALPHAS} alpha for the A control, so no opacity a row moved reached the drawn control"
     # R1 item 5: the six touch settings judged off the drawn tree rather than off the store. Each
     # clause below is one arrow that has to be non-empty for the item to be answered rather than
@@ -831,7 +876,7 @@ else
         || MAPPING_FAIL="${MAPPING_FAIL:+$MAPPING_FAIL; }the scripted launches carried $(mapping_field 6) distinct map(s), so no stored edit is shown reaching a launch and the join above is satisfied by one unchanged map (sessions/maps/sweeps/applies/engines/distinct/unreadable: ${MAPPING_SUMMARY})"
 fi
 if [ -z "$READBACK_FAIL" ]; then
-    printf "S.r1.settings-readback\tPASS\t%s display, %s settings, %s shoulder, %s audio (of which %s name the mixer's own fields) and %s overlay lines (over %s alpha for the A control; the six touch settings read off the drawn tree as total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: %s) plus %s c-stick lines, %s shoulder-outline lines (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable) and %s shoulder-mirror readings (total/rest/mirrored/skew/on-L's-row/editor/unreadable), written by the app itself\tapp-readbacks.txt\n" "$DISPLAY_LINES" "$SETTINGS_LINES" "$SHOULDER_LINES" "$AUDIO_LINES" "$AUDIO_MIX_LINES" "$OVERLAY_LINES" "$OVERLAY_ALPHAS" "$OVERLAY_SUMMARY" "$CSTICK_LINES" "$OUTLINE_SUMMARY" "$MIRROR_SUMMARY" >> "$ROWS"
+    printf "S.r1.settings-readback\tPASS\t%s display, %s settings, %s shoulder, %s audio (of which %s name the mixer's own fields) and %s overlay lines (over %s alpha for the A control; the six touch settings read off the drawn tree as total/unread/opacity-values/opacity-tracked/opacity-unit/opacity-tracked-below-unit/alpha-values/size-values/size-widths/size-spread/k-lines/k-solo/k-scaled/k-values/moved-pairs/reset-returns/hide-values/hidden-lines/visible-lines: %s) plus %s c-stick lines, %s shoulder-outline lines (total/presses/l-press/r-detent/l-thick/r-thick-editor/unreadable), %s shoulder-mirror readings (total/rest/mirrored/skew/on-L's-row/editor/unreadable), %s planted-zone lines over %s stick(s) (lines/sticks/zone-bigger/plant-covered/radius-ok/inert-ok/editing-lines/unreadable: %s) and %s plant line(s) (lines/off-centre/zero-reading/clamped/unreadable: %s), written by the app itself\tapp-readbacks.txt\n" "$DISPLAY_LINES" "$SETTINGS_LINES" "$SHOULDER_LINES" "$AUDIO_LINES" "$AUDIO_MIX_LINES" "$OVERLAY_LINES" "$OVERLAY_ALPHAS" "$OVERLAY_SUMMARY" "$CSTICK_LINES" "$OUTLINE_SUMMARY" "$MIRROR_SUMMARY" "$PLANTED_LINES" "$(planted_field 2)" "$PLANTED_SUMMARY" "$PLANT_LINES" "$PLANT_SUMMARY" >> "$ROWS"
 else
     printf "S.r1.settings-readback\tFAIL\t%s\tapp-readbacks.txt\n" "$READBACK_FAIL" >> "$ROWS"
 fi
