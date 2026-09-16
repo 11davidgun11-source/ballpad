@@ -47,12 +47,9 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// the panel as a Ballpad addition (R1 row 15). Every other row is the vendored row, untouched,
     /// in place.
     private static let vendoredMenuRows = [
-        "Render Resolution",
-        "Aspect Ratio",
-        "Show FPS Counter",
+        "Display",
+        "Controls",
         "Experimental",
-        "Controller Button Mapping…",
-        "Touch Control Settings…",
         "Game Data & Saves",
         "Report a Problem…",
         "About & Credits…",
@@ -134,7 +131,7 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     private var menuButton: XCUIElement { app.buttons["Menu"] }
 
     private func attach(_ name: String) {
-        let image = app.screenshot().image
+        let image = XCUIScreen.main.screenshot().image
         let upright = Self.bakedUpright(image)
         let attachment = XCTAttachment(image: upright)
         attachment.name = name
@@ -166,7 +163,9 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// orientation itself, so the aspect ratios then agree and the fit is exact.
     private static func bakedUpright(_ image: UIImage) -> UIImage {
         guard image.imageOrientation != .up else { return image }
-        let size = displaySize(of: image)
+        // UIImage.size already reflects the screenshot orientation. Swapping it
+        // again stretches a landscape capture into a portrait canvas.
+        let size = image.size
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = image.scale
         format.opaque = true
@@ -365,6 +364,7 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
 	}
 
     private func openTouchSettings() {
+        if let controls = overlayElement("Controls") { controls.tap() }
         guard let row = scrollMenuForElement("Touch Control Settings…", timeout: 30) else {
             XCTFail("the Touch Control Settings row is present in the menu")
             return
@@ -470,9 +470,9 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// front of it, where the first tap closes everything.
     private func ensureMenuOpen() {
         for _ in 0..<3 {
-            if overlayElement("Render Resolution") != nil { return }
+            if overlayElement("Display") != nil { return }
             menuButton.tap()
-            if waitForOverlayElement("Render Resolution", timeout: 15) != nil { return }
+            if waitForOverlayElement("Display", timeout: 15) != nil { return }
         }
         attachHierarchy("menu-would-not-open")
         XCTFail("the three-dot menu opens")
@@ -482,6 +482,11 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
     /// failure somewhere further down.
     private func tapMenuRow(_ row: String) {
         ensureMenuOpen()
+        if ["Render Resolution", "Aspect Ratio", "Show FPS Counter"].contains(row) {
+            overlayElement("Display")?.tap()
+        } else if ["Touch Control Settings…", "Controller Button Mapping…"].contains(row) {
+            overlayElement("Controls")?.tap()
+        }
         guard let element = scrollMenuForElement(row, timeout: 20) else {
             attachHierarchy("missing-menu-row")
             XCTFail("the " + row + " row is in the menu")
@@ -873,6 +878,186 @@ final class BallpadSunPadInterfaceTests: XCTestCase {
         launchAndWaitForOverlay()
         assertFrameClose(app.otherElements["move"].frame, resting,
                          "the main stick after a relaunch")
+    }
+
+    func testFloatingMovementAndGroupedMenus() throws {
+        launchAndWaitForOverlay()
+        let area = app.otherElements["MovementTouchArea"]
+        XCTAssertTrue(area.waitForExistence(timeout: 30))
+        XCTAssertFalse(app.otherElements["move"].exists, "movement artwork is invisible at rest")
+        let left = app.buttons["L"]
+        XCTAssertTrue(left.exists)
+        XCTAssertGreaterThan(left.frame.midY, app.frame.height * 0.45)
+        XCTAssertLessThan(left.frame.midY, app.frame.height * 0.80)
+        let right = app.buttons["R"]
+        XCTAssertEqual(left.frame.midY, right.frame.midY, accuracy: 2)
+        attach("floating-idle-and-shoulders")
+        // Land close to the screen edge: this previously displaced the origin and
+        // jumped on the first move. The app log records the actual plant and release.
+        let origin = area.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.82))
+                         .withOffset(CGVector(dx: 4, dy: 0))
+        origin.press(forDuration: 0.3,
+                     thenDragTo: origin.withOffset(CGVector(dx: 45, dy: -20)),
+                     withVelocity: .slow, thenHoldForDuration: 0.5)
+        XCTAssertEqual(area.value as? String, "idle")
+        XCTAssertFalse(app.otherElements["move"].exists)
+        attach("floating-released")
+        openMenu()
+        XCTAssertNotNil(overlayElement("Controls"))
+        XCTAssertNil(overlayElement("Render Resolution"))
+        overlayElement("Display")?.tap()
+        XCTAssertNotNil(waitForOverlayElement("Render Resolution", timeout: 10))
+        XCTAssertNotNil(overlayElement("Aspect Ratio"))
+        XCTAssertNotNil(overlayElement("Show FPS Counter"))
+        attach("display-submenu")
+        ensureMenuOpen()
+        openTouchSettings()
+        XCTAssertTrue(app.sliders["Control opacity"].exists)
+        attach("controls-settings")
+    }
+
+    func testSettingsRefinementsAndReportPreparation() throws {
+        launchAndWaitForOverlay()
+        let ids = ["A", "B", "X", "Y", "Z", "Start", "L", "R"]
+        var frames: [String: CGRect] = [:]
+        for id in ids { frames[id] = app.buttons[id].frame }
+        openMenu()
+        openTouchSettings()
+        let move = app.switches["Move touch controls"]
+        move.tap()
+        for id in ids {
+            assertFrameClose(app.buttons[id].frame, frames[id]!, "entering Move preserves " + id)
+        }
+        attach("editor-preserves-gameplay-layout")
+        app.buttons["Finish moving touch controls"].tap()
+        for id in ids {
+            assertFrameClose(app.buttons[id].frame, frames[id]!, "leaving Move preserves " + id)
+        }
+        tapMenuRow("Controller Button Mapping…")
+        let binding = app.cells["BallpadMappingBind.A"]
+        XCTAssertTrue(binding.waitForExistence(timeout: 10))
+        attach("controller-settings")
+        binding.tap()
+        tapMappingChoice("B", inSheetTitled: "Bind GameCube A to")
+        XCTAssertEqual(binding.value as? String, "B")
+        app.buttons["BallpadMappingReset"].tap()
+        XCTAssertEqual(binding.value as? String, "A")
+        app.buttons["BallpadMappingClose"].tap()
+        tapMenuRow("Experimental")
+        XCTAssertNotNil(waitForOverlayElement("Uncapped Frame Rate", timeout: 10))
+        XCTAssertNil(overlayElement("Record Audio"))
+        XCTAssertNil(overlayElement("Record Audio…"))
+        tapMenuRow("Report a Problem…")
+        let problem = app.textFields["What went wrong?"]
+        XCTAssertTrue(problem.waitForExistence(timeout: 10))
+        problem.tap()
+        problem.typeText("Local Simulator report verification")
+        app.buttons["Prepare GitHub Report"].tap()
+        XCTAssertTrue(app.alerts["Report Ready"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Open GitHub"].exists)
+        XCTAssertTrue(app.buttons["Share Log…"].exists)
+        attach("report-ready-with-log")
+        app.alerts["Report Ready"].buttons["Done"].tap()
+    }
+
+    func testReadableCreditsNavigation() throws {
+        launchAndWaitForOverlay()
+        openAbout()
+        XCTAssertTrue(app.cells["BallpadAboutVersion"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.cells["BallpadAboutLink.discord"].exists)
+        XCTAssertTrue(app.cells["BallpadAboutLink.ballpad"].exists)
+        attach("about-grouped-overview")
+        let table = app.tables["BallpadAboutScroll"]
+        let sunpad = app.cells["BallpadAboutProject.sunpad"]
+        for _ in 0..<5 { if sunpad.isHittable { break }; table.swipeUp() }
+        XCTAssertTrue(sunpad.isHittable)
+        sunpad.tap()
+        if !app.cells["BallpadAboutLink.sunpad"].waitForExistence(timeout: 2) { sunpad.tap() }
+        attach("credits-after-project-tap")
+        attachHierarchy("credits-after-project-tap")
+        XCTAssertTrue(app.cells["BallpadAboutLink.sunpad"].waitForExistence(timeout: 10))
+        attach("about-project-detail")
+        let notice = app.cells.matching(identifier: "BallpadNotice.sunpad/LICENSE").firstMatch
+        if notice.exists { notice.tap() }
+        else {
+            let license = app.cells.containing(.staticText, identifier: "sunpad/LICENSE").firstMatch
+            XCTAssertTrue(license.exists)
+            license.tap()
+        }
+        XCTAssertTrue(app.textViews["BallpadNoticeBody"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textViews["BallpadNoticeBody"].value.debugDescription.contains("GNU"))
+        attach("about-offline-license")
+        app.buttons["BallpadNoticeClose"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["BallpadAboutClose"].tap()
+    }
+
+    func testReportKeyboardAndCompactFPS() throws {
+        launchAndWaitForOverlay()
+        setFPSCounter(true)
+        guard let badge = waitForIdentifier("BallpadFPSCounter", timeout: 10) else {
+            XCTFail("FPS badge is visible"); return
+        }
+        XCTAssertLessThanOrEqual(badge.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(badge.frame.width, 100)
+        attach("compact-fps-badge")
+        tapMenuRow("Report a Problem…")
+        let summary = app.textFields["What went wrong?"]
+        XCTAssertTrue(summary.waitForExistence(timeout: 10))
+        summary.tap()
+        summary.typeText("Intro has rendering artifacts\n")
+        XCTAssertTrue(app.buttons["Prepare GitHub Report"].isHittable)
+        let details = app.textViews["Steps and details"]
+        attach("report-before-details")
+        details.typeText("At 2x resolution, the Palace stadium intro has visible artifacts.\nReproduce by starting a grudge match.")
+        XCTAssertGreaterThan(details.frame.height, 120)
+        XCTAssertGreaterThan(details.frame.width, 400)
+        XCTAssertTrue(app.buttons["Prepare GitHub Report"].isHittable)
+        attach("report-with-ipad-keyboard")
+        app.buttons["Prepare GitHub Report"].tap()
+        XCTAssertTrue(app.alerts["Report Ready"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Open GitHub"].exists)
+        app.alerts["Report Ready"].buttons["Done"].tap()
+        setFPSCounter(false)
+    }
+
+    func testRightTriggerCanMoveAndPersists() throws {
+        launchAndWaitForOverlay()
+        let right = app.buttons["R"]
+        let original = right.frame
+        let left = app.buttons["L"].frame
+        openMenu()
+        openTouchSettings()
+        app.switches["Move touch controls"].tap()
+        let start = right.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.2,
+                    thenDragTo: start.withOffset(CGVector(dx: -160, dy: 90)),
+                    withVelocity: .slow, thenHoldForDuration: 0.3)
+        let moved = right.frame
+        XCTAssertLessThan(moved.midX, original.midX - 100, "R follows the editor drag")
+        XCTAssertGreaterThan(moved.midY, original.midY + 50)
+        assertFrameClose(app.buttons["L"].frame, left, "moving R leaves L alone")
+        attach("right-trigger-moved")
+        app.buttons["Finish moving touch controls"].tap()
+        assertFrameClose(right.frame, moved, "Done retains R's custom placement")
+        app.terminate()
+        launchAndWaitForOverlay()
+        assertFrameClose(right.frame, moved, "R placement survives relaunch")
+        right.press(forDuration: 0.4)
+        // Verify dragging back in the opposite direction also works.
+        openMenu()
+        openTouchSettings()
+        app.switches["Move touch controls"].tap()
+        let restore = right.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        restore.press(forDuration: 0.2,
+                      thenDragTo: restore.withOffset(CGVector(dx: original.midX - moved.midX,
+                                                             dy: original.midY - moved.midY)),
+                      withVelocity: .slow, thenHoldForDuration: 0.3)
+        let returned = right.frame
+        XCTAssertGreaterThan(returned.midX, moved.midX + 100)
+        XCTAssertLessThan(returned.midY, moved.midY - 50)
+        app.buttons["Finish moving touch controls"].tap()
+        assertFrameClose(right.frame, returned, "Done also retains the return drag")
     }
 
     // MARK: - Lifecycle

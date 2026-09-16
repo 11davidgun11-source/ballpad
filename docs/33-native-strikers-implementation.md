@@ -1,5 +1,10 @@
 # Native Strikers implementation runbook
 
+> Historical implementation runbook. The current build uses the maintained engine
+> fork pinned in `scripts/native/common.sh`, without patch application. Follow the
+> repository README for current commands and `docs/41-release-source-audit-2026-09-16.md`
+> for the source migration and release evidence.
+
 ## Decision and scope
 
 Implement an iPhone/iPad application using the native source port at https://github.com/new-coke/strikers as its engine, retaining Ballpad's useful Swift interface. The deliverable is a reproducible, Simulator-verified development application and an unsigned physical-device build, with complete attribution and an honest hardware-validation handoff. Actual hardware performance and public-distribution clearance are separate statuses, not implied by completion of the Simulator work.
@@ -17,7 +22,7 @@ This is implementation work, not another feasibility study. Complete the pipelin
 5. [Research assessment](research/strikers-ios-feasibility.md), including immutable source links.
 6. Inspect the current app, host headers, build scripts and repository instructions. Use docs 05/06 for control/menu intent and doc 32 for difficult scenes, not to expand this task to every historical wishlist item.
 
-Root workspace: `/Users/chrissotraidis/GitHub/ballpad`.
+Root workspace: `<checkout>`.
 
 Pinned upstream: `https://github.com/new-coke/strikers.git` at `22649cb12c112454a34217429296c95bb181af8a` (v1.1.1). Begin with this exact revision. New upstream changes may be adopted only for a concrete observed defect: inspect the diff, record the reason and old/new pin, retain provenance, rerun affected gates. Do not silently follow main.
 

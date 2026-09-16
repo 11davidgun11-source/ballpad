@@ -6,17 +6,17 @@ Copy the entire prompt below into a new task with access to the Ballpad workspac
 
 Implement this project from start to finish using a persistent goal-based loop.
 
-Workspace: `/Users/chrissotraidis/GitHub/ballpad`.
+Workspace: `<checkout>`.
 
 Goal: replace Ballpad's old PowerPC static-recompilation engine with the native source port from `https://github.com/new-coke/strikers`, preserving and adapting Ballpad's useful iPhone/iPad interface. Deliver a reproducible, fully exercised Simulator development application, an unsigned iOS device build, and complete upstream attribution/provenance documentation. Complete the implementation and tests; do not stop at planning, a build, a first frame or a partial prototype.
 
 Read these files completely, in order:
 
-1. `/Users/chrissotraidis/GitHub/ballpad/docs/33-native-strikers-implementation.md`
-2. `/Users/chrissotraidis/GitHub/ballpad/docs/34-native-strikers-acceptance.md`
-3. `/Users/chrissotraidis/GitHub/ballpad/docs/35-native-strikers-attribution.md`
-4. `/Users/chrissotraidis/GitHub/ballpad/docs/36-native-strikers-progress.md`
-5. `/Users/chrissotraidis/GitHub/ballpad/docs/research/strikers-ios-feasibility.md`
+1. `<checkout>/docs/33-native-strikers-implementation.md`
+2. `<checkout>/docs/34-native-strikers-acceptance.md`
+3. `<checkout>/docs/35-native-strikers-attribution.md`
+4. `<checkout>/docs/36-native-strikers-progress.md`
+5. `<checkout>/docs/research/strikers-ios-feasibility.md`
 
 These are the authoritative migration instructions. Older BOT2–BOT6 loops and docs 24–32 provide historical evidence only; their previous prohibition on a native source port and old approval phrases are superseded for this task. Inspect applicable repository instructions and current source before editing. Do not execute an old bot loop.
 

@@ -4,7 +4,7 @@ This directory is a byte-for-byte copy of SunPad's iOS touch interface. It is he
 Ballpad's GameCube controls and its three-dot primary-action menu are *SunPad's* geometry and
 behaviour rather than a retyped approximation of them (doc 36 requirement R1).
 
-Source: `/Users/chrissotraidis/GitHub/sunpad`, revision `e43f0ea6b797e5110787171957c9dc3c6213269c`
+Source: [chrissotraidis/sunpad](https://github.com/chrissotraidis/sunpad), revision `e43f0ea6b797e5110787171957c9dc3c6213269c`
 (clean working tree at copy time).
 
 | File | Copied from | sha256 |

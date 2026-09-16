@@ -100,7 +100,30 @@ static int BallpadReadCurrent(char* out, size_t size)
             break;
         out[--len] = 0;
     }
-    return len > 0;
+    if (len == 0)
+        return 0;
+
+    // iOS may relocate a preserved data container during an in-place update.
+    // New records are relative to HOME; rebase legacy app-container records too.
+    const char* relative = strncmp(out, "Documents/", 10) == 0 ? out : NULL;
+    if (relative == NULL && strstr(out, "/Containers/Data/Application/") != NULL)
+    {
+        const char* documents = strstr(out, "/Documents/");
+        if (documents != NULL)
+            relative = documents + 1;
+    }
+    if (relative != NULL)
+    {
+        const char* home = getenv("HOME");
+        if (home == NULL || strstr(relative, "/../") != NULL)
+            return 0;
+        char resolved[BALLPAD_PATH_MAX];
+        int n = snprintf(resolved, sizeof resolved, "%s/%s", home, relative);
+        if (n <= 0 || (size_t)n >= sizeof resolved || (size_t)n >= size)
+            return 0;
+        memcpy(out, resolved, (size_t)n + 1);
+    }
+    return 1;
 }
 
 extern "C" int BallpadGameDataStaged(void)
@@ -293,7 +316,12 @@ static int BallpadActivate(const char* stagedPath)
     FILE* f = fopen(temporary, "w");
     if (f == NULL)
         return 0;
-    int wrote = fprintf(f, "%s\n", stagedPath) > 0;
+    const char* record = stagedPath;
+    const char* home = getenv("HOME");
+    if (home != NULL && strncmp(stagedPath, home, strlen(home)) == 0
+        && strncmp(stagedPath + strlen(home), "/Documents/", 11) == 0)
+        record = stagedPath + strlen(home) + 1;
+    int wrote = fprintf(f, "%s\n", record) > 0;
     if (fclose(f) != 0)
         wrote = 0;
     if (!wrote)

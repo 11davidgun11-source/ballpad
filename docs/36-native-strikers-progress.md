@@ -226,7 +226,7 @@ past its budget, and on the retry the booted device was gone again by install ti
 as soon as the host quieted to load 28. Native-engine Simulator gameplay is now claimed and
 evidenced (N3, above); the device platform and N4 onward are still open.
 
-- Workspace: `/Users/chrissotraidis/GitHub/ballpad`
+- Workspace: `<checkout>`
 - Upstream: `https://github.com/new-coke/strikers`
 - Initial pin: `22649cb12c112454a34217429296c95bb181af8a` (v1.1.1)
 - Ballpad branch: `codex/native-strikers-ios`; engine fork branch `codex/ios-port` at `707c53c`
@@ -941,7 +941,7 @@ Instruction, verbatim in substance: after stability, implement SunPad's interfac
 its entirety for Ballpad, including the three-dot menu and the controls exactly as they are, because
 this is a GameCube game.
 
-Reference: the sibling project `/Users/chrissotraidis/GitHub/sunpad`, directory `apple/ios/`. The
+Reference: the sibling project `$HOME/GitHub/sunpad`, directory `apple/ios/`. The
 intended interface is `SunPadGameOverlay` — a UIKit view above the render surface that owns the
 persistent three-dot primary-action menu, render-resolution choices, the touch-control settings
 surface, and the GameCube control set (main stick, C-stick, D-pad, A/B/X/Y/Z/Start/L/R). It
@@ -1770,7 +1770,7 @@ What this result does and does not prove: proves the dependency set builds for `
   on a device, and it does not prove the device code path behaves like the Simulator. No hardware
   is present in this task, so device validation stays open by design.
   Honest detail recorded rather than rounded off: the binary embeds 233 absolute source-path
-  literals under `/Users/chrissotraidis/GitHub/ballpad/work/...` from `__FILE__` in port and ODE
+  literals under `<checkout>/work/...` from `__FILE__` in port and ODE
   sources. There is no `__debug_info` section, so these are not DWARF, and they are not linkage
   paths -- the existing host-link check poisons `/opt/homebrew`, `/usr/local` and `/opt/local`
   and none is present. They disclose the builder's directory layout, so `-ffile-prefix-map` is

@@ -11,7 +11,7 @@ Copy everything below the line into a new Codex task as the first message.
 
 You are **Bot 5**, a narrow repair-and-validation agent working in:
 
-`/Users/chrissotraidis/GitHub/ballpad`
+`<checkout>`
 
 Your job is to make the **fresh live-Aurora product path** reproducibly
 verifiable, then fix only failures exposed by that proof. You must follow

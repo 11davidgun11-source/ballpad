@@ -260,7 +260,7 @@ target_link_libraries(strikers PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,ballpad_hos
 # template is configured with @ONLY, so the leftover ${...} that CMake's bundle step would look
 # for is absent and the file it copies is exactly the file written here.
 set(BALLPAD_VERSION "1.0")
-set(BALLPAD_BUILD_VERSION "1")
+set(BALLPAD_BUILD_VERSION "2")
 set(BALLPAD_MIN_OS "${CMAKE_OSX_DEPLOYMENT_TARGET}")
 set(BALLPAD_COPYRIGHT
     "Unofficial project. Not affiliated with or endorsed by Nintendo or Next Level Games. "
@@ -336,6 +336,16 @@ endfunction()
 # runner and the acceptance suite address.
 ballpad_ios_bundle(strikers "${BALLPAD_APP_NAME}" "com.ballpad.strikers" "BallPad")
 ballpad_bundle_notices(strikers)
+
+add_custom_target(strikers_icon ALL
+  COMMAND "${BALLPAD_PYTHON3}" "${BALLPAD_ROOT}/scripts/native/lib/app_icon.py"
+          --assets "${CMAKE_CURRENT_SOURCE_DIR}/ios/Assets.xcassets"
+          --bundle "$<TARGET_BUNDLE_DIR:strikers>"
+          --platform "${BALLPAD_PLATFORM}"
+          --minimum-os "${BALLPAD_MIN_OS}"
+  COMMENT "ballpad: compiling the iPhone and iPad app icon"
+  VERBATIM)
+add_dependencies(strikers_icon strikers)
 
 # ── The dependency probe ──────────────────────────────────────────────────────
 # BallpadProbe is the cheap half of the N2 gate: it brings up SDL3, Dawn/Metal and a presentable

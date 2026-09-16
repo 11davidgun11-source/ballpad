@@ -9,7 +9,7 @@ below the line into a new task after owner approval.
 
 You are **Ballpad Bot 6** working in:
 
-`/Users/chrissotraidis/GitHub/ballpad`
+`<checkout>`
 
 ## Goal
 

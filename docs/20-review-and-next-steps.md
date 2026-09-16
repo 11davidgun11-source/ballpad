@@ -80,7 +80,7 @@ d. Performance treated as an afterthought. A per-guest-block getenv()
 e. The host file became a forensic lab. ballpad_ios_host.cpp carries
    ~450 lines of guest-memory dump instrumentation, poke tests, and the
    44-step hardcoded autostart table, plus an absolute path
-   (/Users/chrissotraidis/...) baked into snapshot dumps. It works, but
+   ($HOME/...) baked into snapshot dumps. It works, but
    it is unmaintainable. Debug tooling belongs in a separate debug-gated
    translation unit; dead stubs (ballpad_runtime.cpp, called from the
    touch callback) should be deleted.

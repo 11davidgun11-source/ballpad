@@ -282,9 +282,9 @@ M12: one simulator booted (simctl list count 1).
   view/accessibility tree at zero opacity; retaining a single unconditional
   SwiftUI structure prevents the iPadOS 26 AttributeGraph window-detach bug.
 - The iPhone 17 Pro pass took 10.438 seconds and retained a handoff screenshot:
-  `/Users/chrissotraidis/Library/Developer/Xcode/DerivedData/Ballpad-hghrrijgcvwvbmgqgiantgneisau/Logs/Test/Test-Ballpad-2026.08.18_13-50-02--0500.xcresult`.
+  `$HOME/Library/Developer/Xcode/DerivedData/Ballpad-hghrrijgcvwvbmgqgiantgneisau/Logs/Test/Test-Ballpad-2026.08.18_13-50-02--0500.xcresult`.
 - The iPad A16 pass took 8.270 seconds with the same retained screenshot:
-  `/Users/chrissotraidis/Library/Developer/Xcode/DerivedData/Ballpad-hghrrijgcvwvbmgqgiantgneisau/Logs/Test/Test-Ballpad-2026.08.18_13-50-37--0500.xcresult`.
+  `$HOME/Library/Developer/Xcode/DerivedData/Ballpad-hghrrijgcvwvbmgqgiantgneisau/Logs/Test/Test-Ballpad-2026.08.18_13-50-37--0500.xcresult`.
 - This is an executable Simulator overlay-handoff regression gate, not a
   substitute for a physical controller's discovery, button delivery,
   disconnect, latency, or audio/lifecycle behavior.
@@ -569,9 +569,9 @@ M12: one simulator booted (simctl list count 1).
   **Done**, then requires the counter to advance again. This proves both pause
   and resume through the real SwiftUI → `SDLGameContainer` → host path.
 - The iPad A16 Simulator pass completed in 23.918 seconds:
-  `/Users/chrissotraidis/Library/Developer/Xcode/DerivedData/Ballpad-hghrrijgcvwvbmgqgiantgneisau/Logs/Test/Test-Ballpad-2026.08.18_13-35-43--0500.xcresult`.
+  `$HOME/Library/Developer/Xcode/DerivedData/Ballpad-hghrrijgcvwvbmgqgiantgneisau/Logs/Test/Test-Ballpad-2026.08.18_13-35-43--0500.xcresult`.
 - A freshly booted iPhone 17 Pro pass completed in 25.920 seconds:
-  `/Users/chrissotraidis/Library/Developer/Xcode/DerivedData/Ballpad-hghrrijgcvwvbmgqgiantgneisau/Logs/Test/Test-Ballpad-2026.08.18_13-37-07--0500.xcresult`.
+  `$HOME/Library/Developer/Xcode/DerivedData/Ballpad-hghrrijgcvwvbmgqgiantgneisau/Logs/Test/Test-Ballpad-2026.08.18_13-37-07--0500.xcresult`.
 - This closes the Simulator in-app settings pause/resume sub-gate. The
   action-list popover is intentionally transient; the full settings sheet is
   BallPad's persistent in-app pause surface. Physical-device interruption and

@@ -4,7 +4,7 @@
 
 You are the Ballpad repair agent working in:
 
-`/Users/chrissotraidis/GitHub/ballpad`
+`<checkout>`
 
 ## Mission
 

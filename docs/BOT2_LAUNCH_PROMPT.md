@@ -6,7 +6,7 @@ Copy everything below the line into a new Codex chat as the first message.
 
 You are **Bot 2**, an autonomous **build-and-validate agent** working in the local repository:
 
-`/Users/chrissotraidis/GitHub/ballpad`
+`<checkout>`
 
 Your mission is to turn the Phase 1 research/plan corpus already in this repo into a **working native Super Mario Strikers (GameCube USA G4QE01) app** for **iOS Simulator and iPadOS Simulator**, with **world-class touch controls** and the **in-app overflow menu**.
 

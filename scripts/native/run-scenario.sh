@@ -9,7 +9,7 @@
 # script owns everything around it that used to be typed by hand and therefore never
 # landed in the bundle: the task Simulator lock, the boot, the install, the save the
 # front end needs before it will skip its memcard popup, and the identity of every input
-# to the run (engine pin, fork head, fork tree, patch series, disc image, app binary).
+# to the run (engine pin, fork head, fork tree, disc image, app binary).
 #
 # The bundle is written the same way test.sh writes one: rows go through
 # lib/suite_report.py, so result.json, rows.tsv and suite-metadata.json agree, and a row
@@ -127,19 +127,16 @@ ENGINE_TREE="$(git -C "${ENGINE_DIR}" rev-parse 'HEAD^{tree}')"
 ENGINE_DIRTY="$(git -C "${ENGINE_DIR}" status --porcelain)"
 ASSET_SHA="$(sha256_of "${GAME_IMAGE}")"
 APP_SHA="$(sha256_of "$APP_BIN")"
-SERIES_FILE="${BUILD_ROOT}/patch-series.sha256"
-SERIES_SHA=""
-[ -f "$SERIES_FILE" ] && SERIES_SHA="$(cat "$SERIES_FILE")"
 
 PROVENANCE_FAIL=""
-[ -z "$ENGINE_DIRTY" ] || PROVENANCE_FAIL="engine fork has uncommitted edits no patch series carries: $(printf '%s' "$ENGINE_DIRTY" | tr '\n' ' ')"
+[ -z "$ENGINE_DIRTY" ] || PROVENANCE_FAIL="maintained engine has unpublished worktree edits: $(printf '%s' "$ENGINE_DIRTY" | tr '\n' ' ')"
 [ "$ASSET_SHA" = "$GAME_IMAGE_SHA256" ] || PROVENANCE_FAIL="${PROVENANCE_FAIL:+$PROVENANCE_FAIL; }disc image sha256 ${ASSET_SHA} is not the recorded baseline ${GAME_IMAGE_SHA256}"
 [ -n "$APP_SHA" ] || PROVENANCE_FAIL="${PROVENANCE_FAIL:+$PROVENANCE_FAIL; }could not hash ${APP_BIN}"
-[ -n "$SERIES_SHA" ] || PROVENANCE_FAIL="${PROVENANCE_FAIL:+$PROVENANCE_FAIL; }no patch series digest at ${SERIES_FILE}; run export-patches.sh"
+[ "$ENGINE_HEAD" = "$ENGINE_PIN" ] || PROVENANCE_FAIL="${PROVENANCE_FAIL:+$PROVENANCE_FAIL; }engine HEAD differs from maintained source pin"
+[ "$ENGINE_TREE" = "$ENGINE_SOURCE_TREE" ] || PROVENANCE_FAIL="${PROVENANCE_FAIL:+$PROVENANCE_FAIL; }engine tree differs from maintained source pin"
 
 log "engine pin ${ENGINE_PIN}"
 log "engine head ${ENGINE_HEAD} tree ${ENGINE_TREE}"
-log "patch series ${SERIES_SHA:-<none>}"
 log "disc image ${ASSET_SHA}"
 log "app binary ${APP_SHA}"
 
@@ -173,7 +170,7 @@ python3 "${BALLPAD_ROOT}/scripts/native/lib/driver.py" \
     --device "$DEVICE" --bundle-id "$IOS_BUNDLE_ID" \
     --app "$APP" --asset "$GAME_IMAGE" --asset-sha "$ASSET_SHA" \
     --engine-pin "$ENGINE_PIN" --engine-head "$ENGINE_HEAD" \
-    --patch-series "$SERIES_SHA" \
+    --engine-tree "$ENGINE_TREE" --engine-url "$ENGINE_URL" \
     --label "${SCENARIO_NAME}-${FORM_FACTOR}" \
     --scenario-path "$SCENARIO_PATH" --proof-dir "$PROOF_DIR" --run-id "$RUN_TAG" \
     --budget "$BUDGET" 2>&1 | tee "$LOG"
@@ -189,8 +186,8 @@ else
 fi
 
 if [ -z "$PROVENANCE_FAIL" ]; then
-    printf 'S.provenance\tPASS\tpin %s, fork %s tree %s clean, series %s, disc %s, app %s\t%s\n' \
-        "${ENGINE_PIN:0:12}" "${ENGINE_HEAD:0:12}" "${ENGINE_TREE:0:12}" "${SERIES_SHA:0:12}" \
+    printf 'S.provenance\tPASS\tpin %s, fork %s tree %s clean, disc %s, app %s\t%s\n' \
+        "${ENGINE_PIN:0:12}" "${ENGINE_HEAD:0:12}" "${ENGINE_TREE:0:12}" \
         "${ASSET_SHA:0:12}" "${APP_SHA:0:12}" "$(basename "$PROOF_DIR")/rows.tsv" >> "$ROWS"
 else
     printf 'S.provenance\tFAIL\t%s\t%s\n' "$PROVENANCE_FAIL" "$(basename "$PROOF_DIR")/rows.tsv" >> "$ROWS"

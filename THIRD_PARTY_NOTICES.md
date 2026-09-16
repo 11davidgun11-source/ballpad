@@ -19,6 +19,7 @@ The identifiers in the first column are the component ids in that manifest.
 | `ode` | Open Dynamics Engine 0.5, vendored, with reconstructed changes | Historical ODE BSD-style for upstream portions; reconstructed changes unresolved | `notices/ode/LICENSE` |
 | `ffmpeg` | FFmpeg, used only for THP video decode | LGPL-2.1-or-later in the mobile configuration; GPL and nonfree parts disabled | `notices/ffmpeg/COPYING.LGPLv2.1`, `notices/ffmpeg/README.ballpad.md` |
 | `aurora-vendored-libs` | The third-party libraries Aurora vendors that this app actually links: abseil-cpp 20240722.0 (reaching the app through Dawn), fmt 12.1.0, FreeType 2.14.3, Dear ImGui v1.91.9b-docking, libpng v1.6.58, xxHash v0.8.3, zstd 1.5.7, and Tracy 6789e7d6, whose archive is on the link line but contributes no symbol to the app. RmlUi is off in this configuration; zlib-ng and SQLite are resolved from the SDK, so those vendored copies are not linked | Per-library: Apache-2.0, MIT, FTL or GPLv2, libpng-2.0, BSD-2-Clause, BSD-3-Clause. Reduced from Aurora's vendored list against the app's own link edge and the binary's symbol table rather than assumed | `notices/aurora-vendored-libs/README.md` and the ten per-library texts beside it |
+| `sunpad` | SunPad touch interface, pinned at `e43f0ea6` | GPL-3.0 | `notices/sunpad/LICENSE` |
 | `googletest` | GoogleTest, used by the engine's unit tests | BSD-3-Clause; not linked into the shipped app, so no notice is bundled | none - not shipped |
 
 ## Reading these notices honestly
@@ -43,3 +44,9 @@ Nothing in this directory proves that a licensor holds every underlying right in
 reconstructed material, and a license file attached to a statically linked library does not
 by itself discharge that library's distribution obligations. See `ATTRIBUTION.md` and
 `docs/native-strikers-release-readiness.md`.
+
+## BallPad original application code
+
+The `ballpad` inventory component covers original GPL-3.0-only application code.
+Its license and scope are bundled at `notices/ballpad/LICENSE` and
+`notices/ballpad/LICENSE-SCOPE.md`. Inherited components retain the notices above.

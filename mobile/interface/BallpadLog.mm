@@ -194,7 +194,7 @@ NSURL *BallpadDiagnosticsReportURL(
     [report appendFormat:@"generated=%@\n", BallpadTimestamp()];
     // Written down rather than left implicit, because the destination is the thing R1 row 10
     // changed: a reader of this file can see that nothing was sent anywhere.
-    [report appendString:@"destination=local file; no remote tracker, nothing uploaded\n\n"];
+    [report appendString:@"tracker=https://github.com/chrissotraidis/ballpad/issues\nattachment=local log; attach manually before submitting\n\n"];
     [report appendString:@"[Reporter Answers]\n"];
     for (NSString *key in @[@"problem", @"context", @"frequency"]) {
         NSString *value = BallpadRedacted(reporterAnswers[key] ?: @"");
@@ -204,10 +204,15 @@ NSURL *BallpadDiagnosticsReportURL(
     [report appendString:BallpadRedacted(technicalContext ?: @"unavailable")];
     if (![report hasSuffix:@"\n"])
         [report appendString:@"\n"];
+    [report appendString:@"\n[Control Layout]\n"];
+    for (NSString *key in @[@"SunPadControlOrigins", @"SunPadControlSizeScales",
+                            @"SunPadExperimentalDPadOrigin", @"SunPadExperimentalDPadScale"])
+        [report appendFormat:@"%@=%@\n", key,
+            [NSUserDefaults.standardUserDefaults objectForKey:key] ?: @"default"];
     [report appendString:@"\n[BallPad Adapter Log]\n"];
-    [report appendString:BallpadTailOfFile(BallpadLogPath(), BallpadReportTailBytes)];
+    [report appendString:BallpadRedacted(BallpadTailOfFile(BallpadLogPath(), BallpadReportTailBytes))];
     [report appendString:@"\n[Vendored Interface Log]\n"];
-    [report appendString:BallpadTailOfFile(SunPadDiagnosticsLogPath(), BallpadReportTailBytes)];
+    [report appendString:BallpadRedacted(BallpadTailOfFile(SunPadDiagnosticsLogPath(), BallpadReportTailBytes))];
 
     NSString *directory = [BallpadDocumentsDirectory()
         stringByAppendingPathComponent:@"Diagnostics"];

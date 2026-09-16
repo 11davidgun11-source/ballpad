@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Verify the toolchain and pins, acquire the pinned engine into the ignored
-# working fork, apply the tracked patch series, and prepare platform
+# Verify the toolchain and pins, acquire the maintained engine into the ignored
+# source checkout at its pinned commit, and prepare platform
 # dependencies for macOS, the iOS Simulator and/or iOS device.
 #
 # Use: scripts/native/bootstrap.sh [--platform macos|simulator|device|all] [--fetch-only] [--skip-deps]
@@ -42,91 +42,23 @@ mkdir -p "$LOG_DIR" "$DEPS_ROOT"
 # ── 1. Engine checkout ────────────────────────────────────────────────────────
 fetch_engine() {
     if [ -d "${ENGINE_DIR}/.git" ]; then
-        log "engine fork already present at ${ENGINE_DIR}"
-        git -C "${ENGINE_DIR}" remote get-url upstream >/dev/null 2>&1 \
-            || die "existing checkout has no 'upstream' remote; refusing to guess"
+        [ -z "$(git -C "${ENGINE_DIR}" status --porcelain)" ] \
+            || die "engine checkout has local edits; commit and publish them in the maintained source fork before updating the pin"
     else
-        log "cloning ${ENGINE_URL}"
+        log "cloning maintained source ${ENGINE_URL}"
         mkdir -p "$(dirname "${ENGINE_DIR}")"
         git clone --quiet "${ENGINE_URL}" "${ENGINE_DIR}"
-        git -C "${ENGINE_DIR}" remote rename origin upstream
+        git -C "${ENGINE_DIR}" checkout --quiet --detach "${ENGINE_PIN}"
     fi
 
     if ! git -C "${ENGINE_DIR}" cat-file -e "${ENGINE_PIN}^{commit}" 2>/dev/null; then
-        log "fetching pin ${ENGINE_PIN}"
-        git -C "${ENGINE_DIR}" fetch --quiet upstream "${ENGINE_PIN}"
+        git -C "${ENGINE_DIR}" fetch --quiet "${ENGINE_URL}" "${ENGINE_PIN}"
     fi
-    git -C "${ENGINE_DIR}" cat-file -e "${ENGINE_PIN}^{commit}" \
-        || die "pin ${ENGINE_PIN} is not available in the fork"
-
-    if git -C "${ENGINE_DIR}" show-ref --verify --quiet "refs/heads/${ENGINE_BRANCH}"; then
-        git -C "${ENGINE_DIR}" checkout --quiet "${ENGINE_BRANCH}"
-    else
-        git -C "${ENGINE_DIR}" checkout --quiet -b "${ENGINE_BRANCH}" "${ENGINE_PIN}"
-    fi
-    log "engine HEAD: $(git -C "${ENGINE_DIR}" rev-parse HEAD)"
-}
-
-# ── 2. Patch series ───────────────────────────────────────────────────────────
-# The series is the source of truth: a change that only exists in the ignored fork
-# is a bug this function surfaces. An up-to-date fork is recognised by undoing the
-# series, not by testing one patch at a time.
-#
-# Undoing the whole series in a scratch index and comparing the result with the
-# pin's tree is "pin + series is what is checked out", read backwards: patch N's
-# post-image is the tree patch N+1 starts from, so reversing in reverse order
-# always lines up. Testing each patch on its own does not survive a mature series
-# -- patch 0005's post-image stops being in the tree once a later patch touches the
-# same include block -- so a per-patch reverse check calls an applied patch
-# unapplied and the build stops on a fork that is already correct. Keeping the
-# result in a scratch index is what keeps this a check: the worktree is untouched.
-series_undoes_to_pin() {
-    local series="$1" scratch pin_tree applied
-    # A dirty worktree is not this function's question. Fall through to the
-    # per-patch path, which reports it, rather than calling a dirty tree applied.
-    git -C "${ENGINE_DIR}" diff --quiet || return 1
-    git -C "${ENGINE_DIR}" diff --cached --quiet || return 1
-    pin_tree="$(git -C "${ENGINE_DIR}" rev-parse "${ENGINE_PIN}^{tree}" 2>/dev/null)" || return 1
-    [ -n "$pin_tree" ] || return 1
-
-    mkdir -p "${BUILD_ROOT}/tmp"
-    scratch="${BUILD_ROOT}/tmp/patch-series-index.$$"
-    GIT_INDEX_FILE="$scratch" git -C "${ENGINE_DIR}" read-tree HEAD 2>/dev/null || return 1
-    for applied in $(echo "$series" | LC_ALL=C sort -r); do
-        GIT_INDEX_FILE="$scratch" git -C "${ENGINE_DIR}" apply --cached -R "$applied" \
-            >/dev/null 2>&1 || return 1
-    done
-    [ "$(GIT_INDEX_FILE="$scratch" git -C "${ENGINE_DIR}" write-tree)" = "$pin_tree" ]
-}
-
-apply_patches() {
-    local series
-    series="$(find "${PATCH_DIR}" -name '*.patch' -o -name '*.diff' 2>/dev/null | LC_ALL=C sort)"
-    if [ -z "$series" ]; then
-        warn "no patch series in ${PATCH_DIR}; the fork must already match the pin"
-        return 0
-    fi
-
-    if series_undoes_to_pin "$series"; then
-        log "patch series: the checkout is already pin + series ($(echo "$series" | wc -l | tr -d ' ') patch(es), each undone to the pin's tree)"
-        return 0
-    fi
-
-    local p applied=0 skipped=0
-    for p in $series; do
-        local rel="${p#${PATCH_DIR}/}"
-        if git -C "${ENGINE_DIR}" apply --check -R "$p" >/dev/null 2>&1; then
-            log "already applied: $rel"
-            skipped=$((skipped + 1))
-        elif git -C "${ENGINE_DIR}" apply --check "$p" >/dev/null 2>&1; then
-            git -C "${ENGINE_DIR}" apply "$p"
-            log "applied: $rel"
-            applied=$((applied + 1))
-        else
-            die "patch does not apply cleanly and is not already applied: $rel (the fork has edits that are not in the series, or the series is out of order)"
-        fi
-    done
-    log "patch series: $applied applied, $skipped already present"
+    [ "$(git -C "${ENGINE_DIR}" rev-parse HEAD)" = "${ENGINE_PIN}" ] \
+        || die "engine HEAD differs from the maintained pin ${ENGINE_PIN}; inspect and explicitly checkout the pin (bootstrap preserves existing work)"
+    [ "$(git -C "${ENGINE_DIR}" rev-parse 'HEAD^{tree}')" = "${ENGINE_SOURCE_TREE}" ] \
+        || die "engine source tree differs from the maintained pin"
+    log "maintained engine ${ENGINE_PIN}, tree ${ENGINE_SOURCE_TREE}"
 }
 
 # ── 3. Local asset identity (never redistributed, never written) ──────────────
@@ -330,11 +262,10 @@ prepare_deps() {
 }
 
 fetch_engine
-apply_patches
 verify_asset
 
 if [ "$FETCH_ONLY" = "1" ]; then
-    log "fetch-only: stopping after engine and patch verification"
+    log "fetch-only: stopping after maintained source verification"
     exit 0
 fi
 

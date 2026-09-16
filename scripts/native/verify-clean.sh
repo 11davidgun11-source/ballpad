@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Prove that the tracked patch series and the pinned dependency revisions are what
+# Prove that the maintained source commit and the pinned dependency revisions are what
 # actually build this app, without inheriting anything from the ignored working trees.
 #
-# Use: scripts/native/verify-clean.sh [--scope patches|stamps|app|all]
+# Use: scripts/native/verify-clean.sh [--scope source|stamps|app|all]
 #
-#   patches  the tracked series reapplies onto a clean checkout of the pin and
-#            reproduces the fork tree exactly; the fork has no unexported edits  (doc 34 B03, cheap)
+#   source   the clean local source is exactly the maintained commit and tree pin  (cheap)
 #   stamps   every pinned dependency the build consumes is present, stamped with the
 #            hash it was declared with, and agrees with the manifest                (doc 34 B04, cheap)
 #   app      a fresh clone of the fork plus a fresh output directory configures and
@@ -20,7 +19,7 @@
 # shellcheck source=common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-SCOPE="patches"
+SCOPE="source"
 while [ $# -gt 0 ]; do
     case "$1" in
         --scope) SCOPE="$2"; shift 2 ;;
@@ -31,7 +30,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SCOPE" in
-    patches|stamps|app|all) ;;
+    source|stamps|app|all) ;;
     *) die "unknown scope: $SCOPE" ;;
 esac
 
@@ -55,36 +54,25 @@ print("" if node is None else node)
 PY
 }
 
-# ── patches ───────────────────────────────────────────────────────────────────
-scope_patches() {
-    log "scope patches: series reapplies onto the pin and reproduces the fork tree"
+# ── source ────────────────────────────────────────────────────────────────────
+scope_source() {
+    log "scope source: clean maintained commit and tree"
     if [ ! -d "${ENGINE_DIR}/.git" ]; then
-        note_fail "no engine fork at ${ENGINE_DIR}"
+        note_fail "no maintained source at ${ENGINE_DIR}"
         return
     fi
-    local dirty
-    dirty="$(git -C "${ENGINE_DIR}" status --porcelain)"
-    if [ -n "$dirty" ]; then
-        note_fail "the fork has changes no patch would carry:"
-        printf '%s\n' "$dirty" | sed 's/^/       /' >&2
-    else
-        note_pass "fork worktree is clean, so the series is the complete record"
-    fi
-
-    if "${BALLPAD_ROOT}/scripts/native/export-patches.sh" --check-only > "${LOG_DIR}/verify-clean-patches.log" 2>&1; then
-        note_pass "series reproduces the fork tree from ${ENGINE_PIN:0:12}"
-    else
-        note_fail "series does not reproduce the fork tree; see ${LOG_DIR}/verify-clean-patches.log"
-    fi
-
-    local recorded computed
-    recorded="$(cat "${BUILD_ROOT}/patch-series.sha256" 2>/dev/null || true)"
-    computed="$(cat "${PATCH_DIR}"/*.patch | sha256_of /dev/stdin 2>/dev/null || true)"
-    if [ -n "$recorded" ] && [ "$recorded" = "$computed" ]; then
-        note_pass "patch series digest matches the recorded value (${computed:0:16})"
-    else
-        note_fail "patch series digest ${computed:0:16} does not match the recorded ${recorded:0:16}"
-    fi
+    [ -z "$(git -C "${ENGINE_DIR}" status --porcelain)" ] \
+        && note_pass "maintained source worktree is clean" \
+        || note_fail "maintained source has unpublished worktree edits"
+    [ "$(git -C "${ENGINE_DIR}" rev-parse HEAD)" = "$ENGINE_PIN" ] \
+        && note_pass "source HEAD matches ${ENGINE_PIN}" \
+        || note_fail "source HEAD differs from maintained pin ${ENGINE_PIN}"
+    [ "$(git -C "${ENGINE_DIR}" rev-parse 'HEAD^{tree}')" = "$ENGINE_SOURCE_TREE" ] \
+        && note_pass "source tree matches ${ENGINE_SOURCE_TREE}" \
+        || note_fail "source tree differs from maintained pin"
+    git -C "${ENGINE_DIR}" merge-base --is-ancestor "$UPSTREAM_PIN" "$ENGINE_PIN" \
+        && note_pass "upstream ancestry retained at ${UPSTREAM_PIN}" \
+        || note_fail "maintained source lost the declared upstream ancestry"
 }
 
 # ── stamps ────────────────────────────────────────────────────────────────────
@@ -186,15 +174,15 @@ scope_app() {
     root="$(mktemp -d)"
     trap 'rm -rf "$root"' RETURN
 
-    if ! git clone --quiet --local "${ENGINE_DIR}" "${root}/strikers" 2>"${root}/clone.log"; then
+    if ! git clone --quiet "${ENGINE_URL}" "${root}/strikers" 2>"${root}/clone.log"; then
         note_fail "could not clone the fork; see ${root}/clone.log"
         return
     fi
-    git -C "${root}/strikers" checkout --quiet "${ENGINE_BRANCH}" 2>>"${root}/clone.log" \
-        || { note_fail "clone has no ${ENGINE_BRANCH} branch"; return; }
+    git -C "${root}/strikers" checkout --quiet --detach "${ENGINE_PIN}" 2>>"${root}/clone.log" \
+        || { note_fail "clone has no maintained commit ${ENGINE_PIN}"; return; }
     local fresh_tree fork_tree
     fresh_tree="$(git -C "${root}/strikers" rev-parse HEAD^{tree})"
-    fork_tree="$(git -C "${ENGINE_DIR}" rev-parse HEAD^{tree})"
+    fork_tree="${ENGINE_SOURCE_TREE}"
     if [ "$fresh_tree" = "$fork_tree" ]; then
         note_pass "fresh clone of the fork is the same tree (${fresh_tree:0:16})"
     else
@@ -255,10 +243,10 @@ scope_app() {
 }
 
 case "$SCOPE" in
-    patches) scope_patches ;;
+    source)  scope_source ;;
     stamps)  scope_stamps ;;
     app)     scope_app ;;
-    all)     scope_patches; scope_stamps; scope_app ;;
+    all)     scope_source; scope_stamps; scope_app ;;
 esac
 
 if [ "$FAILURES" -ne 0 ]; then

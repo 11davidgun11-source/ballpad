@@ -652,7 +652,8 @@ class Driver(object):
             "configuration": self.args.configuration,
             "engine_pin": self.args.engine_pin or None,
             "engine_head": self.args.engine_head or None,
-            "patch_series_sha256": self.args.patch_series or None,
+            "engine_tree": self.args.engine_tree or None,
+            "engine_url": self.args.engine_url or None,
             "game_image": self.args.asset or None,
             "game_image_sha256": self.args.asset_sha or None,
             "seed": self.env.get("STRIKERS_SEED", "12345"),
@@ -704,6 +705,8 @@ class Driver(object):
             "engine": {
                 "pin": self.args.engine_pin,
                 "head": self.args.engine_head,
+                "tree": self.args.engine_tree,
+                "url": self.args.engine_url,
                 "binary": self.args.app,
                 "binary_sha256": sha256_of(bundle_executable(self.args.app) or "") if self.args.app else None,
             },
@@ -734,7 +737,8 @@ def main():
     parser.add_argument("--asset-sha", default="")
     parser.add_argument("--asset", default="")
     parser.add_argument("--configuration", default="Release")
-    parser.add_argument("--patch-series", default="")
+    parser.add_argument("--engine-tree", default="")
+    parser.add_argument("--engine-url", default="")
     parser.add_argument("--engine-pin", default="")
     parser.add_argument("--engine-head", default="")
     parser.add_argument("--budget", type=float, default=900.0)

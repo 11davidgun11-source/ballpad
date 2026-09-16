@@ -1,15 +1,17 @@
 {
   "schema": "ballpad-native-dependency-manifest/1",
   "generated_for": "Ballpad - Strikers iOS port (native engine)",
-  "generated_on": "2026-09-14",
+  "generated_on": "2026-09-16",
   "engine_pin": {
-    "repository": "https://github.com/new-coke/strikers",
-    "revision": "22649cb12c112454a34217429296c95bb181af8a",
-    "version": "v1.1.1",
-    "remote_name": "upstream",
-    "development_branch": "codex/ios-port",
-    "local_fork": "work/native/strikers",
-    "patch_series": "patches/native-strikers"
+    "repository": "https://github.com/chrissotraidis/strikers",
+    "revision": "37c0ad9a1d2b4fc5627943d737b9db54047f1f0e",
+    "version": "v1.1.1 + BallPad iOS/iPadOS integration",
+    "upstream_repository": "https://github.com/new-coke/strikers",
+    "upstream_revision": "22649cb12c112454a34217429296c95bb181af8a",
+    "upstream_version": "v1.1.1",
+    "remote_name": "origin",
+    "development_branch": "ballpad-ios",
+    "local_fork": "work/native/strikers"
   },
   "notes": [
     "shipped=planned means the component is expected to link into the shipped app; verify-notices.sh must confirm it against the built bundle before N7 claims PASS.",
@@ -31,13 +33,31 @@
       "name": "new-coke/strikers native port",
       "kind": "engine",
       "upstream": "https://github.com/new-coke/strikers",
-      "revision": "22649cb12c112454a34217429296c95bb181af8a",
-      "license": "MIT / CC0 for the port author's own material; reconstructed game code retains its own unsettled status",
-      "license_files": ["README.md", "smstrikers-port/LICENSE-BSD.TXT", "smstrikers-port/LICENSE-CC0.txt", "smstrikers-port/LICENSE-GPL-2.0.txt", "smstrikers-port/LICENSE-LGPL-2.1.txt"],
-      "local_modifications": "Authored port fixes only until N7; the exported patch series records every change with original authorship preserved.",
-      "notices": ["strikers/README.upstream.md", "strikers/LICENSE-BSD.TXT", "strikers/LICENSE-CC0.txt", "strikers/LICENSE-GPL-2.0.txt", "strikers/LICENSE-LGPL-2.1.txt"],
+      "revision": "37c0ad9a1d2b4fc5627943d737b9db54047f1f0e",
+      "license": "CC0 1.0 for the port author's own material within their rights, except where otherwise noted; reconstructed game code retains its own unsettled status",
+      "license_files": [
+        "README.md",
+        "smstrikers-port/LICENSE-BSD.TXT",
+        "smstrikers-port/LICENSE-CC0.txt",
+        "smstrikers-port/LICENSE-GPL-2.0.txt",
+        "smstrikers-port/LICENSE-LGPL-2.1.txt"
+      ],
+      "local_modifications": "iOS/iPadOS integration, compatibility fixes and diagnostics maintained as commits in chrissotraidis/strikers, with upstream history preserved.",
+      "notices": [
+        "strikers/README.upstream.md",
+        "strikers/LICENSE-BSD.TXT",
+        "strikers/LICENSE-CC0.txt",
+        "strikers/LICENSE-GPL-2.0.txt",
+        "strikers/LICENSE-LGPL-2.1.txt"
+      ],
       "shipped": "yes",
-      "shipped_targets": ["macos", "simulator", "device"]
+      "shipped_targets": [
+        "macos",
+        "simulator",
+        "device"
+      ],
+      "maintained_repository": "https://github.com/chrissotraidis/strikers",
+      "upstream_revision": "22649cb12c112454a34217429296c95bb181af8a"
     },
     {
       "id": "smstrikers-decomp",
@@ -46,11 +66,22 @@
       "upstream": "https://github.com/yannicksuter/smstrikers-decomp",
       "revision": "vendored into the port tree; source list at smstrikers-port/build-sources.txt",
       "license": "No upstream license grants redistribution rights; rights status remains unresolved and must not be presented as cleared.",
-      "license_files": ["smstrikers-port/LICENSE-GPL-2.0.txt", "smstrikers-port/LICENSE-LGPL-2.1.txt"],
-      "local_modifications": "none",
-      "notices": ["smstrikers-decomp/README.md", "smstrikers-decomp/LICENSE-GPL-2.0.txt", "smstrikers-decomp/LICENSE-LGPL-2.1.txt"],
+      "license_files": [
+        "smstrikers-port/LICENSE-GPL-2.0.txt",
+        "smstrikers-port/LICENSE-LGPL-2.1.txt"
+      ],
+      "local_modifications": "Maintained engine commits include compatibility fixes, diagnostics and host integration in reconstructed Game, NL and MSL source paths; upstream authorship is preserved. Vendored ODE and MusyX are unchanged by these local adaptations.",
+      "notices": [
+        "smstrikers-decomp/README.md",
+        "smstrikers-decomp/LICENSE-GPL-2.0.txt",
+        "smstrikers-decomp/LICENSE-LGPL-2.1.txt"
+      ],
       "shipped": "yes",
-      "shipped_targets": ["macos", "simulator", "device"]
+      "shipped_targets": [
+        "macos",
+        "simulator",
+        "device"
+      ]
     },
     {
       "id": "aurora",
@@ -59,11 +90,19 @@
       "upstream": "https://github.com/encounter/aurora",
       "revision": "vendored in smstrikers-port/extern/aurora at the engine pin",
       "license": "MIT",
-      "license_files": ["smstrikers-port/extern/aurora/LICENSE"],
-      "local_modifications": "Vendored upstream patches plus Ballpad-authored fixes (patch series).",
-      "notices": ["aurora/LICENSE"],
+      "license_files": [
+        "smstrikers-port/extern/aurora/LICENSE"
+      ],
+      "local_modifications": "Vendored upstream adaptations plus BallPad iOS integration, recorded in the maintained engine source.",
+      "notices": [
+        "aurora/LICENSE"
+      ],
       "shipped": "yes",
-      "shipped_targets": ["macos", "simulator", "device"]
+      "shipped_targets": [
+        "macos",
+        "simulator",
+        "device"
+      ]
     },
     {
       "id": "dawn",
@@ -73,11 +112,19 @@
       "revision": "1155e0ed531126f33a1279afa029349651ca1c93",
       "version": "AURORA_DAWN_VERSION v20260807.225922",
       "license": "BSD-3-Clause",
-      "license_files": ["LICENSE (in the pinned Dawn source tree)"],
+      "license_files": [
+        "LICENSE (in the pinned Dawn source tree)"
+      ],
       "local_modifications": "none; built from the pinned ref",
-      "notices": ["dawn/LICENSE"],
+      "notices": [
+        "dawn/LICENSE"
+      ],
       "shipped": "yes",
-      "shipped_targets": ["macos", "simulator", "device"],
+      "shipped_targets": [
+        "macos",
+        "simulator",
+        "device"
+      ],
       "platform_note": "The Aurora provider regex maps an iOS Simulator arm64 configure onto the device prebuilt archive, so Simulator builds must use AURORA_DAWN_PROVIDER=vendor and build from source."
     },
     {
@@ -88,11 +135,19 @@
       "revision": "refs/tags/release-3.4.10",
       "version": "3.4.10",
       "license": "Zlib",
-      "license_files": ["LICENSE.txt (in the pinned SDL3 source tree)"],
+      "license_files": [
+        "LICENSE.txt (in the pinned SDL3 source tree)"
+      ],
       "local_modifications": "none",
-      "notices": ["sdl3/LICENSE.txt"],
+      "notices": [
+        "sdl3/LICENSE.txt"
+      ],
       "shipped": "yes",
-      "shipped_targets": ["macos", "simulator", "device"]
+      "shipped_targets": [
+        "macos",
+        "simulator",
+        "device"
+      ]
     },
     {
       "id": "musyx",
@@ -101,11 +156,19 @@
       "upstream": "https://github.com/Axiomatic-Data-Laboratories/musyx",
       "revision": "vendored in smstrikers-port/extern/musyx at the engine pin",
       "license": "MIT (upstream notice preserved)",
-      "license_files": ["smstrikers-port/extern/musyx/LICENSE"],
+      "license_files": [
+        "smstrikers-port/extern/musyx/LICENSE"
+      ],
       "local_modifications": "none",
-      "notices": ["musyx/LICENSE"],
+      "notices": [
+        "musyx/LICENSE"
+      ],
       "shipped": "yes",
-      "shipped_targets": ["macos", "simulator", "device"]
+      "shipped_targets": [
+        "macos",
+        "simulator",
+        "device"
+      ]
     },
     {
       "id": "ode",
@@ -114,11 +177,20 @@
       "upstream": "https://www.ode.org/",
       "revision": "vendored in smstrikers-port/src/ode and include/ode at the engine pin",
       "license": "Historical ODE BSD-style license for upstream portions; reconstructed changes carry the same unresolved game-code status",
-      "license_files": ["smstrikers-port/LICENSE-BSD.TXT", "smstrikers-port/src/ode/LICENSE"],
+      "license_files": [
+        "smstrikers-port/LICENSE-BSD.TXT",
+        "smstrikers-port/src/ode/LICENSE"
+      ],
       "local_modifications": "none",
-      "notices": ["ode/LICENSE"],
+      "notices": [
+        "ode/LICENSE"
+      ],
       "shipped": "yes",
-      "shipped_targets": ["macos", "simulator", "device"]
+      "shipped_targets": [
+        "macos",
+        "simulator",
+        "device"
+      ]
     },
     {
       "id": "ffmpeg",
@@ -127,11 +199,20 @@
       "upstream": "https://ffmpeg.org/",
       "revision": "macOS reference build: Homebrew libavcodec 62.28.102 (host only, must not enter mobile links)",
       "license": "LGPL-2.1-or-later for the enabled configuration; GPL/nonfree parts must stay disabled",
-      "license_files": ["notices/ffmpeg/COPYING.LGPLv2.1", "notices/ffmpeg/README.ballpad.md"],
+      "license_files": [
+        "notices/ffmpeg/COPYING.LGPLv2.1",
+        "notices/ffmpeg/README.ballpad.md"
+      ],
       "local_modifications": "mobile build uses a documented static THP-capable configuration; the exact configure line is recorded in notices/ffmpeg/README.ballpad.md",
-      "notices": ["ffmpeg/COPYING.LGPLv2.1", "ffmpeg/README.ballpad.md"],
+      "notices": [
+        "ffmpeg/COPYING.LGPLv2.1",
+        "ffmpeg/README.ballpad.md"
+      ],
       "shipped": "yes",
-      "shipped_targets": ["simulator", "device"],
+      "shipped_targets": [
+        "simulator",
+        "device"
+      ],
       "distribution_note": "Static linkage triggers LGPL relinking and corresponding-source obligations. The material that satisfies them for one platform is packaged by scripts/native/ffmpeg-relink-offer.sh into build/native/n7/ffmpeg-relink-offer/<platform>/: the exact link command, every link input with its SHA-256, the corresponding-source note (FFmpeg is unmodified, so the pinned archive plus the recorded configure line is its source), and ffmpeg-relink.sh, which re-runs that command against a substituted libavcodec.a/libavutil.a. Exercising it reproduced a byte-identical executable. That packages material for a future binary; it distributes nothing, and whether to distribute at all remains a separate, still-open decision."
     },
     {
@@ -141,7 +222,9 @@
       "upstream": "https://github.com/google/googletest",
       "revision": "v1.17.0",
       "license": "BSD-3-Clause",
-      "license_files": ["fetched into the build tree only"],
+      "license_files": [
+        "fetched into the build tree only"
+      ],
       "local_modifications": "none",
       "notices": [],
       "shipped": "no",
@@ -154,7 +237,9 @@
       "upstream": "see smstrikers-port/extern/aurora/extern/CMakeLists.txt",
       "revision": "reduced to the libraries the app actually links: abseil-cpp 20240722.0 (via Dawn), fmt 12.1.0, FreeType 2.14.3, Dear ImGui v1.91.9b-docking, libpng v1.6.58, xxHash v0.8.3, zstd 1.5.7, Tracy 6789e7d6f9a65ec98926b602097a33a9676d2606",
       "license": "Per-library: Apache-2.0 (abseil-cpp), MIT (fmt, Dear ImGui), FTL or GPLv2 (FreeType), libpng-2.0 (libpng), BSD-2-Clause (xxHash), BSD-3-Clause (zstd, Tracy)",
-      "license_files": ["copies of the vendored sources' own texts, listed per library in notices/aurora-vendored-libs/README.md"],
+      "license_files": [
+        "copies of the vendored sources' own texts, listed per library in notices/aurora-vendored-libs/README.md"
+      ],
       "local_modifications": "none",
       "notices": [
         "aurora-vendored-libs/README.md",
@@ -170,8 +255,54 @@
         "aurora-vendored-libs/zstd/LICENSE"
       ],
       "shipped": "yes",
-      "shipped_targets": ["macos", "simulator", "device"],
+      "shipped_targets": [
+        "macos",
+        "simulator",
+        "device"
+      ],
       "verification": "Reduced from Aurora's vendored list to the libraries on the app's own link edge in build/native/simulator-release/build.ninja (605 objects, 64 archives, 3 SDK stubs, 2 FFmpeg archives), then checked against the binary with nm -gU on the app piped through awk, sort -u and grep: absl 613, fmt 35, XXH 13, ZSTD_ 97, png_ 125, FT_ 53, ImGui 400 (ImGui_Impl 16), and zero for zng_, sqlite3_, Rml_ and tracy. RmlUi is off in this configuration (AURORA_ENABLE_RMLUI=OFF); zlib-ng and SQLite are satisfied by the SDK's libz.tbd and libsqlite3.tbd, so their vendored copies are unreachable. Tracy is on the link line but its archive is a 2,656-byte stub that contributes no symbol to the app; its text ships because the archive is linked. Each shipped text was copied byte-for-byte from the build tree that produced the binary and its source path is recorded in notices/aurora-vendored-libs/README.md. verify-notices.sh confirms the bundle carries exactly these files, unchanged."
+    },
+    {
+      "id": "sunpad",
+      "name": "SunPad touch interface",
+      "kind": "interface",
+      "upstream": "https://github.com/chrissotraidis/sunpad",
+      "revision": "e43f0ea6b797e5110787171957c9dc3c6213269c",
+      "license": "GPL-3.0",
+      "license_files": [
+        "LICENSE"
+      ],
+      "local_modifications": "None in the vendored interface; BallPad adaptation is maintained separately.",
+      "notices": [
+        "sunpad/LICENSE"
+      ],
+      "shipped": "yes",
+      "shipped_targets": [
+        "simulator",
+        "device"
+      ]
+    },
+    {
+      "id": "ballpad",
+      "name": "BallPad original app integration",
+      "kind": "application",
+      "upstream": "https://github.com/chrissotraidis/ballpad",
+      "revision": "Application source commit recorded in release source inventory",
+      "license": "GPL-3.0-only for original material; inherited code retains its own terms",
+      "license_files": [
+        "LICENSE",
+        "LICENSE-SCOPE.md"
+      ],
+      "local_modifications": "Original application integration, interface adaptations, build and test tooling",
+      "notices": [
+        "ballpad/LICENSE",
+        "ballpad/LICENSE-SCOPE.md"
+      ],
+      "shipped": "yes",
+      "shipped_targets": [
+        "simulator",
+        "device"
+      ]
     }
   ]
 }

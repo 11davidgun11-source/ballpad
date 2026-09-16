@@ -9,14 +9,16 @@ set -euo pipefail
 BALLPAD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly BALLPAD_ROOT
 
-# Engine pin. Kept in one place so bootstrap, export-patches and verify-clean agree.
-readonly ENGINE_URL="https://github.com/new-coke/strikers.git"
-readonly ENGINE_PIN="22649cb12c112454a34217429296c95bb181af8a"
-readonly ENGINE_BRANCH="codex/ios-port"
+# Maintained source pin. Bootstrap and provenance checks consume this exact commit.
+readonly ENGINE_URL="https://github.com/chrissotraidis/strikers.git"
+readonly ENGINE_PIN="37c0ad9a1d2b4fc5627943d737b9db54047f1f0e"
+readonly ENGINE_SOURCE_TREE="4ab84fed40b760f8bac4965603aa2f377ba6318c"
+readonly UPSTREAM_URL="https://github.com/new-coke/strikers.git"
+readonly UPSTREAM_PIN="22649cb12c112454a34217429296c95bb181af8a"
+readonly ENGINE_BRANCH="ballpad-ios"
 readonly ENGINE_DIR="${BALLPAD_ROOT}/work/native/strikers"
 readonly PORT_DIR="${ENGINE_DIR}/smstrikers-port"
 
-readonly PATCH_DIR="${BALLPAD_ROOT}/patches/native-strikers"
 readonly BUILD_ROOT="${BALLPAD_ROOT}/build/native"
 readonly LOG_DIR="${BUILD_ROOT}/logs"
 readonly DEPS_ROOT="${BUILD_ROOT}/deps"

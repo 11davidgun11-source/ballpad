@@ -52,6 +52,9 @@ if [ "$NO_BOOTSTRAP" = "0" ] && [ "$PLATFORM" != "macos" ]; then
     "${BALLPAD_ROOT}/scripts/native/bootstrap.sh" --platform "$PLATFORM"
 fi
 
+# --no-bootstrap skips dependency preparation, never source identity checks.
+"${BALLPAD_ROOT}/scripts/native/verify-clean.sh" --scope source
+
 configure_macos() {
     run_logged "$LOG" cmake -G Ninja -S "${PORT_DIR}" -B "${BUILD_DIR}" \
         -DCMAKE_BUILD_TYPE="${CONFIGURATION}" \

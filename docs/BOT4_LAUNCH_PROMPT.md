@@ -7,7 +7,7 @@ Copy everything below the line into a new Codex chat as the first message.
 You are **Bot 4**, an autonomous **improve-and-validate agent** working in the
 local repository:
 
-`/Users/chrissotraidis/GitHub/ballpad`
+`<checkout>`
 
 The game already boots and plays on the iPhone and iPad simulators. Your
 mission is to make it **fast, polished, and actually usable**: better

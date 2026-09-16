@@ -134,20 +134,17 @@ ENGINE_TREE="$(git -C "${ENGINE_DIR}" rev-parse "HEAD^{tree}")"
 ENGINE_DIRTY="$(git -C "${ENGINE_DIR}" status --porcelain)"
 ASSET_SHA="$(sha256_of "${GAME_IMAGE}")"
 APP_SHA="$(sha256_of "$APP_BIN")"
-SERIES_FILE="${BUILD_ROOT}/patch-series.sha256"
-SERIES_SHA=""
-[ -f "$SERIES_FILE" ] && SERIES_SHA="$(cat "$SERIES_FILE")"
 
 PROVENANCE_FAIL=""
-[ -z "$ENGINE_DIRTY" ] || PROVENANCE_FAIL="engine fork has uncommitted edits no patch series carries: $(printf "%s" "$ENGINE_DIRTY" | tr "\n" " ")"
+[ -z "$ENGINE_DIRTY" ] || PROVENANCE_FAIL="maintained engine has unpublished worktree edits: $(printf "%s" "$ENGINE_DIRTY" | tr "\n" " ")"
 [ "$ASSET_SHA" = "$GAME_IMAGE_SHA256" ] || PROVENANCE_FAIL="${PROVENANCE_FAIL:+$PROVENANCE_FAIL; }disc image sha256 ${ASSET_SHA} is not the recorded baseline ${GAME_IMAGE_SHA256}"
 [ -n "$APP_SHA" ] || PROVENANCE_FAIL="${PROVENANCE_FAIL:+$PROVENANCE_FAIL; }could not hash ${APP_BIN}"
-[ -n "$SERIES_SHA" ] || PROVENANCE_FAIL="${PROVENANCE_FAIL:+$PROVENANCE_FAIL; }no patch series digest at ${SERIES_FILE}; run export-patches.sh"
+[ "$ENGINE_HEAD" = "$ENGINE_PIN" ] || PROVENANCE_FAIL="${PROVENANCE_FAIL:+$PROVENANCE_FAIL; }engine HEAD differs from maintained source pin"
+[ "$ENGINE_TREE" = "$ENGINE_SOURCE_TREE" ] || PROVENANCE_FAIL="${PROVENANCE_FAIL:+$PROVENANCE_FAIL; }engine tree differs from maintained source pin"
 
 preflight "app bundle ${APP}"
 preflight "engine pin ${ENGINE_PIN}"
 preflight "engine head ${ENGINE_HEAD} tree ${ENGINE_TREE}"
-preflight "patch series ${SERIES_SHA:-none}"
 preflight "disc image ${ASSET_SHA}"
 preflight "app binary ${APP_SHA}"
 
@@ -432,7 +429,7 @@ else
 fi
 
 if [ -z "$PROVENANCE_FAIL" ]; then
-    printf "S.provenance\tPASS\tpin %s, fork %s tree %s clean, series %s, disc %s, app %s\t%s\n" "${ENGINE_PIN:0:12}" "${ENGINE_HEAD:0:12}" "${ENGINE_TREE:0:12}" "${SERIES_SHA:0:12}" "${ASSET_SHA:0:12}" "${APP_SHA:0:12}" "$(basename "$PROOF_DIR")/rows.tsv" >> "$ROWS"
+    printf "S.provenance\tPASS\tpin %s, fork %s tree %s clean, disc %s, app %s\t%s\n" "${ENGINE_PIN:0:12}" "${ENGINE_HEAD:0:12}" "${ENGINE_TREE:0:12}" "${ASSET_SHA:0:12}" "${APP_SHA:0:12}" "$(basename "$PROOF_DIR")/rows.tsv" >> "$ROWS"
 else
     printf "S.provenance\tFAIL\t%s\t%s\n" "$PROVENANCE_FAIL" "$(basename "$PROOF_DIR")/rows.tsv" >> "$ROWS"
 fi

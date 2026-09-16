@@ -341,7 +341,7 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   X blue / Y yellow / C yellow), direct linear stick mapping with 0.12
   deadzone.
 - **Reference:** bellpad source at
-  /Users/chrissotraidis/GitHub/bellpad (`apple/ios/BellpadGameOverlay.mm`).
+  $HOME/GitHub/bellpad (`apple/ios/BellpadGameOverlay.mm`).
   `ref/bellpad/` is intentionally empty (bellpad's original code is not
   outbound-licensed); see `ref/bellpad/README.md`.
 - **Open items:** visually verify the new layout on phone and iPad; hardware
@@ -376,7 +376,7 @@ _Add dated entries below when a gate fails twice or a fallback is taken._
   while the app is running; fresh-boot the sim before long gate runs.
 
 ## 2026-08-08 — Touch + menu iteration (user: "make the touch controls better, better menu etc, use examples")
-- Reference: bellpad's iOS overlay (/Users/chrissotraidis/GitHub/bellpad,
+- Reference: bellpad's iOS overlay ($HOME/GitHub/bellpad,
   apple/ios/BellpadGameOverlay.mm) — shoulder plates, Z plate, START pill,
   face circles, D-pad keys, opacity/scale sliders.
 - Touch: all controls now render bellpad-fidelity shapes (stick wells+thumbs,

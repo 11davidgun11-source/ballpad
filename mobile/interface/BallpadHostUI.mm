@@ -1023,6 +1023,9 @@ static void BallpadStickReset(UIView *stick)
 // owns the zone -- it is a subview of it -- so the zone must not be what keeps either alive.
 @property(nonatomic, weak) SunPadGameOverlay *host;
 @property(nonatomic) CGFloat stickRadius;
+@property(nonatomic) BOOL invisibleAtRest;
+@property(nonatomic, readonly) BOOL owning;
+- (void)restorePlantedPosition;
 - (void)ballpadEndTouch;
 @end
 
@@ -1036,6 +1039,8 @@ static void BallpadStickReset(UIView *stick)
     CGPoint _restCentre;
     BOOL _owning;
     BOOL _planted;
+    NSUInteger _moveSamples;
+    float _lastX, _lastY;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame
@@ -1051,6 +1056,14 @@ static void BallpadStickReset(UIView *stick)
         self.accessibilityElementsHidden = YES;
     }
     return self;
+}
+
+- (BOOL)owning { return _owning; }
+
+- (void)restorePlantedPosition
+{
+    if (_owning && self.stick.superview != nil)
+        self.stick.center = [self.superview convertPoint:_plantPoint toView:self.stick.superview];
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
@@ -1089,9 +1102,7 @@ static void BallpadStickReset(UIView *stick)
     [self ballpadEndTouch];
 }
 
-// The plant: the stick moves to the thumb and the value starts at the middle. The clamp is the
-// vendored editor's own -- half the control against half the space it has -- so a zone that came out
-// narrower than the stick centres the stick in it rather than inverting a range against itself.
+// Touch-down becomes the exact neutral origin, including at the screen edges.
 - (void)ballpadPlantAt:(CGPoint)point
 {
     UIView *overlay = self.superview;
@@ -1099,16 +1110,14 @@ static void BallpadStickReset(UIView *stick)
     if (overlay == nil || stick == nil || stick.superview == nil)
         return;
 
-    const CGRect zone = [self convertRect:self.bounds toView:overlay];
     const CGRect rest = [stick convertRect:stick.bounds toView:overlay];
-    const CGFloat halfWidth = MIN(CGRectGetWidth(rest) * 0.5, CGRectGetWidth(zone) * 0.5);
-    const CGFloat halfHeight = MIN(CGRectGetHeight(rest) * 0.5, CGRectGetHeight(zone) * 0.5);
-    _plantPoint = CGPointMake(MIN(MAX(point.x, CGRectGetMinX(zone) + halfWidth),
-                                  CGRectGetMaxX(zone) - halfWidth),
-                              MIN(MAX(point.y, CGRectGetMinY(zone) + halfHeight),
-                                  CGRectGetMaxY(zone) - halfHeight));
+    // Input starts exactly at the finger, including along screen edges.
+    _plantPoint = point;
+    stick.alpha = [SunPadSettings sharedSettings].controlOpacity;
     _restCentre = CGPointMake(CGRectGetMidX(rest), CGRectGetMidY(rest));
     _planted = YES;
+    _moveSamples = 0;
+    self.accessibilityValue = @"active";
 
     stick.center = [overlay convertPoint:_plantPoint toView:stick.superview];
     // Down and centred: the plant is the origin the value is read from, so the value it starts from
@@ -1142,7 +1151,7 @@ static void BallpadStickReset(UIView *stick)
     UIView *stick = self.stick;
     if (stick == nil)
         return;
-    BallpadStickPublishValue(stick, x, y);
+    BallpadStickPublishValue(stick, x, -y);
     [self.host stickChanged:stick x:x y:y];
 }
 
@@ -1164,6 +1173,9 @@ static void BallpadStickReset(UIView *stick)
         dx /= length;
         dy /= length;
     }
+    _moveSamples++;
+    _lastX = dx;
+    _lastY = -dy;
     [self ballpadPublishX:(float)dx y:(float)-dy];
 }
 
@@ -1175,6 +1187,10 @@ static void BallpadStickReset(UIView *stick)
     if (!_owning)
         return;
     _owning = NO;
+    BallpadLog(@"floating release: %@ samples %lu last %.3f,%.3f -> neutral; hidden %d",
+               self.stick.accessibilityIdentifier, (unsigned long)_moveSamples,
+               _lastX, _lastY, self.invisibleAtRest);
+    self.accessibilityValue = @"idle";
     UIView *stick = self.stick;
     if (stick != nil)
     {
@@ -1182,6 +1198,8 @@ static void BallpadStickReset(UIView *stick)
         if (_planted && self.superview != nil && stick.superview != nil)
             stick.center = [self.superview convertPoint:_restCentre toView:stick.superview];
     }
+    if (self.invisibleAtRest)
+        stick.alpha = 0.0;
     _planted = NO;
 }
 
@@ -1403,6 +1421,7 @@ static NSArray<UIView *> *BallpadControlsForHiddenIdentifier(UIView *overlay, NS
 @interface SunPadGameOverlay (BallpadMenuHooks)
 - (UIMenu *)buildMenu;
 - (void)refreshMenuButton;
+- (void)updateControlAppearance;
 - (void)confirmGameDataRemoval;
 - (void)reportProblem;
 @end
@@ -1415,11 +1434,144 @@ static NSArray<UIView *> *BallpadControlsForHiddenIdentifier(UIView *overlay, NS
 // editor keeps deciding how an edit behaves and this file only learns when one happened.
 @interface SunPadGameOverlay (BallpadEditorHooks)
 - (void)selectControlForEditing:(UIView *)control;
+- (void)beginLayoutEditing;
 - (void)endLayoutEditing;
 - (void)resetLayout;
 @end
 
+// A full sheet keeps the report readable when the iPad keyboard is visible.
+@interface BallpadReportViewController : UIViewController <UITextFieldDelegate, UITextViewDelegate>
+@property(nonatomic, strong) UIScrollView *formScroll;
+@property(nonatomic, strong) UITextField *summaryField;
+@property(nonatomic, strong) UITextView *detailsField;
+@property(nonatomic, strong) UISegmentedControl *frequency;
+@property(nonatomic, copy) void (^completion)(NSDictionary<NSString *, NSString *> *, NSInteger);
+@end
+
+@implementation BallpadReportViewController
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    UINavigationBar *bar = [UINavigationBar new];
+    bar.translatesAutoresizingMaskIntoConstraints = NO;
+    UINavigationItem *item = [[UINavigationItem alloc] initWithTitle:@"Report a Problem"];
+    item.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
+        target:self action:@selector(cancel)];
+    item.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Continue"
+        style:UIBarButtonItemStyleDone target:self action:@selector(prepare)];
+    item.rightBarButtonItem.accessibilityIdentifier = @"Prepare GitHub Report";
+    [bar setItems:@[item]];
+    [self.view addSubview:bar];
+    UIScrollView *scroll = [UIScrollView new];
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+    scroll.accessibilityIdentifier = @"BallpadReportForm";
+    self.formScroll = scroll;
+    [self.view addSubview:scroll];
+    UIStackView *stack = [UIStackView new];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 16;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [scroll addSubview:stack];
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [bar.topAnchor constraintEqualToAnchor:safe.topAnchor],
+        [bar.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+        [bar.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
+        [scroll.topAnchor constraintEqualToAnchor:bar.bottomAnchor],
+        [scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
+        [scroll.bottomAnchor constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor],
+        [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:24],
+        [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-24],
+        [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:24],
+        [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-24],
+        [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-48],
+    ]];
+    [stack addArrangedSubview:[self label:@"Help us reproduce the problem" style:UIFontTextStyleTitle2]];
+    [stack addArrangedSubview:[self label:@"Your report opens in the BallPad GitHub repository. A diagnostic log is saved on this device for you to attach. Nothing is submitted automatically." style:UIFontTextStyleBody]];
+    [stack addArrangedSubview:[self label:@"Summary" style:UIFontTextStyleHeadline]];
+    self.summaryField = [UITextField new];
+    self.summaryField.borderStyle = UITextBorderStyleRoundedRect;
+    self.summaryField.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    self.summaryField.adjustsFontForContentSizeCategory = YES;
+    self.summaryField.delegate = self;
+    self.summaryField.returnKeyType = UIReturnKeyNext;
+    self.summaryField.placeholder = @"What went wrong?";
+    self.summaryField.accessibilityLabel = @"What went wrong?";
+    [self.summaryField.heightAnchor constraintGreaterThanOrEqualToConstant:48].active = YES;
+    [stack addArrangedSubview:self.summaryField];
+    [stack addArrangedSubview:[self label:@"Steps and details" style:UIFontTextStyleHeadline]];
+    self.detailsField = [UITextView new];
+    self.detailsField.delegate = self;
+    self.detailsField.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    self.detailsField.adjustsFontForContentSizeCategory = YES;
+    self.detailsField.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    self.detailsField.layer.cornerRadius = 12;
+    self.detailsField.textContainerInset = UIEdgeInsetsMake(12, 12, 12, 12);
+    self.detailsField.accessibilityLabel = @"Steps and details";
+    [self.detailsField.heightAnchor constraintEqualToConstant:160].active = YES;
+    [stack addArrangedSubview:self.detailsField];
+    [stack addArrangedSubview:[self label:@"Include the game mode, stadium, and what happened before the problem." style:UIFontTextStyleFootnote]];
+    [stack addArrangedSubview:[self label:@"How often?" style:UIFontTextStyleHeadline]];
+    self.frequency = [[UISegmentedControl alloc] initWithItems:@[@"Always", @"Sometimes", @"Once", @"Not sure"]];
+    self.frequency.selectedSegmentIndex = 3;
+    self.frequency.accessibilityLabel = @"Problem frequency";
+    [self.frequency.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
+    [stack addArrangedSubview:self.frequency];
+    [stack addArrangedSubview:[self label:@"github.com/chrissotraidis/ballpad" style:UIFontTextStyleFootnote]];
+    for (NSInteger tag = 1; tag <= 2; tag++) {
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        UIButtonConfiguration *config = UIButtonConfiguration.tintedButtonConfiguration;
+        config.title = tag == 1 ? @"Share Report…" : @"Save to Files";
+        button.configuration = config;
+        button.tag = tag;
+        [button addTarget:self action:@selector(exportReport:) forControlEvents:UIControlEventTouchUpInside];
+        [stack addArrangedSubview:button];
+    }
+}
+- (UILabel *)label:(NSString *)text style:(UIFontTextStyle)style
+{
+    UILabel *label = [UILabel new];
+    label.text = text;
+    label.numberOfLines = 0;
+    label.font = [UIFont preferredFontForTextStyle:style];
+    label.adjustsFontForContentSizeCategory = YES;
+    label.textColor = [style isEqualToString:UIFontTextStyleFootnote] ? UIColor.secondaryLabelColor : UIColor.labelColor;
+    return label;
+}
+- (void)revealEditor:(UIView *)editor
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.view layoutIfNeeded];
+        CGRect rect = [editor convertRect:editor.bounds toView:self.formScroll];
+        [self.formScroll scrollRectToVisible:CGRectInset(rect, 0, -12) animated:YES];
+    });
+}
+- (void)textViewDidBeginEditing:(UITextView *)textView { [self revealEditor:textView]; }
+- (BOOL)textFieldShouldReturn:(UITextField *)textField
+{
+    [self.detailsField becomeFirstResponder];
+    return NO;
+}
+- (void)cancel { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)prepare { [self finish:0]; }
+- (void)exportReport:(UIButton *)sender { [self finish:sender.tag]; }
+- (void)finish:(NSInteger)destination
+{
+    NSDictionary *answers = @{@"problem": self.summaryField.text ?: @"",
+        @"context": self.detailsField.text ?: @"",
+        @"frequency": [self.frequency titleForSegmentAtIndex:self.frequency.selectedSegmentIndex] ?: @"Not sure"};
+    [self.view endEditing:YES];
+    void (^completion)(NSDictionary *, NSInteger) = self.completion;
+    [self dismissViewControllerAnimated:YES completion:^{ if (completion) completion(answers, destination); }];
+}
+@end
+
 @interface BallpadGameOverlay : SunPadGameOverlay
+@property(nonatomic, strong) UILongPressGestureRecognizer *ballpadRightPress;
 // The right shoulder's own press and appearance, wired and applied from -layoutSubviews; the flags
 // they read and set are above, next to the reason they exist.
 - (void)ballpadRightShoulderGesture:(UILongPressGestureRecognizer *)gesture;
@@ -1433,53 +1585,37 @@ static NSArray<UIView *> *BallpadControlsForHiddenIdentifier(UIView *overlay, NS
 
 #pragma mark - The menu
 
-// The vendored -buildMenu is still the composer and still decides the order. This override takes
-// its children and swaps only the rows doc 36's R1 list names, matching them by the title the
-// vendored method gave them -- every vendored identifier is nil, so the title is the only handle
-// that exists -- and passing anything unmatched straight through. That is what keeps the untouched
-// rows (the FPS toggle, Touch Control Settings) exactly as the vendored file built them, which is
-// the difference between adapting a menu and rewriting one.
-//
-// One structural change is this file's own rather than a swap: the top level is the player's page,
-// and the two rows that are instruments rather than controls -- the port's frame-rate limiter and
-// its audio recorder -- answer a question a player asks rarely, if ever. They live in one
-// Experimental submenu together (see -ballpadExperimentalMenu), which is why the vendored 60 FPS
-// row's slot is skipped rather than filled. The vendored file could not have composed this: its own
-// rows are peers by construction, and the source tree it is vendored from is not ours to reorder.
+// Retain the existing actions and their handlers, grouped by what the player changes.
 - (UIMenu *)buildMenu
 {
     UIMenu *vendored = [super buildMenu];
     if (vendored == nil)
         return nil;
-
-    NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
+    NSMutableArray<UIMenuElement *> *display = [NSMutableArray arrayWithArray:@[
+        [self ballpadRenderMenu], [self ballpadAspectMenu]]];
+    NSMutableArray<UIMenuElement *> *controls = [NSMutableArray array];
+    NSMutableArray<UIMenuElement *> *other = [NSMutableArray array];
     for (UIMenuElement *element in vendored.children)
     {
         NSString *title = element.title;
-        if ([title isEqualToString:@"Render Resolution"])
-            [children addObject:[self ballpadRenderMenu]];
-        else if ([title isEqualToString:@"Aspect Ratio"])
-            [children addObject:[self ballpadAspectMenu]];
-        else if ([title isEqualToString:@"Experimental Performance Mode (Restart Required)"])
-            [children addObject:[self ballpadExperimentalMenu]];
-        else if ([title isEqualToString:@"Experimental 60 FPS (Restart Required)"])
-            // Its slot is spent: the row lives in the Experimental submenu above, and a row that
-            // appeared in both places would be two rows for one switch. Skipping it here is what
-            // leaves the top level nine rows of things a player uses rather than eleven of them
-            // with the port's own instruments in among the game's.
-            continue;
+        if ([title isEqualToString:@"Show FPS Counter"])
+            [display addObject:element];
+        else if ([title isEqualToString:@"Controller Button Mapping…"] ||
+                 [title isEqualToString:@"Touch Control Settings…"])
+            [controls addObject:element];
         else if ([title isEqualToString:@"Game Data & Saves"])
-            [children addObject:[self ballpadGameDataMenu]];
-        else
-            [children addObject:element];
+            [other addObject:[self ballpadGameDataMenu]];
+        else if (![title isEqualToString:@"Render Resolution"] &&
+                 ![title isEqualToString:@"Aspect Ratio"] &&
+                 ![title hasPrefix:@"Experimental"])
+            [other addObject:element];
     }
-
-    // Item 15, appended last and never first: About belongs after the things a player uses.
+    NSMutableArray<UIMenuElement *> *children = [NSMutableArray arrayWithArray:@[
+        [UIMenu menuWithTitle:@"Display" children:display],
+        [UIMenu menuWithTitle:@"Controls" children:controls],
+        [self ballpadExperimentalMenu]]];
+    [children addObjectsFromArray:other];
     [children addObject:[self ballpadAboutAction]];
-
-    // Spelled the way the Home screen spells it, because this is the same fact: the menu header
-    // and the app icon read from one string. BallpadAppDisplayName reads the bundle rather than
-    // repeating the literal, so the capital P cannot drift from the bundle's own spelling.
     return [UIMenu menuWithTitle:BallpadAppDisplayName() children:children];
 }
 
@@ -1577,20 +1713,11 @@ static NSArray<UIView *> *BallpadControlsForHiddenIdentifier(UIView *overlay, NS
 
 #pragma mark - The Experimental submenu
 
-// The two rows that are the port's instruments rather than the game's controls, under one honest
-// header. Both are switches whose meaning is a state you cannot see from the top level -- one holds
-// the frame limiter open, the other is holding a take open -- which is the other reason they belong
-// behind a row rather than beside Render Resolution, where they would read as display options.
-//
-// The leaves are named for the state the checkmark means, not for the vendored row's subject:
-// "60 FPS" was the emulator's boot mode and this port has none, so a leaf called 60 FPS would name
-// a thing the action does not do. What it does is what the port's own accessor reports, and the
-// alert the row raises still states the resulting limit rather than restating the label.
+// Advanced frame-rate control stays separate from everyday display settings.
 - (UIMenu *)ballpadExperimentalMenu
 {
     return [UIMenu menuWithTitle:@"Experimental" children:@[
         [self ballpadFrameLimitAction],
-        [self ballpadAudioRecordingAction],
     ]];
 }
 
@@ -1652,230 +1779,6 @@ static NSArray<UIView *> *BallpadControlsForHiddenIdentifier(UIView *overlay, NS
     return action;
 }
 
-#pragma mark - Audio recording (R2)
-
-// Where the row writes. Ballpad's own log directory, because that is the one place this app owns
-// that a person can reach through Files, and a recording nobody can get at is not a recording. The
-// name carries the start time, so two takes in one run do not collide, and it is spelled with a
-// POSIX formatter: the file name is a timestamp rather than a sentence, and a locale that writes a
-// date differently would otherwise change the name of a file other tools read.
-static NSString *BallpadAudioRecordingPath(void)
-{
-    NSDateFormatter *formatter = [NSDateFormatter new];
-    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-    formatter.dateFormat = @"yyyyMMdd-HHmmss";
-    return [BallpadLogPath().stringByDeletingLastPathComponent
-            stringByAppendingPathComponent:[NSString stringWithFormat:@"audio-%@.wav",
-                                            [formatter stringFromDate:NSDate.date]]];
-}
-
-// What the file the row just closed actually holds, read back out of the file rather than
-// remembered from what the row asked for. The dump's own bookkeeping -- "dumping 1" and a rising
-// frame count -- is what the mixer handed to the device, and it says nothing about whether any of
-// it was audible: a silent transport hands over silent frames. The bytes are the only thing that
-// says, so the stop alert is built from this reading, and it can say "silent" when the take is.
-typedef struct
-{
-    BOOL readable;          // a RIFF/WAVE file whose fmt and data chunks both parsed
-    unsigned long frames;   // the data chunk's own length, in frames
-    unsigned int sampleRate;
-    unsigned int channels;
-    unsigned int peak;      // largest |sample| in the file, 0 when every sample is zero
-} BallpadRecordingReading;
-
-// The path the current take is being written to. The stop tap has to read that file back, and the
-// engine keeps no record of where it was told to write.
-static NSString *s_ballpadRecordingPath;
-
-static unsigned int BallpadReadLE(const unsigned char *p, unsigned int bytes)
-{
-    unsigned int value = 0;
-    for (unsigned int i = 0; i < bytes; ++i)
-        value |= (unsigned int)p[i] << (8 * i);
-    return value;
-}
-
-// The audible floor. A 32nd-magnitude step out of 32767 is about -60 dBFS: below the noise floor
-// of anything a person would call a recording, and above the stray single-bit value a silent device
-// buffer can still hand over.
-static const unsigned int kBallpadAudiblePeak = 32;
-
-static BallpadRecordingReading BallpadReadRecording(NSString *path)
-{
-    BallpadRecordingReading reading = { NO, 0, 0, 0, 0 };
-    if (path.length == 0)
-        return reading;
-
-    NSData *data = [NSData dataWithContentsOfFile:path];
-    if (data.length < 44)
-        return reading;
-
-    const unsigned char *bytes = (const unsigned char *)data.bytes;
-    if (memcmp(bytes, "RIFF", 4) != 0 || memcmp(bytes + 8, "WAVE", 4) != 0)
-        return reading;
-
-    // The chunks are walked the way any reader walks them rather than by the offsets this app's own
-    // writer happens to use, so a file that reached disk with its chunks in another order still
-    // reads as a file.
-    BOOL haveFormat = NO;
-    unsigned long offset = 12;
-    while (offset + 8 <= (unsigned long)data.length)
-    {
-        const unsigned int chunkBytes = BallpadReadLE(bytes + offset + 4, 4);
-        if (memcmp(bytes + offset, "fmt ", 4) == 0 && offset + 24 <= (unsigned long)data.length)
-        {
-            reading.channels = BallpadReadLE(bytes + offset + 10, 2);
-            reading.sampleRate = BallpadReadLE(bytes + offset + 12, 4);
-            haveFormat = YES;
-        }
-        else if (memcmp(bytes + offset, "data", 4) == 0)
-        {
-            reading.frames = chunkBytes / (2 * sizeof(short));   // 2 channels of 16-bit samples
-            const unsigned char *pcm = bytes + offset + 8;
-            unsigned long samples = (unsigned long)reading.frames * 2;
-            const unsigned long available = ((unsigned long)data.length - (offset + 8)) / 2;
-            if (samples > available)
-                samples = available;                              // a short file reads short, not past its end
-            for (unsigned long i = 0; i < samples; ++i)
-            {
-                const short sample = (short)BallpadReadLE(pcm + i * 2, 2);
-                const unsigned int magnitude = sample < 0 ? (unsigned int)(-(int)sample)
-                                                           : (unsigned int)sample;
-                if (magnitude > reading.peak)
-                    reading.peak = magnitude;
-            }
-            reading.readable = haveFormat;
-            return reading;
-        }
-        offset += 8 + chunkBytes + (chunkBytes & 1);   // chunks are word-aligned
-    }
-    return reading;
-}
-
-// The slot the vendored menu spends on an emulated CPU clock, re-bound to the thing a native port
-// can actually do with it. That row's switch slowed an emulator down by 10 per cent, and this
-// runtime has no emulated clock to slow, so shipping it would be the inert switch doc 33 forbids
-// and rebuilding it under another name would be the same switch with a better label. The port does
-// have its own mixer and its own transport, though, and the honest experimental thing to expose
-// from them is the one operation a player can check for themselves: record exactly the bytes the
-// audio device is handed, so "the game is making a sound" and "the sound is the one the models on
-// screen are making" stop being the same question. It writes a WAV into Ballpad's log directory,
-// and every part of the row -- the alert, the checkmark, the log -- reads its state back from the
-// mixer's own dump fields rather than remembering what the last tap asked for.
-- (UIAction *)ballpadAudioRecordingAction
-{
-    __weak BallpadGameOverlay *weakSelf = self;
-    UIAction *action =
-        [UIAction actionWithTitle:@"Record Audio (Experimental)"
-                            image:[UIImage systemImageNamed:@"waveform"]
-                       identifier:nil
-                          handler:^(__kindof UIAction *selected) {
-        (void)selected;
-        [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
-
-        // One read, for the three facts this handler needs: whether the mixer ever ran, whether it
-        // is dumping now, and what the transport makes of the device.
-        PortAudioMixInfo mix;
-        PortAudioMixStats(&mix);
-        const BOOL deviceOpen = PortAudioDeviceOpen() != 0;
-
-        NSString *title = nil;
-        NSString *message = nil;
-
-        if (mix.dumping)
-        {
-            // The length is taken before the stop, because stopping is what hands the file its
-            // header and the count afterwards belongs to no file.
-            const unsigned long frames = mix.dumpFrames;
-            PortAudioDumpStop();
-
-            // Then the file is read back, because that counter is what the mixer handed over and
-            // not what the take sounds like. The Simulator showed the difference: a run where the
-            // transport was silent throughout wrote a well-formed WAV whose every sample was zero,
-            // and a row that stopped at the count called it a recording.
-            const BallpadRecordingReading file = BallpadReadRecording(s_ballpadRecordingPath);
-            NSString *audibility = nil;
-            if (!file.readable)
-                audibility = @"The file could not be read back to check what is in it, so its "
-                              "length is the mixer's alone.";
-            else if (file.frames != frames)
-                audibility = [NSString stringWithFormat:
-                    @"The file holds %lu frames where the mixer reported %lu, so what reached the "
-                     "disk is not the whole take.",
-                    file.frames, frames];
-            else if (file.peak < kBallpadAudiblePeak)
-                audibility = @"Nothing audible was playing while it ran: no sample in it is louder "
-                              "than 31 of 32767, so this take is silence rather than a failed "
-                              "recording.";
-            else
-                audibility = [NSString stringWithFormat:@"Its loudest sample is %u of 32767.",
-                                                        file.peak];
-
-            title = @"Recording Stopped";
-            message = [NSString stringWithFormat:
-                @"%lu frames, %.1f seconds at 32000 Hz. %@ The file is complete and sits with "
-                 "BallPad's own log, where the Files app can reach it.",
-                frames, (double)frames / 32000.0, audibility];
-            BallpadLog(@"menu: audio recording stopped after %lu frames; read back %lu frames, "
-                        "peak %u, %u Hz",
-                       frames, file.frames, file.peak, file.sampleRate);
-        }
-        else if (!deviceOpen)
-        {
-            // An audio-off run and a device that failed to open land here together, and both of
-            // them are more useful said out loud than recorded as an empty file.
-            title = @"Nothing to Record";
-            message = @"The port has no audio device open, so there are no bytes to write. "
-                       "Sound has to be on and working before this row can record it.";
-            BallpadLog(@"menu: audio recording refused; the port has no audio device open");
-        }
-        else
-        {
-            NSString *path = BallpadAudioRecordingPath();
-            // Kept because the stop tap reads this file back, and reading it back is the point:
-            // the engine puts the length in the header when it closes, and only the bytes say
-            // whether the take is audible.
-            s_ballpadRecordingPath = path;
-            if (PortAudioDumpStart(path.UTF8String))
-            {
-                title = @"Recording";
-                message = [NSString stringWithFormat:
-                    @"Now writing what the audio device is given to:\n%@\n\nTap this row again "
-                     "to stop; the file is finished when the stop alert names its length.", path];
-                BallpadLog(@"menu: audio recording started at %@", path);
-            }
-            else
-            {
-                title = @"Recording Failed";
-                message = [NSString stringWithFormat:
-                    @"BallPad could not open %@ for writing. This row needs no game data and no "
-                     "setting, so a failure here is the file system's.", path];
-                BallpadLog(@"menu: audio recording could not open %@", path);
-            }
-        }
-
-        // Written after the action, so the line and the checkmark the rebuild below publishes
-        // cannot disagree about which side of the toggle this run is on.
-        BallpadLogAudioTarget(@"after the record row");
-
-        UIAlertController *alert =
-            [UIAlertController alertControllerWithTitle:title message:message
-                                         preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
-                                                  style:UIAlertActionStyleDefault
-                                                handler:nil]];
-        [weakSelf.window.rootViewController presentViewController:alert animated:YES completion:nil];
-        [weakSelf refreshMenuButton];
-    }];
-
-    // Read from the mixer every time the menu is built, which -refreshMenuButton causes after every
-    // tap. A flag remembered in this file would be a second opinion about a recording the port owns.
-    PortAudioMixInfo mix;
-    PortAudioMixStats(&mix);
-    action.state = mix.dumping ? UIMenuElementStateOn : UIMenuElementStateOff;
-    return action;
-}
-
 #pragma mark - Game data & saves (item 9)
 
 // The three rows are the vendored ones with the vendored handlers and the vendored icons; the
@@ -1929,72 +1832,25 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
 
 #pragma mark - Report a problem (item 10)
 
-// The vendored row calls this selector, so overriding it adapts the row's destination without
-// touching the row: same title, same icon, same three questions. What is different is where the
-// report goes. As vendored, a Ballpad report would open the interface project's issue tracker,
-// which is wrong for this app, and this assignment does not authorise messaging maintainers. So the
-// report is written on this device and offered two local endings -- share sheet, or Files -- and the
-// prompt says so before the report is made.
 - (void)reportProblem
 {
-    UIViewController *presenter = self.window.rootViewController;
-    if (presenter == nil)
-        return;
-
     NSString *reportID = BallpadNewReportID();
-    UIAlertController *prompt =
-        [UIAlertController alertControllerWithTitle:@"Report a Problem"
-                                            message:[NSString stringWithFormat:
-            @"Answer briefly and BallPad will add the technical details. Nothing is uploaded: the "
-             "report is written on this device and this app sends it nowhere, so the buttons below "
-             "either share the file you just created or put it in Files to attach it wherever you "
-             "choose. It never includes your game image, extracted files, saves, signing material, "
-             "or controller inputs. Report %@.", reportID]
-                                     preferredStyle:UIAlertControllerStyleAlert];
-    [prompt addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"What went wrong?";
-        field.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-    [prompt addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"Area and what you were doing (optional)";
-        field.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-    [prompt addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"Every time, sometimes, once, or not sure?";
-        field.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-    [prompt addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                               style:UIAlertActionStyleCancel
-                                             handler:nil]];
-
+    BallpadReportViewController *form = [BallpadReportViewController new];
     __weak BallpadGameOverlay *weakSelf = self;
-    UIAlertAction *share = [UIAlertAction actionWithTitle:@"Share Report…"
-                                                   style:UIAlertActionStyleDefault
-                                                 handler:^(UIAlertAction *action) {
-        (void)action;
-        [weakSelf ballpadShareReportFromPrompt:prompt reportID:reportID];
-    }];
-    [prompt addAction:share];
-    [prompt addAction:[UIAlertAction actionWithTitle:@"Save to Files"
-                                               style:UIAlertActionStyleDefault
-                                             handler:^(UIAlertAction *action) {
-        (void)action;
-        [weakSelf ballpadExportReportFromPrompt:prompt reportID:reportID];
-    }]];
-    prompt.preferredAction = share;
-    [presenter presentViewController:prompt animated:YES completion:nil];
+    form.completion = ^(NSDictionary *answers, NSInteger destination) {
+        if (destination == 1) [weakSelf ballpadShareReportFromPrompt:answers reportID:reportID];
+        else if (destination == 2) [weakSelf ballpadExportReportFromPrompt:answers reportID:reportID];
+        else [weakSelf ballpadPrepareGitHubReportFromPrompt:answers reportID:reportID];
+    };
+    BallpadPresentOverlayViewController(self, form);
+    form.sheetPresentationController.detents = @[UISheetPresentationControllerDetent.largeDetent];
 }
 
 // One report, built the same way for both endings so the two buttons differ only in destination.
 // Returns nil after saying why, because a nil report is a failure the player has to be told about
 // rather than a share sheet with nothing in it.
-- (NSURL *)ballpadReportURLFromPrompt:(UIAlertController *)prompt reportID:(NSString *)reportID
+- (NSURL *)ballpadReportURLFromPrompt:(NSDictionary<NSString *, NSString *> *)answers reportID:(NSString *)reportID
 {
-    NSDictionary<NSString *, NSString *> *answers = @{
-        @"problem": prompt.textFields.count > 0 ? (prompt.textFields[0].text ?: @"") : @"",
-        @"context": prompt.textFields.count > 1 ? (prompt.textFields[1].text ?: @"") : @"",
-        @"frequency": prompt.textFields.count > 2 ? (prompt.textFields[2].text ?: @"") : @"",
-    };
     // Both delegate answers, because a report a reader cannot tell a Simulator run from a device run
     // is a report that cannot be acted on.
     NSString *technical = [NSString stringWithFormat:@"%@\nperformance=%@",
@@ -2018,9 +1874,51 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
     return nil;
 }
 
-- (void)ballpadShareReportFromPrompt:(UIAlertController *)prompt reportID:(NSString *)reportID
+- (void)ballpadPrepareGitHubReportFromPrompt:(NSDictionary<NSString *, NSString *> *)answers reportID:(NSString *)reportID
 {
-    NSURL *url = [self ballpadReportURLFromPrompt:prompt reportID:reportID];
+    NSURL *report = [self ballpadReportURLFromPrompt:answers reportID:reportID];
+    if (report == nil)
+        return;
+    NSString *problem = answers[@"problem"] ?: @"";
+    NSString *context = answers[@"context"] ?: @"";
+    NSString *frequency = answers[@"frequency"] ?: @"";
+    NSString *body = [NSString stringWithFormat:
+        @"## Problem\n%@\n\n## Steps / context\n%@\n\n## Frequency\n%@\n\n"
+         "## App\n%@\n%@\n\n## Diagnostic log\nReport: %@\n"
+         "Attach `%@` from Files → BallPad → Diagnostics before submitting.\n",
+        problem, context ?: @"", frequency ?: @"",
+        [self.delegate gameOverlayDiagnosticContext:self],
+        [self.delegate gameOverlayPerformanceProfile:self], reportID, report.lastPathComponent];
+    NSURLComponents *issue = [NSURLComponents componentsWithString:
+        @"https://github.com/chrissotraidis/ballpad/issues/new"];
+    issue.queryItems = @[
+        [NSURLQueryItem queryItemWithName:@"title" value:problem.length > 0 ? problem : @"BallPad issue"],
+        [NSURLQueryItem queryItemWithName:@"body" value:body]];
+    UIAlertController *ready = [UIAlertController alertControllerWithTitle:@"Report Ready"
+        message:[NSString stringWithFormat:@"Log saved in Files → BallPad → Diagnostics:\n%@\n\n"
+            "Open GitHub, attach this log, then submit your issue.", report.lastPathComponent]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [ready addAction:[UIAlertAction actionWithTitle:@"Open GitHub" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *action) {
+            [UIApplication.sharedApplication openURL:issue.URL options:@{} completionHandler:^(BOOL success) {
+                if (!success) BallpadLog(@"report: could not open the BallPad issue tracker");
+            }];
+        }]];
+    [ready addAction:[UIAlertAction actionWithTitle:@"Share Log…" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *action) {
+            UIActivityViewController *share = [[UIActivityViewController alloc]
+                initWithActivityItems:@[report] applicationActivities:nil];
+            share.popoverPresentationController.sourceView = self;
+            share.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.bounds), 40, 1, 1);
+            [self.window.rootViewController presentViewController:share animated:YES completion:nil];
+        }]];
+    [ready addAction:[UIAlertAction actionWithTitle:@"Done" style:UIAlertActionStyleCancel handler:nil]];
+    [self.window.rootViewController presentViewController:ready animated:YES completion:nil];
+}
+
+- (void)ballpadShareReportFromPrompt:(NSDictionary<NSString *, NSString *> *)answers reportID:(NSString *)reportID
+{
+    NSURL *url = [self ballpadReportURLFromPrompt:answers reportID:reportID];
     if (url == nil)
         return;
 
@@ -2037,9 +1935,9 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
     [self.window.rootViewController presentViewController:share animated:YES completion:nil];
 }
 
-- (void)ballpadExportReportFromPrompt:(UIAlertController *)prompt reportID:(NSString *)reportID
+- (void)ballpadExportReportFromPrompt:(NSDictionary<NSString *, NSString *> *)answers reportID:(NSString *)reportID
 {
-    NSURL *url = [self ballpadReportURLFromPrompt:prompt reportID:reportID];
+    NSURL *url = [self ballpadReportURLFromPrompt:answers reportID:reportID];
     if (url == nil)
         return;
 
@@ -2069,6 +1967,12 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
 //   * and a control the player hid in the editor stays hidden, for the reason the hide section
 //     above gives. The editor's own toggle is placed from what those two decided, so it is
 //     refreshed in the same pass.
+- (void)updateControlAppearance
+{
+    [super updateControlAppearance];
+    [self ballpadApplyPlantedZones];
+}
+
 - (void)layoutSubviews
 {
     [super layoutSubviews];
@@ -2198,30 +2102,8 @@ static BallpadRecordingReading BallpadReadRecording(NSString *path)
 
 // -- The iPad default pass ---------------------------------------------------
 //
-// SunPad's vendored layout carries three sets of defaults, one per surface class, and the iPad set
-// is the only one that lands on top of itself. It is a list of normalized centres captured for a
-// reference tablet, and on this game's surface seven of the eleven controls are drawn inside one
-// bottom-right square. Measured on the iPad A16 build before this repair existed: c, A, B, Y, Z,
-// Start and R all overlapped, R reached 58pt past the safe rect's right edge before
-// -ballpadApplySafeAreaContainment pulled it back, and Z and B -- 62pt and 76pt wide, centres 10pt
-// apart in x and 60pt apart in y -- were drawn as one button. A player cannot press a control they
-// cannot see, and the whole face cluster, the camera stick and Start were inside it.
-//
-// The third set is the vendored file's own arithmetic, and it is the set the *same app* already uses
-// on an iPad: the vendored pass takes it whenever the safe rect is narrower than 1000pt, which is
-// every iPad in portrait. Landscape alone displaces it with the tablet constants. This applies that
-// arithmetic to the landscape surface, so the iPad draws what it already draws turned the other way:
-// margins measured from the safe rect, the two shoulders on one row at its top with Start centred on
-// that row and Z inboard of R, the move stick and the D-pad group bottom left, and the camera stick
-// with the face cluster around it bottom right. Every size stays the one the vendored pass derived
-// (they all follow the control size setting), and every number used here is either a vendored tablet
-// constant -- the 34pt margin and the 92pt shoulder row -- or a read of the live control it is placed
-// against, which is what keeps the whole cluster in step with a control that grows.
-//
-// A control the player has placed by hand is left exactly where they put it: a SunPadControlOrigins
-// entry is the same store entry the vendored pass reads, and its presence means the editor has
-// already answered this question. The editor's own session is skipped for the reason the shoulder
-// repair skips it.
+// iPad defaults use the live control sizes to keep the lower clusters separated.
+// Saved positions take priority. The same defaults apply in and out of the editor.
 static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint centre)
 {
     if (control == nil || control.accessibilityIdentifier.length == 0)
@@ -2240,19 +2122,16 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
 {
     if (self.traitCollection.userInterfaceIdiom != UIUserInterfaceIdiomPad)
         return;
-    if (BallpadOverlayIsEditingLayout(self))
-        return;
 
     CGRect safe = self.bounds;
     if (@available(iOS 11.0, *))
         safe = UIEdgeInsetsInsetRect(safe, self.safeAreaInsets);
     // The vendored pass takes the tablet constants under this exact condition, so this replaces that
     // set and reaches no other layout.
-    if (safe.size.width < 1000.0 || safe.size.height <= 0.0)
+    if (safe.size.width <= 0.0 || safe.size.height <= 0.0)
         return;
 
     const CGFloat margin = 34.0;
-    const CGFloat shoulderY = CGRectGetMinY(safe) + 92.0;
     const CGFloat scale = [SunPadSettings sharedSettings].controlSizeScale;
 
     NSMutableDictionary<NSString *, UIView *> *controls = [NSMutableDictionary dictionary];
@@ -2310,12 +2189,18 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
                         aCentre.y - as.height * 0.5 + 8.0 - ys.height * 0.5)))
         [placed addObject:@"Y"];
 
-    // One shoulder row at the top of the safe rect. R is deliberately not placed here: the repair
-    // below owns it and reads L's live frame, so the row has one author.
+    // Shoulders sit immediately above the face-button cluster, within thumb reach.
+    // R mirrors L in the shoulder repair below.
+    const CGFloat shoulderY = CGRectGetMinY(x.frame) - 18.0 * scale - ls.height;
     if (BallpadPlacePadControl(l, saved,
             CGPointMake(CGRectGetMinX(safe) + margin + ls.width * 0.5,
                         shoulderY + ls.height * 0.5)))
         [placed addObject:@"L"];
+    UIView *right = controls[@"R"];
+    if (BallpadPlacePadControl(right, saved,
+            CGPointMake(CGRectGetMaxX(safe) - margin - ls.width * 0.5,
+                        shoulderY + ls.height * 0.5)))
+        [placed addObject:@"R"];
     if (BallpadPlacePadControl(z, saved,
             CGPointMake(CGRectGetMaxX(safe) - margin - ls.width - 12.0 * scale - zs.width * 0.5,
                         shoulderY + zs.height * 0.5)))
@@ -2355,6 +2240,24 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
 
     if (!CGSizeEqualToSize(right.bounds.size, left.bounds.size))
         right.bounds = (CGRect){ .origin = CGPointZero, .size = left.bounds.size };
+    // The inherited spray-trigger width clamps a saved center too far inward.
+    // Reapply the saved center after restoring BallPad's actual button width.
+    id savedRight = [NSUserDefaults.standardUserDefaults dictionaryForKey:@"SunPadControlOrigins"][@"R"];
+    BOOL draggingRight = NO;
+    for (UIGestureRecognizer *gesture in right.gestureRecognizers)
+        if ([gesture isKindOfClass:UIPanGestureRecognizer.class] &&
+            (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged))
+            draggingRight = YES;
+    if (!draggingRight && [savedRight isKindOfClass:NSString.class])
+    {
+        CGPoint normalized = CGPointFromString(savedRight);
+        CGRect safe = UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets);
+        CGFloat halfW = right.bounds.size.width * 0.5;
+        CGFloat halfH = right.bounds.size.height * 0.5;
+        right.center = CGPointMake(
+            MIN(MAX(safe.origin.x + normalized.x * safe.size.width, CGRectGetMinX(safe) + halfW), CGRectGetMaxX(safe) - halfW),
+            MIN(MAX(safe.origin.y + normalized.y * safe.size.height, CGRectGetMinY(safe) + halfH), CGRectGetMaxY(safe) - halfH));
+    }
     right.layer.cornerRadius =
         MIN(CGRectGetWidth(right.bounds), CGRectGetHeight(right.bounds)) * 0.5;
     right.layer.masksToBounds = YES;
@@ -2394,20 +2297,8 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
     right.accessibilityHint = nil;
     right.accessibilityValue = nil;
 
-    // Where R is drawn, not only how big: the size, corner and border above already match L, and the
-    // two shoulders were still drawn as different things because the pair is not the same *shape of
-    // placement*. The vendored layout gives each shoulder its own normalized centre -- 0.0906 and
-    // 0.86875 on a phone, 0.1281 and 0.8960 on a pad -- and R's is neither L's mirror nor on L's
-    // row, so R was measured on this build sitting 7pt lower than L with 54pt between it and its
-    // edge where L had 24. The operator's reference is the left shoulder, so R is placed where L's
-    // mirror is: its distance from the surface's right edge is L's distance from the left, and it is
-    // drawn on L's row. Both numbers come from L's live frame and the surface's own width rather than
-    // from copies of the vendored constants, so the pair cannot drift as the vendored numbers move.
-    //
-    // The editor is the exception, for the reason the border above has one: while it is open the
-    // player is placing this control by hand, and a repair that kept pulling R back to L's mirror
-    // would be a drag that undoes itself.
-    if (!BallpadOverlayIsEditingLayout(self))
+    // Mirror only the default. A saved R position belongs to the player.
+    if (!BallpadOverlayIsEditingLayout(self) && savedRight == nil)
     {
         CGRect mirrored = right.frame;
         mirrored.origin.x = CGRectGetWidth(self.bounds) - CGRectGetMinX(left.frame)
@@ -2431,10 +2322,11 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
 // mechanisms from fighting each other.
 - (void)ballpadWireRightShoulder:(UIView *)right
 {
-    static const void *wiredKey = &wiredKey;
-    if (objc_getAssociatedObject(right, wiredKey) != nil)
+    if (self.ballpadRightPress != nil)
+    {
+        self.ballpadRightPress.enabled = !BallpadOverlayIsEditingLayout(self);
         return;
-    objc_setAssociatedObject(right, wiredKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 
     UILongPressGestureRecognizer *press =
         [[UILongPressGestureRecognizer alloc] initWithTarget:self
@@ -2444,6 +2336,8 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
     press.cancelsTouchesInView = NO;
     press.delaysTouchesBegan = NO;
     press.delaysTouchesEnded = NO;
+    self.ballpadRightPress = press;
+    press.enabled = !BallpadOverlayIsEditingLayout(self);
     [right addGestureRecognizer:press];
 }
 
@@ -2468,15 +2362,9 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
 
 #pragma mark - The planted stick zone
 
-// Where a zone goes, from the stick the vendored pass has just placed. The zone is the stick's own
-// face grown by the margin on every side, in the overlay's own coordinates -- the area a thumb may
-// land in and still find the stick -- and the radius handed to it with the frame is the vendored
-// handler's own quantity on that same face, so what the zone publishes is measured at the travel the
-// stick always had and only the origin has moved.
-//
-// Two states turn a zone off, and both are here rather than in the zone: while the editor is up,
-// because the editor's own drags begin on the stick itself, and while the stick is hidden, because a
-// zone that outlived its stick would be a control the player cannot see that still answers a thumb.
+// Movement accepts touches across the lower-left area; buttons above it retain
+// their hit targets. The C-stick keeps its smaller local zone. Editing and hiding
+// controls disable the zones and release any held input.
 - (void)ballpadApplyPlantedZones
 {
     const BOOL editing = BallpadOverlayIsEditingLayout(self);
@@ -2492,11 +2380,34 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
 
         const CGRect face = [stick convertRect:stick.bounds toView:self];
         const CGFloat side = MIN(CGRectGetWidth(face), CGRectGetHeight(face));
-        const CGFloat margin = side * kBallpadPlantedZoneMarginRatio;
-        zone.frame = CGRectInset(face, -margin, -margin);
-        zone.stickRadius = MAX(1.0, side * 0.5);
-        zone.hidden = editing;
-        zone.userInteractionEnabled = !editing && ![hidden containsObject:identifier];
+        const BOOL movement = [identifier isEqualToString:@"move"];
+        CGRect safe = UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets);
+        CGRect frame = CGRectInset(face, -side * kBallpadPlantedZoneMarginRatio,
+                                         -side * kBallpadPlantedZoneMarginRatio);
+        if (movement)
+            frame = CGRectMake(CGRectGetMinX(safe), CGRectGetMidY(safe),
+                               safe.size.width * 0.42, safe.size.height * 0.5);
+        const BOOL enabled = !editing && !stick.hidden && ![hidden containsObject:identifier];
+        if (!enabled || (zone.owning && !CGRectEqualToRect(zone.frame, frame) && movement))
+            [zone ballpadEndTouch];
+        if (!zone.owning)
+            zone.frame = frame;
+        zone.stickRadius = MAX(1.0, side * (movement ? 0.30 : 0.5));
+        zone.invisibleAtRest = movement;
+        zone.isAccessibilityElement = movement;
+        zone.accessibilityElementsHidden = !movement;
+        zone.accessibilityIdentifier = movement ? @"MovementTouchArea" : nil;
+        zone.accessibilityLabel = movement ? @"Movement area" : nil;
+        if (!zone.owning)
+            zone.accessibilityValue = @"idle";
+        zone.hidden = !enabled;
+        zone.userInteractionEnabled = enabled;
+        if (enabled)
+        {
+            [zone restorePlantedPosition];
+            if (movement && !zone.owning)
+                stick.alpha = 0.0;
+        }
     }
 
     // The reading is of the pass that just placed the zones, which is the whole of when it can have
@@ -2624,6 +2535,36 @@ static BOOL BallpadPlacePadControl(UIView *control, NSDictionary *saved, CGPoint
 // Both of the editor's gestures route through the vendored selection -- a drag calls it as it begins,
 // a tap calls it as it ends -- so this one override is where the toggle learns which control it acts
 // on.
+// Capture the layout the player is looking at before the vendored editor lays out.
+// Its fallback defaults differ from BallPad's defaults; saved centers are shared.
+- (void)beginLayoutEditing
+{
+    self.ballpadRightPress.enabled = NO;
+    NSDictionary *zones = objc_getAssociatedObject(self, BallpadPlantedZonesKey);
+    for (BallpadPlantedZoneView *zone in zones.allValues)
+        [zone ballpadEndTouch];
+    [self layoutIfNeeded];
+    CGRect safe = UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets);
+    if (safe.size.width > 0 && safe.size.height > 0)
+    {
+        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+        NSMutableDictionary *saved = [[defaults dictionaryForKey:@"SunPadControlOrigins"] mutableCopy]
+            ?: [NSMutableDictionary dictionary];
+        for (UIView *control in BallpadTouchControlsInDrawOrder(self))
+        {
+            NSString *identifier = control.accessibilityIdentifier;
+            if (identifier.length == 0 || [identifier hasPrefix:@"D_"])
+                continue;
+            CGRect frame = [control convertRect:control.bounds toView:self];
+            CGPoint normalized = CGPointMake((CGRectGetMidX(frame) - safe.origin.x) / safe.size.width,
+                                             (CGRectGetMidY(frame) - safe.origin.y) / safe.size.height);
+            saved[identifier] = NSStringFromCGPoint(normalized);
+        }
+        [defaults setObject:saved forKey:@"SunPadControlOrigins"];
+    }
+    [super beginLayoutEditing];
+}
+
 - (void)selectControlForEditing:(UIView *)control
 {
     [super selectControlForEditing:control];
@@ -2678,75 +2619,18 @@ static const void *BallpadFPSCounterPlacedKey = &BallpadFPSCounterPlacedKey;
 static const void *BallpadFPSCounterAnchorKey = &BallpadFPSCounterAnchorKey;
 static const void *BallpadFPSCounterObstacleKey = &BallpadFPSCounterObstacleKey;
 
-// The widest reading this label can ever print, one line per line the label draws, measured once.
-// Assigning a frame invalidates the overlay's layout, and the overlay's layout pass re-derives every
-// vendored control's geometry -- including the trigger's own border, which the R repair above then
-// has to undo. Re-framing the label sixty times a second therefore re-laid out the whole overlay
-// sixty times a second, which is both the work the frame budget cannot spare and the reason a drag
-// on the overlay never settled: a pan recognizer whose view is re-laid out under it does not reach
-// the state the layout editor reads. Reserving the frame up front is what makes the per-frame update
-// an attributed-string assignment. The placeholder is the widest reading the card can print, so the
-// frame reserved from it is never too small for the reading that lands in it; what it is measured
-// against is the card's own width, because at that width the read-back's longest line wraps.
-static NSString * const kBallpadFPSWidestRate = @"999 fps";
-static NSString * const kBallpadFPSWidestTiming = @"99.9 ms busy · p95 99.9";
-static NSString * const kBallpadFPSWidestDetail =
-    @"99999x99999 @99.99x aspect 99.999 pinned logical 99999 blend 99.99";
-
-// The counter's three type sizes and its card. The rate is the reading a player is looking at and
-// carries the largest type; the timing is the second question a player asks about it ("is there
-// headroom?"); and the port's own render read-back is a diagnostic, so it is drawn smallest and
-// dimmest -- still on screen, because it is what the display rows are read back through, but no
-// longer the thing the card is *about*, which it was while the three ran together on one line.
-static const CGFloat kBallpadFPSRateSize = 20.0;
-static const CGFloat kBallpadFPSDetailSize = 9.0;
-static const CGFloat kBallpadFPSLineSpacing = 1.0;
-static const CGFloat kBallpadFPSPaddingWidth = 12.0;
-static const CGFloat kBallpadFPSPaddingHeight = 8.0;
-static const CGFloat kBallpadFPSCornerRadius = 10.0;
-// The card's width, in points, on both surfaces. Fixed rather than measured from the widest reading:
-// the port's render read-back is long enough that a card sized to it on one line comes out 391pt
-// wide -- nearly half the phone's 844pt in landscape -- and a card that wide cannot fit in a corner
-// clear of the controls, which is the defect it was drawn over Start for. At this width the two
-// readings a player watches (the rate and the frame time) each keep a line to themselves and the
-// render read-back wraps underneath at its smaller size, so the card stays one instrument of one
-// size on both surfaces and stays narrow enough to sit where nothing is being touched.
-static const CGFloat kBallpadFPSWidth = 214.0;
-// The gap the card keeps from the edge of the safe rect, on all four sides. One constant for both
-// axes: the card is an instrument sitting in a corner, and a card nearer one edge than the other
-// reads as misaligned rather than as deliberate.
+// Fixed geometry prevents every FPS update from relaying out touch controls.
+static const CGFloat kBallpadFPSWidth = 104.0;
 static const CGFloat kBallpadFPSMargin = 12.0;
-// What the card says, as the three lines it draws. One builder for the placeholder and for the live
-// reading, because a placeholder measured with different type than the reading is drawn with would
-// reserve the wrong frame -- which is the defect the reservation exists to prevent.
-static NSAttributedString *BallpadFPSReading(NSString *rate, NSString *timing, NSString *detail)
+static NSAttributedString *BallpadFPSReading(NSString *rate)
 {
     NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
-    paragraph.lineSpacing = kBallpadFPSLineSpacing;
-    paragraph.alignment = NSTextAlignmentLeft;
-
-    const struct { NSString *line; CGFloat size; UIFontWeight weight; CGFloat alpha; } lines[] = {
-        { rate,   kBallpadFPSRateSize,   UIFontWeightBold,    1.00 },
-        { timing, 11.0,                  UIFontWeightMedium,  0.82 },
-        { detail, kBallpadFPSDetailSize, UIFontWeightRegular, 0.48 },
-    };
-
-    NSMutableAttributedString *text = [NSMutableAttributedString new];
-    for (const auto &line : lines)
-    {
-        if (line.line.length == 0)
-            continue;
-        if (text.length > 0)
-            [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"
-                                                                        attributes:@{ NSParagraphStyleAttributeName: paragraph }]];
-        [text appendAttributedString:[[NSAttributedString alloc] initWithString:line.line
-            attributes:@{
-                NSFontAttributeName: [UIFont monospacedSystemFontOfSize:line.size weight:line.weight],
-                NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:line.alpha],
-                NSParagraphStyleAttributeName: paragraph,
-            }]];
-    }
-    return text;
+    paragraph.alignment = NSTextAlignmentCenter;
+    return [[NSAttributedString alloc] initWithString:rate attributes:@{
+        NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:17 weight:UIFontWeightSemibold],
+        NSForegroundColorAttributeName: UIColor.whiteColor,
+        NSParagraphStyleAttributeName: paragraph,
+    }];
 }
 
 static UILabel *BallpadFPSCounterLabel(SunPadGameOverlay *overlay)
@@ -2757,16 +2641,11 @@ static UILabel *BallpadFPSCounterLabel(SunPadGameOverlay *overlay)
 
     label = [UILabel new];
     label.userInteractionEnabled = NO;
-    // The card the three lines are drawn on. Rounded and outlined rather than a bare rectangle, so
-    // the counter reads as one instrument over the picture instead of as text that happened to land
-    // on the game.
     label.textColor = UIColor.whiteColor;
     label.backgroundColor = [UIColor colorWithWhite:0.03 alpha:0.62];
-    label.textAlignment = NSTextAlignmentLeft;
-    // Unbounded, because the lines the card draws are the wrapping of the reading at the card's own
-    // width rather than a count this file can fix: the diagnostics under the rate wrap.
-    label.numberOfLines = 0;
-    label.layer.cornerRadius = kBallpadFPSCornerRadius;
+    label.textAlignment = NSTextAlignmentCenter;
+    label.numberOfLines = 1;
+    label.layer.cornerRadius = 12.0;
     label.layer.masksToBounds = YES;
     label.layer.borderWidth = 1.0;
     label.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.16].CGColor;
@@ -2892,19 +2771,7 @@ static NSString *BallpadFPSCounterPlacementSignature(SunPadGameOverlay *overlay)
 // appears and when the signature above moves, which is the whole of its layout.
 static void BallpadPositionFPSCounterLabel(SunPadGameOverlay *overlay, UILabel *label)
 {
-    NSAttributedString *shown = label.attributedText;
-    label.attributedText = BallpadFPSReading(kBallpadFPSWidestRate, kBallpadFPSWidestTiming,
-                                             kBallpadFPSWidestDetail);
-    // Measured at the width the card is drawn at rather than fitted to one line per reading: what the
-    // placeholder is here to answer is how tall the widest reading wraps, and the width is the
-    // constant above so the frame this sets is the frame the card keeps.
-    const CGSize needed = [label sizeThatFits:
-        CGSizeMake(kBallpadFPSWidth - kBallpadFPSPaddingWidth * 2.0, CGFLOAT_MAX)];
-    label.attributedText = shown;
-
-    CGRect frame = CGRectMake(0.0, 0.0, kBallpadFPSWidth,
-                              ceil(needed.height) + kBallpadFPSPaddingHeight * 2.0);
-    frame.size.height = MAX(frame.size.height, 22.0);
+    CGRect frame = CGRectMake(0.0, 0.0, kBallpadFPSWidth, 40.0);
 
     const CGRect safe = UIEdgeInsetsInsetRect(overlay.bounds, overlay.safeAreaInsets);
     NSArray<NSValue *> *obstacles = BallpadFPSCounterObstacles(overlay);
@@ -3024,10 +2891,7 @@ static void BallpadRefreshFPSCounter(SunPadGameOverlay *overlay)
     // The rolling window is what moves; the run counters stay put until a match is live, so a title
     // screen reads as a rate rather than as a stalled zero.
     NSString *rate = [NSString stringWithFormat:@"%.0f fps", live.fps];
-    NSString *timing = live.frames > 0
-        ? [NSString stringWithFormat:@"%.1f ms busy · p95 %.1f", live.busyMs, live.busyP95Ms]
-        : [NSString stringWithFormat:@"%.1f ms busy", live.busyMs];
-    label.attributedText = BallpadFPSReading(rate, timing, BallpadDisplayReadBack());
+    label.attributedText = BallpadFPSReading(rate);
 
     // Per frame, and only this: the text. See BallpadPositionFPSCounterLabel for why the frame is
     // not part of the per-frame work.
@@ -3178,6 +3042,9 @@ static void BallpadReattachOverlay(NSString *reason);
 - (void)applicationDidEnterBackground:(NSNotification *)notification
 {
     (void)notification;
+    NSDictionary *zones = objc_getAssociatedObject(self.overlay, BallpadPlantedZonesKey);
+    for (BallpadPlantedZoneView *zone in zones.allValues)
+        [zone ballpadEndTouch];
     [[SunPadInputMixer sharedMixer] clearInputFromTouch:YES];
     // The right shoulder's press is tracked by this side of the seam, so clearing the mixer is not
     // enough: a touch that ends while the app is away may never reach the control, and a shoulder
@@ -3580,6 +3447,11 @@ static void BallpadLogHostGeometry(UIWindow *window, UIView *container)
                NSStringFromClass(container.class), NSStringFromCGRect(container.frame),
                NSStringFromClass(s_overlay.class), NSStringFromCGRect(s_overlay.frame),
                probeText);
+}
+
+extern "C" void PortHostUIDiagnostic(const char *message)
+{
+    BallpadLog(@"engine: %s", message != nullptr ? message : "");
 }
 
 extern "C" void PortHostUIStart(void *sdlWindow)
