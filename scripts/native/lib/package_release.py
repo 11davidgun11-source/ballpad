@@ -169,6 +169,8 @@ def release_sources(args, output):
     folder.mkdir()
     git_archive(args.root, revision, folder / 'ballpad.tar.gz', 'ballpad')
     git_archive(args.engine, args.engine_pin, folder / 'strikers.tar.gz', 'strikers')
+    subprocess.run(['git', '-C', str(args.engine), 'bundle', 'create', str(folder / 'strikers.bundle'), 'HEAD'], check=True)
+    subprocess.run(['git', '-C', str(args.engine), 'bundle', 'verify', str(folder / 'strikers.bundle')], check=True)
     snapshots = []
     cache = args.root / 'build/native/deps/src'
     for name in ['SDL3', 'dawn', 'zstd']:
@@ -195,9 +197,12 @@ ballpad.tar.gz and strikers.tar.gz are Git archives of the recorded immutable co
 Other archives snapshot the dependency sources cached for this build, including Dawn's
 populated third-party source directories. Original cached download archives are included
 where available. FFmpeg source and configuration are also in the matching relink package.
-Extract BallPad, then place the Strikers archive at work/native/strikers for inspection.
-The normal bootstrap clones the maintained source revision; these source archives do not
-contain .git metadata. Dependency snapshots are supplied as build/source material, not as
+Extract ballpad.tar.gz. For the included engine source with its Git identity, run
+`git clone /absolute/path/strikers.bundle ballpad/work/native/strikers`, then
+`git -C ballpad/work/native/strikers checkout --detach <engine_commit>` using the
+commit in SOURCE-INVENTORY.json. The bundle retains upstream history and the pin.
+Alternatively, normal bootstrap clones the public maintained source fork. The
+strikers.tar.gz snapshot is provided separately for convenient inspection. Dependency snapshots are supplied as build/source material, not as
 a verified offline bootstrap cache. Apple SDK/compiler tools and game data are excluded.
 
 All archives have checksums. The dependency inventory and notices in the app source give
