@@ -2616,7 +2616,6 @@ Next concrete action: F04 -- drive each control through the overlay and read the
 ```
 
 ```text
-```text
 Phase / gate: R1 row 5's engine half -> doc 34 F04 (every control reaches the engine's own pad)
 Date / build identity / patch digest: 2026-09-15; upstream pin 22649cb12c11 (v1.1.1); engine fork
   7a0874037759, tree 530f179e9d7a clean; patch series a378c305bf60 (12 patches, unmoved -- this
