@@ -1,0 +1,41 @@
+name: Build BallPad IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install cmake ninja
+
+      - name: Bootstrap engine and dependencies
+        run: |
+          chmod +x scripts/native/*.sh
+          scripts/native/bootstrap.sh --platform device
+
+      - name: Build device target
+        run: |
+          scripts/native/build.sh --platform device
+
+      - name: Package IPA
+        run: |
+          scripts/native/package-release.sh --out build/releases/ballpad-device --source-ref HEAD
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BallPad-unsigned-ipa
+          path: |
+            build/releases/ballpad-device/**/*.ipa
+            build/releases/ballpad-device/**/SHA256SUMS
+          if-no-files-found: error
