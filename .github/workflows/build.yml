@@ -32,9 +32,33 @@ jobs:
         run: |
           python3 scripts/debug-patch.py
 
-      - name: Build device target
+      - name: Configure and build (direct cmake)
         run: |
-          scripts/native/build.sh --platform device
+          source scripts/native/common.sh
+          BUILD_DIR="${BUILD_ROOT}/device-release"
+          LOG="${LOG_DIR}/build-device-release.log"
+          mkdir -p "$LOG_DIR"
+          JOBS=$(sysctl -n hw.ncpu)
+
+          echo "=== Configuring ==="
+          cmake -G Ninja -S "${BALLPAD_ROOT}/mobile" -B "${BUILD_DIR}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET}" \
+            -DPORT_DIR="${PORT_DIR}" \
+            -DBALLPAD_SDL3_ROOT="${DEPS_ROOT}/sdl3/device" \
+            -DBALLPAD_FFMPEG_ROOT="${DEPS_ROOT}/ffmpeg/device" \
+            -DBALLPAD_ZSTD_ROOT="${ZSTD_SRC}" \
+            -DBALLPAD_PLATFORM=device \
+            -DAURORA_DAWN_PROVIDER=vendor \
+            -DAURORA_SDL3_PROVIDER=system \
+            -DFETCHCONTENT_SOURCE_DIR_DAWN="${DAWN_SRC}" \
+            "${DAWN_CACHE_ARGS[@]}"
+
+          echo "=== Building with $JOBS jobs ==="
+          cmake --build "${BUILD_DIR}" -j "$JOBS"
 
       - name: Package IPA
         run: |
