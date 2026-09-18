@@ -28,6 +28,10 @@ jobs:
           chmod +x scripts/native/*.sh
           scripts/native/bootstrap.sh --platform device
 
+      - name: Apply debug logging patch
+        run: |
+          python3 scripts/debug-patch.py
+
       - name: Build device target
         run: |
           scripts/native/build.sh --platform device
