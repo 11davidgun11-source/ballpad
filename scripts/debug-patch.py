@@ -80,7 +80,7 @@ def main():
     patch_file(main_cpp,
         '#include "types.h"\n#include "NL/nlBind.h"',
         '#include "types.h"\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n'
-        '#include <execinfo.h>\n#include <fcntl.h>\n#include <unistd.h>\n#include <mach-o/dyld.h>\n'
+        '#include <execinfo.h>\n#include <fcntl.h>\n#include <unistd.h>\n'
         '#include "NL/nlBind.h"')
 
     # 2. Add extern declarations and log-open function before DoMemCheck
@@ -93,17 +93,12 @@ def main():
         'extern FILE* g_debug_log;\n'
         '}\n\n'
         'static void OpenDebugLog() {\n'
-        '    char exe_dir[1024];\n'
-        '    uint32_t sz = sizeof(exe_dir);\n'
-        '    if (_NSGetExecutablePath(exe_dir, &sz) == 0) {\n'
-        '        char resolved[1024];\n'
-        '        if (realpath(exe_dir, resolved) != NULL) {\n'
-        '            char* slash = strrchr(resolved, \'/\');\n'
-        '            if (slash) *slash = \'\\0\';\n'
-        '            snprintf(g_log_path, sizeof(g_log_path), "%s/ballpad-crash.log", resolved);\n'
-        '        }\n'
-        '    }\n'
-        '    if (g_log_path[0] == \'\\0\')\n'
+        '    // Write to Documents/ (writable, visible in Files app on iOS)\n'
+        '    // HOME is set by LiveContainer to the app\'s data container root\n'
+        '    const char* home = getenv("HOME");\n'
+        '    if (home != NULL && home[0] != \'\\0\')\n'
+        '        snprintf(g_log_path, sizeof(g_log_path), "%s/Documents/ballpad-crash.log", home);\n'
+        '    else\n'
         '        snprintf(g_log_path, sizeof(g_log_path), "/tmp/ballpad-crash.log");\n'
         '    g_crash_log_fd = open(g_log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);\n'
         '    if (g_crash_log_fd >= 0) {\n'
@@ -165,7 +160,7 @@ def main():
 
     with open(main_cpp) as f:
         if "OpenDebugLog" in f.read():
-            print(f"  Log file path: <executable_dir>/ballpad-crash.log")
+            print(f"  Log file path: <container>/Documents/ballpad-crash.log")
 
 if __name__ == "__main__":
     main()
