@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Apply debug logging patches to the engine source for crash diagnosis."""
+"""Apply debug logging patches to the engine source for crash diagnosis.
+Writes all output to a log file instead of stderr (iOS crash reports discard stderr)."""
 import sys, os
 
 def patch_file(path, old, new):
@@ -20,79 +21,168 @@ def main():
     port = os.path.join(engine, "smstrikers-port")
     fe_mgr = os.path.join(port, "src", "Game", "FE", "feManager.cpp")
     main_cpp = os.path.join(port, "src", "Game", "main.cpp")
+    crashlog = os.path.join(port, "src", "platform", "crashlog.c")
 
-    for p in [fe_mgr, main_cpp]:
+    for p in [fe_mgr, main_cpp, crashlog]:
         if not os.path.isfile(p):
             print(f"ERROR: {p} not found")
             sys.exit(1)
 
-    print("=== Applying debug patches ===\n")
+    print("=== Applying debug patches (file logging) ===\n")
 
-    # ── feManager.cpp ──
+    # ════════════════════════════════════════════════════════════════════
+    # main.cpp: open log file, define globals, install crash handler
+    # ════════════════════════════════════════════════════════════════════
 
-    # 1. Add logging includes after existing include
-    patch_file(fe_mgr,
-        '#include "Game/FE/feManager.h"\n\n#include "Game/Camera/CameraMan.h"',
-        '#include "Game/FE/feManager.h"\n\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n\n#include "Game/Camera/CameraMan.h"')
-
-    # 2. Log ExitWinnerScreen entry
-    patch_file(fe_mgr,
-        'void FrontEnd::ExitWinnerScreen()\n{\n    cCameraManager::PopCameraWithTransition',
-        'void FrontEnd::ExitWinnerScreen()\n{\n    fprintf(stderr, "[DEBUG] === ExitWinnerScreen START ===\\n");\n    fprintf(stderr, "[DEBUG] feState: current=%d pending=%d previous=%d\\n", (int)m_feStateCurrent, (int)m_feStatePending, (int)m_feStatePrevious);\n    fprintf(stderr, "[DEBUG] m_pPauseMenuCamera=%p g_AllActorsHidden=%.2f\\n", (void*)m_pPauseMenuCamera, (double)g_AllActorsHidden);\n    fprintf(stderr, "[DEBUG] taskManager: CurrState=%d PendingState=%d\\n", nlTaskManager::m_pInstance->m_CurrState, nlTaskManager::m_pInstance->m_PendingState);\n    fflush(stderr);\n\n    cCameraManager::PopCameraWithTransition')
-
-    # 3. Log after SetNextState(2) in ExitWinnerScreen
-    patch_file(fe_mgr,
-        '    nlTaskManager::SetNextState(2);\n}',
-        '    nlTaskManager::SetNextState(2);\n\n    fprintf(stderr, "[DEBUG] SetNextState(2) done -> new PendingState=%d\\n", nlTaskManager::m_pInstance->m_PendingState);\n    fprintf(stderr, "[DEBUG] === ExitWinnerScreen END ===\\n");\n    fflush(stderr);\n}')
-
-    # 4. Log FEEventHandler event 3 (match over)
-    patch_file(fe_mgr,
-        '    case 3:\n        OSReport("[match] over score=%d-%d\\n",',
-        '    case 3:\n        fprintf(stderr, "[DEBUG] FEEvent: match over (event 3)\\n");\n        fflush(stderr);\n        OSReport("[match] over score=%d-%d\\n",')
-
-    # 5. Log FrontEnd::Update state at entry
-    patch_file(fe_mgr,
-        'void FrontEnd::Update(float fTimeDelta)\n{\n    m_pauseDelay -= fTimeDelta;',
-        'void FrontEnd::Update(float fTimeDelta)\n{\n    fprintf(stderr, "[DBG-FE] Upd dt=%.3f st=%d pend=%d prev=%d task=(%d,%d)\\n", (double)fTimeDelta, (int)m_feStateCurrent, (int)m_feStatePending, (int)m_feStatePrevious, (int)nlTaskManager::m_pInstance->m_CurrState, (int)nlTaskManager::m_pInstance->m_PendingState);\n    fflush(stderr);\n\n    m_pauseDelay -= fTimeDelta;')
-
-    # 6. Log state 5 (END_GAME) entry
-    patch_file(fe_mgr,
-        '    case 5:\n    {\n        nlTaskManager::SetNextState(1);',
-        '    case 5:\n    {\n        fprintf(stderr, "[DBG-FE] case 5: END_GAME -> SetNextState(1)\\n");\n        fflush(stderr);\n        nlTaskManager::SetNextState(1);')
-
-    # 7. Log state 3 (pre-game)
-    patch_file(fe_mgr,
-        '    case 3:\n    {\n        BaseSceneHandler* scene;',
-        '    case 3:\n    {\n        fprintf(stderr, "[DBG-FE] case 3: PRE_GAME_START\\n");\n        fflush(stderr);\n        BaseSceneHandler* scene;')
-
-    # 8. Log state 8 (wait user input)
-    patch_file(fe_mgr,
-        '    case 8:\n        if (nlTaskManager::m_pInstance->m_CurrState == 1)',
-        '    case 8:\n        fprintf(stderr, "[DBG-FE] case 8: WAIT_USER_END_GAME\\n");\n        fflush(stderr);\n        if (nlTaskManager::m_pInstance->m_CurrState == 1)')
-
-    # ── main.cpp ──
-
-    # 1. Add includes
+    # 1. Add includes after "types.h"
     patch_file(main_cpp,
         '#include "types.h"\n#include "NL/nlBind.h"',
-        '#include "types.h"\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n#include "NL/nlBind.h"')
+        '#include "types.h"\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n#include <fcntl.h>\n#include <unistd.h>\n#include <mach-o/dyld.h>\n#include "NL/nlBind.h"')
 
-    # 2. Insert SIGABRT handler before main()
+    # 2. Add global log path and file handle BEFORE DoMemCheck
     patch_file(main_cpp,
-        'static void DoMemCheck()\n{\n}\n\n/**',
-        'static void debug_abort_handler(int sig)\n{\n    fprintf(stderr, "\\n=== CRASH CAUGHT (signal %d) ===\\n", sig);\n    fflush(stderr);\n    void* callstack[64];\n    int n = backtrace(callstack, 64);\n    char** syms = backtrace_symbols(callstack, n);\n    if (syms) {\n        for (int i = 0; i < n; i++)\n            fprintf(stderr, "  [%d] %s\\n", i, syms[i]);\n        free(syms);\n    }\n    fprintf(stderr, "=== END BACKTRACE ===\\n");\n    fflush(stderr);\n    signal(sig, SIG_DFL);\n    raise(sig);\n}\n\n/**')
+        'static void DoMemCheck()\n{\n}',
+        'static char g_log_path[1024];\nint g_crash_log_fd = -1;\nFILE* g_debug_log = nullptr;\n\nstatic void DoMemCheck()\n{\n}')
 
-    # 3. Install signal handlers at top of main()
-    patch_file(main_cpp,
-        'int main(int argc, char* argv[])\n{\n    // PORT: strikers.ini',
-        'int main(int argc, char* argv[])\n{\n    signal(SIGABRT, debug_abort_handler);\n    fprintf(stderr, "[DEBUG] SIGABRT handler installed\\n");\n    fflush(stderr);\n\n    // PORT: strikers.ini')
+    # 3. Insert log file open at the very start of main(), before everything else
+    # Find: "int main(int argc, char* argv[])\n{" then the first real code
+    # The actual file has: int main(...) { \n    // PORT: strikers.ini
+    # We try multiple patterns
+    patched_main = patch_file(main_cpp,
+        'int main(int argc, char* argv[])\n{\n    // PORT: strikers.ini -> environment, before anything reads one.',
+        '''int main(int argc, char* argv[])
+{
+    // DEBUG: open log file next to the executable
+    {
+        char exe_dir[1024];
+        uint32_t sz = sizeof(exe_dir);
+        if (_NSGetExecutablePath(exe_dir, &sz) == 0) {
+            char resolved[1024];
+            if (realpath(exe_dir, resolved) != NULL) {
+                char* slash = strrchr(resolved, '/');
+                if (slash) *slash = '\\0';
+                snprintf(g_log_path, sizeof(g_log_path), "%s/ballpad-crash.log", resolved);
+            }
+        }
+        if (g_log_path[0] == '\\0')
+            snprintf(g_log_path, sizeof(g_log_path), "/tmp/ballpad-crash.log");
+        g_crash_log_fd = open(g_log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (g_crash_log_fd >= 0) {
+            g_debug_log = fdopen(g_crash_log_fd, "w");
+            fprintf(g_debug_log, "[DEBUG] Log opened: %s\\n", g_log_path);
+            fflush(g_debug_log);
+        }
+    }
+
+    // PORT: strikers.ini -> environment, before anything reads one.''')
+
+    if not patched_main:
+        # Fallback: try the simpler pattern from the engine fork
+        patch_file(main_cpp,
+            'int main(int argc, char* argv[])\n{\n    // PORT: strikers.ini',
+            '''int main(int argc, char* argv[])
+{
+    // DEBUG: open log file next to the executable
+    {
+        char exe_dir[1024];
+        uint32_t sz = sizeof(exe_dir);
+        if (_NSGetExecutablePath(exe_dir, &sz) == 0) {
+            char resolved[1024];
+            if (realpath(exe_dir, resolved) != NULL) {
+                char* slash = strrchr(resolved, '/');
+                if (slash) *slash = '\\0';
+                snprintf(g_log_path, sizeof(g_log_path), "%s/ballpad-crash.log", resolved);
+            }
+        }
+        if (g_log_path[0] == '\\0')
+            snprintf(g_log_path, sizeof(g_log_path), "/tmp/ballpad-crash.log");
+        g_crash_log_fd = open(g_log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (g_crash_log_fd >= 0) {
+            g_debug_log = fdopen(g_crash_log_fd, "w");
+            fprintf(g_debug_log, "[DEBUG] Log opened: %s\\n", g_log_path);
+            fflush(g_debug_log);
+        }
+    }
+
+    // PORT: strikers.ini''')
+
+    # ════════════════════════════════════════════════════════════════════
+    # crashlog.c: redirect crash backtrace to log file
+    # ════════════════════════════════════════════════════════════════════
+
+    # 1. Add extern declaration and include after existing includes
+    patch_file(crashlog,
+        '#include <string.h>\n\n#if !defined(_WIN32)',
+        '#include <string.h>\n#include <fcntl.h>\n#include <unistd.h>\n\nextern const char* g_log_path;\nextern int g_crash_log_fd;\n\n#if !defined(_WIN32)')
+
+    # 2. In crash_handler: open log file and redirect output
+    patch_file(crashlog,
+        'static void crash_handler(int sig)\n{\n    // Async-signal-safe only:',
+        '''static void crash_handler(int sig)
+{
+    // Open log file for appending (async-signal-safe open/write)
+    int log_fd = -1;
+    if (g_log_path != NULL && g_log_path[0] != '\\0')
+        log_fd = open(g_log_path, O_WRONLY | O_APPEND, 0);
+    int out_fd = (log_fd != -1) ? log_fd : 2;
+
+    // Async-signal-safe only:''')
+
+    # 3. Redirect the write calls from fd 2 to out_fd
+    patch_file(crashlog,
+        '    write(2, "\\n*** strikers: ", 15);\n    write(2, name, strlen(name));',
+        '    write(out_fd, "\\n*** strikers: ", 15);\n    write(out_fd, name, strlen(name));')
+
+    # 4. Redirect backtrace_symbols_fd
+    patch_file(crashlog,
+        '    backtrace_symbols_fd(frames, n, 2);',
+        '    backtrace_symbols_fd(frames, n, out_fd);\n    if (log_fd != -1) { fsync(log_fd); close(log_fd); }')
+
+    # ════════════════════════════════════════════════════════════════════
+    # feManager.cpp: write debug trace to g_debug_log instead of stderr
+    # ════════════════════════════════════════════════════════════════════
+
+    # 1. Add extern declaration for g_debug_log
+    patch_file(fe_mgr,
+        '#include "Game/FE/feManager.h"\n\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n\n#include "Game/Camera/CameraMan.h"',
+        '#include "Game/FE/feManager.h"\n\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n\nextern FILE* g_debug_log;\n#define DBG (g_debug_log ? g_debug_log : stderr)\n\n#include "Game/Camera/CameraMan.h"')
+
+    # Also add the extern if the first pattern (with DBG macro) didn't match
+    # because the previous debug-patch may have already added the includes
+    patch_file(fe_mgr,
+        '#include "Game/FE/feManager.h"\n\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n\n#include "Game/Camera/CameraMan.h"',
+        '#include "Game/FE/feManager.h"\n\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n\nextern FILE* g_debug_log;\n#define DBG (g_debug_log ? g_debug_log : stderr)\n\n#include "Game/Camera/CameraMan.h"')
+
+    # 2. Replace all fprintf(stderr with fprintf(DBG and fflush(stderr) with fflush(DBG
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
+    patch_file(fe_mgr, 'fflush(stderr)', 'fflush(DBG)')
 
     print("\n=== Done ===")
     # Verify
-    for name, path in [("feManager.cpp", fe_mgr), ("main.cpp", main_cpp)]:
+    for name, path in [("feManager.cpp", fe_mgr), ("main.cpp", main_cpp), ("crashlog.c", crashlog)]:
         with open(path) as f:
-            count = f.read().count("fprintf(stderr")
-        print(f"  {name}: {count} fprintf(stderr) calls added")
+            content = f.read()
+        dbg_count = content.count("fprintf(DBG") + content.count("write(out_fd")
+        print(f"  {name}: {dbg_count} debug output calls")
+
+    # Check log path
+    with open(main_cpp) as f:
+        if "g_log_path" in f.read():
+            print(f"  Log file path: <executable_dir>/ballpad-crash.log")
 
 if __name__ == "__main__":
     main()
