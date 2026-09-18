@@ -80,7 +80,7 @@ def main():
     patch_file(main_cpp,
         '#include "types.h"\n#include "NL/nlBind.h"',
         '#include "types.h"\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n'
-        '#include <execinfo.h>\n#include <fcntl.h>\n#include <unistd.h>\n'
+        '#include <execinfo.h>\n#include <fcntl.h>\n#include <unistd.h>\n#include <sys/stat.h>\n'
         '#include "NL/nlBind.h"')
 
     # 2. Add extern declarations and log-open function before DoMemCheck
@@ -91,15 +91,15 @@ def main():
         'extern char g_log_path[1024];\n'
         'extern int g_crash_log_fd;\n'
         'extern FILE* g_debug_log;\n'
+        'extern const char *BallpadDocumentsDir(void);\n'
         '}\n\n'
         'static void OpenDebugLog() {\n'
-        '    // Write to Documents/ (writable, visible in Files app on iOS)\n'
-        '    // HOME is set by LiveContainer to the app\'s data container root\n'
-        '    const char* home = getenv("HOME");\n'
-        '    if (home != NULL && home[0] != \'\\0\')\n'
-        '        snprintf(g_log_path, sizeof(g_log_path), "%s/Documents/ballpad-crash.log", home);\n'
-        '    else\n'
-        '        snprintf(g_log_path, sizeof(g_log_path), "/tmp/ballpad-crash.log");\n'
+        '    // Use BallpadDocumentsDir() — the Obj-C function that resolves the\n'
+        '    // correct iOS Documents path via NSSearchPathForDirectoriesInDomains.\n'
+        '    const char* docs = BallpadDocumentsDir();\n'
+        '    snprintf(g_log_path, sizeof(g_log_path), "%s/ballpad-crash.log", docs);\n'
+        '    // Create the directory if it does not exist\n'
+        '    mkdir(docs, 0755);\n'
         '    g_crash_log_fd = open(g_log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);\n'
         '    if (g_crash_log_fd >= 0) {\n'
         '        g_debug_log = fdopen(g_crash_log_fd, "w");\n'

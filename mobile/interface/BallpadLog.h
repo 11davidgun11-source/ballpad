@@ -57,6 +57,10 @@ FOUNDATION_EXPORT NSString *BallpadNewReportID(void);
 // app-level facts the rest of Ballpad asks for already are.
 FOUNDATION_EXPORT NSString *BallpadAppDisplayName(void);
 
+// The app's Documents directory as a UTF-8 C string, usable from C/C++ code.
+// Never returns NULL; falls back to /tmp if the directory cannot be resolved.
+FOUNDATION_EXPORT const char *BallpadDocumentsDir(void);
+
 // One line naming every touch-control setting and its value, read back from the store rather than
 // from the panel that set it. The settings surface is the vendored component's, so a row landing
 // there is not the same claim as the value the rest of the build reads; this is the read-back that

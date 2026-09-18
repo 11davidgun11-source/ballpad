@@ -181,6 +181,17 @@ NSString *BallpadAppDisplayName(void)
         ?: @"BallPad";
 }
 
+const char *BallpadDocumentsDir(void)
+{
+    static char result[1024] = {0};
+    if (result[0] == '\0') {
+        NSString *dir = BallpadDocumentsDirectory();
+        if (![dir getCString:result maxLength:sizeof(result) encoding:NSUTF8StringEncoding])
+            snprintf(result, sizeof(result), "/tmp");
+    }
+    return result;
+}
+
 NSURL *BallpadDiagnosticsReportURL(
     NSString *reportID,
     NSDictionary<NSString *, NSString *> *reporterAnswers,
