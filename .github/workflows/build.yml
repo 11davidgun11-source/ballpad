@@ -62,6 +62,7 @@ jobs:
 
       - name: Package IPA
         run: |
+          git -C work/native/strikers stash
           scripts/native/package-release.sh --out build/releases/ballpad-device --source-ref HEAD
 
       - name: Upload IPA artifact
