@@ -33,15 +33,10 @@ def main():
             print(f"ERROR: {p} not found")
             sys.exit(1)
 
-    print("=== Applying debug patches (BallpadLogFmt, v3) ===\n")
+    print("=== Applying debug patches (BallpadLogFmt, v4) ===\n")
 
     # ════════════════════════════════════════════════════════════════════
-    # crashlog.c: no changes needed — crash handler writes to stderr (fd 2)
-    # which appears in the iOS crash report with backtrace_symbols output.
-    # ════════════════════════════════════════════════════════════════════
-
-    # ════════════════════════════════════════════════════════════════════
-    # main.cpp: add BallpadLogFmt extern declaration + BallpadLog header
+    # main.cpp: add BallpadLogFmt extern declaration
     # ════════════════════════════════════════════════════════════════════
 
     # 1. Add includes after "types.h"
@@ -59,17 +54,15 @@ def main():
         'static void DoMemCheck()\n{\n}')
 
     # ════════════════════════════════════════════════════════════════════
-    # feManager.cpp: redirect all fprintf(stderr,...) to BallpadLogFmt(...)
+    # feManager.cpp: replace fprintf(stderr,...) with BallpadLogFmt(...)
+    # Direct replacement — no macros, no conflicts with msl/printf.h
     # ════════════════════════════════════════════════════════════════════
 
-    # 1. Add BallpadLogFmt extern + redirect macros after includes
+    # 1. Add BallpadLogFmt extern declaration after existing includes
     patched = patch_file(fe_mgr,
         '#include "Game/FE/feManager.h"\n\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n\n#include "Game/Camera/CameraMan.h"',
         '#include "Game/FE/feManager.h"\n\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n\n'
-        'extern "C" void BallpadLogFmt(const char *fmt, ...);\n'
-        '/* Redirect fprintf(stderr,...) to BallpadLogFmt → runtime.log */\n'
-        '#define fprintf(stream, ...) BallpadLogFmt(__VA_ARGS__)\n'
-        '#define fflush(stream)\n\n'
+        'extern "C" void BallpadLogFmt(const char *fmt, ...);\n\n'
         '#include "Game/Camera/CameraMan.h"')
 
     if not patched:
@@ -77,30 +70,21 @@ def main():
         patch_file(fe_mgr,
             '#include "Game/FE/feManager.h"\n\n#include "Game/Camera/CameraMan.h"',
             '#include "Game/FE/feManager.h"\n\n'
-            'extern "C" void BallpadLogFmt(const char *fmt, ...);\n'
-            '/* Redirect fprintf(stderr,...) to BallpadLogFmt → runtime.log */\n'
-            '#define fprintf(stream, ...) BallpadLogFmt(__VA_ARGS__)\n'
-            '#define fflush(stream)\n\n'
+            'extern "C" void BallpadLogFmt(const char *fmt, ...);\n\n'
             '#include "Game/Camera/CameraMan.h"')
 
-    # 2. No need to replace fprintf calls — the #define handles it
+    # 2. Replace all fprintf(stderr, with BallpadLogFmt( — up to 20 occurrences
+    count = 0
+    for _ in range(20):
+        if patch_file(fe_mgr, 'fprintf(stderr,', 'BallpadLogFmt('):
+            count += 1
 
-    print("\n=== Done ===")
+    # 3. Remove fflush(stderr) calls (nothing to flush with BallpadLogFmt)
+    patch_file(fe_mgr, '    fflush(stderr);', '')
 
-    # Verify
-    for name, path in [("feManager.cpp", fe_mgr), ("main.cpp", main_cpp), ("crashlog.c", crashlog)]:
-        with open(path) as f:
-            content = f.read()
-        if name == "feManager.cpp":
-            count = content.count("BallpadLogFmt") + content.count("#define fprintf")
-            print(f"  {name}: {count} BallpadLogFmt references")
-        elif name == "main.cpp":
-            count = content.count("BallpadLogFmt")
-            print(f"  {name}: {count} BallpadLogFmt references")
-        else:
-            print(f"  {name}: unmodified (crash handler writes to stderr)")
-
-    print(f"\n  Engine debug output → Documents/BallpadLogs/runtime.log")
+    print(f"\n=== Done ===")
+    print(f"  feManager.cpp: replaced {count} fprintf(stderr) calls with BallpadLogFmt")
+    print(f"  Engine debug output → Documents/BallpadLogs/runtime.log")
     print(f"  Crash backtrace → iOS crash report (stderr)")
 
 if __name__ == "__main__":
