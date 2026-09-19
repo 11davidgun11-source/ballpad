@@ -16,6 +16,8 @@
 #import "SunPadDiagnostics.h"
 #import "SunPadSettings.h"
 
+#include <stdarg.h>
+
 // The cap is the vendored component's own, for the same reason: a log that a person can open should
 // not grow without bound, and one rotation is enough to keep the run that matters.
 static NSUInteger const BallpadMaximumLogBytes = 1024 * 1024;
@@ -190,6 +192,16 @@ const char *BallpadDocumentsDir(void)
             snprintf(result, sizeof(result), "/tmp");
     }
     return result;
+}
+
+void BallpadLogFmt(const char *fmt, ...)
+{
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    BallpadLog(@"[DBG] %s", buf);
 }
 
 NSURL *BallpadDiagnosticsReportURL(

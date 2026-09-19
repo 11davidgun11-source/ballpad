@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Apply debug logging patches to the engine source for crash diagnosis.
-Writes all output to a log file instead of stderr (iOS crash reports discard stderr).
+Routes all engine debug output through BallpadLogFmt() which writes into
+the existing Documents/BallpadLogs/runtime.log (proven to work on device).
 
-Globals are defined in crashlog.c (C file, external linkage) and extern-declared
-in main.cpp and feManager.cpp (C++ files). This avoids static linkage issues
-and ensures the crash handler can always reach the log path."""
+The crash handler writes its backtrace to stderr (fd 2) which appears in
+the iOS crash report."""
 import sys, os
 
 def patch_file(path, old, new):
@@ -33,47 +33,15 @@ def main():
             print(f"ERROR: {p} not found")
             sys.exit(1)
 
-    print("=== Applying debug patches (file logging, v2) ===\n")
+    print("=== Applying debug patches (BallpadLogFmt, v3) ===\n")
 
     # ════════════════════════════════════════════════════════════════════
-    # crashlog.c: define globals + redirect crash handler to log file
+    # crashlog.c: no changes needed — crash handler writes to stderr (fd 2)
+    # which appears in the iOS crash report with backtrace_symbols output.
     # ════════════════════════════════════════════════════════════════════
 
-    # 1. Add includes and define globals right after existing includes, before the #if
-    patch_file(crashlog,
-        '#include <string.h>\n\n#if !defined(_WIN32)',
-        '#include <string.h>\n#include <fcntl.h>\n#include <unistd.h>\n#include <stdio.h>\n\n'
-        '/* Debug log globals — defined here with external linkage */\n'
-        'char g_log_path[1024] = {0};\n'
-        'int g_crash_log_fd = -1;\n'
-        'FILE* g_debug_log = NULL;\n\n'
-        '#if !defined(_WIN32)')
-
-    # 2. In crash_handler: open log file and redirect output
-    patch_file(crashlog,
-        'static void crash_handler(int sig)\n{\n    // Async-signal-safe only:',
-        '''static void crash_handler(int sig)
-{
-    // Open log file for appending (async-signal-safe open/write)
-    int log_fd = -1;
-    if (g_log_path[0] != '\\0')
-        log_fd = open(g_log_path, O_WRONLY | O_APPEND, 0);
-    int out_fd = (log_fd != -1) ? log_fd : 2;
-
-    // Async-signal-safe only:''')
-
-    # 3. Redirect the write calls from fd 2 to out_fd
-    patch_file(crashlog,
-        '    write(2, "\\n*** strikers: ", 15);\n    write(2, name, strlen(name));',
-        '    write(out_fd, "\\n*** strikers: ", 15);\n    write(out_fd, name, strlen(name));')
-
-    # 4. Redirect backtrace_symbols_fd
-    patch_file(crashlog,
-        '    backtrace_symbols_fd(frames, n, 2);',
-        '    backtrace_symbols_fd(frames, n, out_fd);\n    if (log_fd != -1) { fsync(log_fd); close(log_fd); }')
-
     # ════════════════════════════════════════════════════════════════════
-    # main.cpp: extern-declare globals, open log file in main()
+    # main.cpp: add BallpadLogFmt extern declaration + BallpadLog header
     # ════════════════════════════════════════════════════════════════════
 
     # 1. Add includes after "types.h"
@@ -83,71 +51,39 @@ def main():
         '#include <execinfo.h>\n#include <fcntl.h>\n#include <unistd.h>\n#include <sys/stat.h>\n'
         '#include "NL/nlBind.h"')
 
-    # 2. Add extern declarations and log-open function before DoMemCheck
+    # 2. Add BallpadLogFmt extern declaration before DoMemCheck
     patch_file(main_cpp,
         'static void DoMemCheck()\n{\n}',
-        '/* Debug log globals — defined in crashlog.c */\n'
-        'extern "C" {\n'
-        'extern char g_log_path[1024];\n'
-        'extern int g_crash_log_fd;\n'
-        'extern FILE* g_debug_log;\n'
-        'extern const char *BallpadDocumentsDir(void);\n'
-        '}\n\n'
-        'static void OpenDebugLog() {\n'
-        '    // Use BallpadDocumentsDir() — the Obj-C function that resolves the\n'
-        '    // correct iOS Documents path via NSSearchPathForDirectoriesInDomains.\n'
-        '    const char* docs = BallpadDocumentsDir();\n'
-        '    snprintf(g_log_path, sizeof(g_log_path), "%s/ballpad-crash.log", docs);\n'
-        '    // Create the directory if it does not exist\n'
-        '    mkdir(docs, 0755);\n'
-        '    g_crash_log_fd = open(g_log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);\n'
-        '    if (g_crash_log_fd >= 0) {\n'
-        '        g_debug_log = fdopen(g_crash_log_fd, "w");\n'
-        '        fprintf(g_debug_log, "[DEBUG] Log opened: %s\\n", g_log_path);\n'
-        '        fflush(g_debug_log);\n'
-        '    }\n'
-        '}\n\n'
+        '/* Debug: route engine output through BallpadLogFmt → runtime.log */\n'
+        'extern "C" void BallpadLogFmt(const char *fmt, ...);\n\n'
         'static void DoMemCheck()\n{\n}')
 
-    # 3. Insert OpenDebugLog() call at the very start of main()
-    patched_main = patch_file(main_cpp,
-        'int main(int argc, char* argv[])\n{\n    // PORT: strikers.ini -> environment, before anything reads one.',
-        'int main(int argc, char* argv[])\n{\n'
-        '    OpenDebugLog();\n'
-        '    // PORT: strikers.ini -> environment, before anything reads one.')
-
-    if not patched_main:
-        patch_file(main_cpp,
-            'int main(int argc, char* argv[])\n{\n    // PORT: strikers.ini',
-            'int main(int argc, char* argv[])\n{\n'
-            '    OpenDebugLog();\n'
-            '    // PORT: strikers.ini')
-
     # ════════════════════════════════════════════════════════════════════
-    # feManager.cpp: extern-declare g_debug_log, redirect fprintf to file
+    # feManager.cpp: redirect all fprintf(stderr,...) to BallpadLogFmt(...)
     # ════════════════════════════════════════════════════════════════════
 
-    # 1. Add extern declaration for g_debug_log
+    # 1. Add BallpadLogFmt extern + redirect macros after includes
     patched = patch_file(fe_mgr,
         '#include "Game/FE/feManager.h"\n\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n\n#include "Game/Camera/CameraMan.h"',
         '#include "Game/FE/feManager.h"\n\n#include <cstdio>\n#include <cstdlib>\n#include <csignal>\n#include <execinfo.h>\n\n'
-        'extern "C" { extern FILE* g_debug_log; }\n'
-        '#define DBG (g_debug_log ? g_debug_log : stderr)\n\n'
+        'extern "C" void BallpadLogFmt(const char *fmt, ...);\n'
+        '/* Redirect fprintf(stderr,...) to BallpadLogFmt → runtime.log */\n'
+        '#define fprintf(stream, ...) BallpadLogFmt(__VA_ARGS__)\n'
+        '#define fflush(stream)\n\n'
         '#include "Game/Camera/CameraMan.h"')
 
     if not patched:
-        # Try variant without the extra includes (previous debug builds may have altered this)
+        # Try variant without the extra includes
         patch_file(fe_mgr,
             '#include "Game/FE/feManager.h"\n\n#include "Game/Camera/CameraMan.h"',
             '#include "Game/FE/feManager.h"\n\n'
-            'extern "C" { extern FILE* g_debug_log; }\n'
-            '#define DBG (g_debug_log ? g_debug_log : stderr)\n\n'
+            'extern "C" void BallpadLogFmt(const char *fmt, ...);\n'
+            '/* Redirect fprintf(stderr,...) to BallpadLogFmt → runtime.log */\n'
+            '#define fprintf(stream, ...) BallpadLogFmt(__VA_ARGS__)\n'
+            '#define fflush(stream)\n\n'
             '#include "Game/Camera/CameraMan.h"')
 
-    # 2. Replace all fprintf(stderr with fprintf(DBG and fflush(stderr) with fflush(DBG
-    for _ in range(20):
-        patch_file(fe_mgr, 'fprintf(stderr,', 'fprintf(DBG,')
-    patch_file(fe_mgr, 'fflush(stderr)', 'fflush(DBG)')
+    # 2. No need to replace fprintf calls — the #define handles it
 
     print("\n=== Done ===")
 
@@ -155,12 +91,17 @@ def main():
     for name, path in [("feManager.cpp", fe_mgr), ("main.cpp", main_cpp), ("crashlog.c", crashlog)]:
         with open(path) as f:
             content = f.read()
-        dbg_count = content.count("fprintf(DBG") + content.count("write(out_fd")
-        print(f"  {name}: {dbg_count} debug output calls")
+        if name == "feManager.cpp":
+            count = content.count("BallpadLogFmt") + content.count("#define fprintf")
+            print(f"  {name}: {count} BallpadLogFmt references")
+        elif name == "main.cpp":
+            count = content.count("BallpadLogFmt")
+            print(f"  {name}: {count} BallpadLogFmt references")
+        else:
+            print(f"  {name}: unmodified (crash handler writes to stderr)")
 
-    with open(main_cpp) as f:
-        if "OpenDebugLog" in f.read():
-            print(f"  Log file path: <container>/Documents/ballpad-crash.log")
+    print(f"\n  Engine debug output → Documents/BallpadLogs/runtime.log")
+    print(f"  Crash backtrace → iOS crash report (stderr)")
 
 if __name__ == "__main__":
     main()

@@ -61,6 +61,10 @@ FOUNDATION_EXPORT NSString *BallpadAppDisplayName(void);
 // Never returns NULL; falls back to /tmp if the directory cannot be resolved.
 FOUNDATION_EXPORT const char *BallpadDocumentsDir(void);
 
+// C-callable variadic wrapper: formats with vsnprintf, then calls BallpadLog.
+// Callable from C and C++ engine code that needs to write into runtime.log.
+FOUNDATION_EXPORT void BallpadLogFmt(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
 // One line naming every touch-control setting and its value, read back from the store rather than
 // from the panel that set it. The settings surface is the vendored component's, so a row landing
 // there is not the same claim as the value the rest of the build reads; this is the read-back that
